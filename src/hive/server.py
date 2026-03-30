@@ -39,16 +39,27 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _auth(ctx: Context) -> tuple[HiveStorage, str]:  # noqa: ARG001
-    """Validate Bearer token from HTTP Authorization header; return (storage, client_id)."""
+def _auth(ctx: Context) -> tuple[HiveStorage, str]:
+    """Validate Bearer token; return (storage, client_id).
+
+    Reads the Authorization header from the HTTP request when running under
+    FastMCP's HTTP transport, falling back to ctx.request_context.meta for
+    direct invocation (integration tests).
+    """
     storage = HiveStorage()
     auth_header: str | None = None
 
+    # HTTP transport (Lambda / local HTTP server)
     try:
         request = get_http_request()
         auth_header = request.headers.get("authorization")
     except RuntimeError:
         pass
+
+    # Fallback: direct invocation or integration tests pass token via meta
+    if not auth_header and ctx and ctx.request_context and ctx.request_context.meta:
+        meta: dict = ctx.request_context.meta  # type: ignore[assignment]
+        auth_header = meta.get("Authorization") or meta.get("authorization")
 
     try:
         token = validate_bearer_token(auth_header, storage)
