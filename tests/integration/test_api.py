@@ -39,6 +39,7 @@ def client():
 
     table_name = "hive-integration-test"
     import contextlib
+
     with contextlib.suppress(Exception):
         ddb.delete_table(TableName=table_name)
 
@@ -116,7 +117,9 @@ def client():
 
 class TestMemoryEndpoints:
     def test_create_and_list(self, client):
-        resp = client.post("/api/memories", json={"key": "test-key", "value": "hello", "tags": ["x"]})
+        resp = client.post(
+            "/api/memories", json={"key": "test-key", "value": "hello", "tags": ["x"]}
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["key"] == "test-key"

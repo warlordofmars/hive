@@ -205,6 +205,7 @@ async def summarize_context(
 # Entry point — run as a Lambda handler or local stdio server
 # ---------------------------------------------------------------------------
 
+
 def lambda_handler(event: dict, context: object) -> dict:
     """AWS Lambda + Function URL handler (HTTP mode)."""
 

@@ -21,7 +21,9 @@ SUPPORTED_RESPONSE_TYPES = {"code"}
 SUPPORTED_AUTH_METHODS = {"none", "client_secret_post", "client_secret_basic"}
 
 
-def register_client(req: ClientRegistrationRequest, storage: HiveStorage) -> ClientRegistrationResponse:
+def register_client(
+    req: ClientRegistrationRequest, storage: HiveStorage
+) -> ClientRegistrationResponse:
     """
     Validate a DCR request and persist the new client.
 
@@ -39,7 +41,9 @@ def register_client(req: ClientRegistrationRequest, storage: HiveStorage) -> Cli
 
     # Validate auth method
     if req.token_endpoint_auth_method not in SUPPORTED_AUTH_METHODS:
-        raise ValueError(f"Unsupported token_endpoint_auth_method: {req.token_endpoint_auth_method}")
+        raise ValueError(
+            f"Unsupported token_endpoint_auth_method: {req.token_endpoint_auth_method}"
+        )
 
     # Determine client type
     is_confidential = req.token_endpoint_auth_method in {

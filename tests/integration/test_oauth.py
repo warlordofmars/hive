@@ -25,6 +25,7 @@ def client():
     from fastapi.testclient import TestClient
 
     from hive.api.main import app
+
     return TestClient(app, follow_redirects=False)
 
 

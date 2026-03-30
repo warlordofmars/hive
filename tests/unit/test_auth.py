@@ -18,6 +18,7 @@ from hive.models import (
 # DCR tests
 # ---------------------------------------------------------------------------
 
+
 class TestDCR:
     def _storage(self, client=None):
         s = MagicMock()
@@ -68,6 +69,7 @@ class TestDCR:
 # ---------------------------------------------------------------------------
 # Token tests
 # ---------------------------------------------------------------------------
+
 
 def _make_token(**kwargs) -> Token:
     now = datetime.now(timezone.utc)

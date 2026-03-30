@@ -44,6 +44,7 @@ def setup():
         aws_secret_access_key="local",
     )
     import contextlib
+
     with contextlib.suppress(Exception):
         ddb.delete_table(TableName=table_name)
 

@@ -71,6 +71,7 @@ def _create_table():
 # Memory tests
 # ---------------------------------------------------------------------------
 
+
 class TestMemoryStorage:
     def test_put_and_get_by_key(self, storage):
         m = Memory(key="hello", value="world", owner_client_id="c1")
@@ -130,6 +131,7 @@ class TestMemoryStorage:
 # Client tests
 # ---------------------------------------------------------------------------
 
+
 class TestClientStorage:
     def test_put_and_get(self, storage):
         c = OAuthClient(client_name="Test")
@@ -155,6 +157,7 @@ class TestClientStorage:
 # Token tests
 # ---------------------------------------------------------------------------
 
+
 class TestTokenStorage:
     def test_create_and_get(self, storage):
         access, refresh = storage.create_token_pair("c1", "memories:read")
@@ -174,6 +177,7 @@ class TestTokenStorage:
 # ---------------------------------------------------------------------------
 # Activity log tests
 # ---------------------------------------------------------------------------
+
 
 class TestActivityLog:
     def test_log_and_query(self, storage):

@@ -32,9 +32,9 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
 # Token lifetimes
-ACCESS_TOKEN_TTL_SECONDS = 3600           # 1 hour
-REFRESH_TOKEN_TTL_SECONDS = 86400 * 30   # 30 days
-AUTH_CODE_TTL_SECONDS = 300              # 5 minutes
+ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
+REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
+AUTH_CODE_TTL_SECONDS = 300  # 5 minutes
 
 
 def _now() -> datetime:
@@ -44,9 +44,14 @@ def _now() -> datetime:
 class HiveStorage:
     """All DynamoDB read/write operations for Hive."""
 
-    def __init__(self, table_name: str = TABLE_NAME, region: str = AWS_REGION, **kwargs: Any) -> None:
+    def __init__(
+        self, table_name: str | None = None, region: str | None = None, **kwargs: Any
+    ) -> None:
+        # Read env vars at call time so tests can override them after import
+        table_name = table_name or os.environ.get("HIVE_TABLE_NAME", "hive")
+        region = region or os.environ.get("AWS_REGION", "us-east-1")
         # Auto-use DYNAMODB_ENDPOINT for local dev / integration tests
-        kwargs.setdefault("endpoint_url", DYNAMODB_ENDPOINT)
+        kwargs.setdefault("endpoint_url", os.environ.get("DYNAMODB_ENDPOINT"))
         dynamodb = boto3.resource("dynamodb", region_name=region, **kwargs)
         self.table = dynamodb.Table(table_name)
 
@@ -130,7 +135,11 @@ class HiveStorage:
                     ":pk_prefix": "MEMORY#",
                 },
             )
-        return [Memory.from_dynamo(i) for i in resp.get("Items", []) if i["SK"] == "META" and i["PK"].startswith("MEMORY#")]
+        return [
+            Memory.from_dynamo(i)
+            for i in resp.get("Items", [])
+            if i["SK"] == "META" and i["PK"].startswith("MEMORY#")
+        ]
 
     # ------------------------------------------------------------------
     # OAuth Client management

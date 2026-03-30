@@ -37,6 +37,7 @@ router = APIRouter(tags=["oauth"])
 # Dependency: shared storage instance
 # ---------------------------------------------------------------------------
 
+
 def get_storage() -> HiveStorage:  # noqa: D401
     return HiveStorage()
 
@@ -44,6 +45,7 @@ def get_storage() -> HiveStorage:  # noqa: D401
 # ---------------------------------------------------------------------------
 # Discovery document
 # ---------------------------------------------------------------------------
+
 
 @router.get("/.well-known/oauth-authorization-server", include_in_schema=False)
 async def oauth_metadata(request: Request) -> JSONResponse:
@@ -72,6 +74,7 @@ async def oauth_metadata(request: Request) -> JSONResponse:
 # Dynamic Client Registration
 # ---------------------------------------------------------------------------
 
+
 @router.post("/oauth/register", status_code=201)
 async def register(
     req: ClientRegistrationRequest,
@@ -95,6 +98,7 @@ async def register(
 # ---------------------------------------------------------------------------
 # Authorization endpoint
 # ---------------------------------------------------------------------------
+
 
 @router.get("/oauth/authorize")
 async def authorize(
@@ -137,6 +141,7 @@ async def authorize(
 # ---------------------------------------------------------------------------
 # Token endpoint
 # ---------------------------------------------------------------------------
+
 
 def _verify_pkce(code_verifier: str, stored_challenge: str) -> bool:
     digest = hashlib.sha256(code_verifier.encode()).digest()
@@ -254,6 +259,7 @@ async def token(
 # ---------------------------------------------------------------------------
 # Token revocation endpoint (RFC 7009)
 # ---------------------------------------------------------------------------
+
 
 @router.post("/oauth/revoke")
 async def revoke(

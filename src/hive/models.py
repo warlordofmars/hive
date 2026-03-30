@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -37,6 +38,7 @@ def _new_id() -> str:
 # ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
+
 
 class Memory(BaseModel):
     """A stored memory entry."""
@@ -105,6 +107,7 @@ class Memory(BaseModel):
 # OAuth Client (RFC 7591 Dynamic Client Registration)
 # ---------------------------------------------------------------------------
 
+
 class OAuthClientType(str, Enum):
     confidential = "confidential"
     public = "public"
@@ -121,7 +124,9 @@ class OAuthClient(BaseModel):
     grant_types: list[str] = Field(default_factory=lambda: ["authorization_code"])
     response_types: list[str] = Field(default_factory=lambda: ["code"])
     scope: str = "memories:read memories:write"
-    token_endpoint_auth_method: str = "none"  # public clients: none; confidential: client_secret_post
+    token_endpoint_auth_method: str = (
+        "none"  # public clients: none; confidential: client_secret_post
+    )
     created_at: datetime = Field(default_factory=_now_utc)
 
     # ------------------------------------------------------------------
@@ -167,6 +172,7 @@ class OAuthClient(BaseModel):
 # OAuth Authorization Code (PKCE)
 # ---------------------------------------------------------------------------
 
+
 class AuthorizationCode(BaseModel):
     """Short-lived authorization code created during OAuth flow."""
 
@@ -174,7 +180,7 @@ class AuthorizationCode(BaseModel):
     client_id: str
     redirect_uri: str
     scope: str
-    code_challenge: str          # S256 PKCE challenge
+    code_challenge: str  # S256 PKCE challenge
     code_challenge_method: str = "S256"
     expires_at: datetime
     used: bool = False
@@ -213,6 +219,7 @@ class AuthorizationCode(BaseModel):
 # Token
 # ---------------------------------------------------------------------------
 
+
 class TokenType(str, Enum):
     access = "access"
     refresh = "refresh"
@@ -221,7 +228,7 @@ class TokenType(str, Enum):
 class Token(BaseModel):
     """An issued OAuth token."""
 
-    jti: str = Field(default_factory=_new_id)        # JWT ID / opaque token ID
+    jti: str = Field(default_factory=_new_id)  # JWT ID / opaque token ID
     token_type: TokenType = TokenType.access
     client_id: str
     scope: str
@@ -268,6 +275,7 @@ class Token(BaseModel):
 # ---------------------------------------------------------------------------
 # Activity Log
 # ---------------------------------------------------------------------------
+
 
 class EventType(str, Enum):
     memory_created = "memory_created"
@@ -318,6 +326,7 @@ class ActivityEvent(BaseModel):
 # ---------------------------------------------------------------------------
 # API request / response schemas (used by FastAPI routes)
 # ---------------------------------------------------------------------------
+
 
 class MemoryCreate(BaseModel):
     key: str
