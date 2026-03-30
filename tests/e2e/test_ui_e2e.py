@@ -44,7 +44,7 @@ class TestUIE2E:
     def test_memories_tab_visible(self, browser_page):
         page = browser_page
         page.goto(UI_URL)
-        assert page.locator("text=Memories").is_visible()
+        assert page.locator("nav button:has-text('Memories')").is_visible()
 
     def test_create_and_see_memory(self, browser_page):
         page = browser_page
@@ -57,14 +57,14 @@ class TestUIE2E:
         page.locator("button:has-text('Save')").click()
 
         page.wait_for_selector("text=ui-e2e-key")
-        assert page.locator("text=ui-e2e-key").is_visible()
+        assert page.locator("text=ui-e2e-key").first.is_visible()
 
     def test_clients_tab(self, browser_page):
         page = browser_page
-        page.locator("text=OAuth Clients").click()
-        assert page.locator("text=Register Client").is_visible()
+        page.locator("nav button:has-text('OAuth Clients')").click()
+        assert page.locator("text=Register Client").first.is_visible()
 
     def test_activity_tab(self, browser_page):
         page = browser_page
-        page.locator("text=Activity Log").click()
-        assert page.locator("text=Activity Log").count() >= 1
+        page.locator("nav button:has-text('Activity Log')").click()
+        assert page.locator("nav button:has-text('Activity Log')").is_visible()
