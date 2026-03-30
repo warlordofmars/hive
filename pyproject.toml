@@ -20,6 +20,7 @@ dev = [
     "boto3-stubs>=1.42.78",
     "moto>=5.1.22",
     "mypy>=1.19.1",
+    "playwright>=1.40.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",

@@ -1,8 +1,8 @@
 """
 Playwright E2E tests for the Hive management UI.
 Requires:
-  HIVE_UI_URL        — deployed (or local) UI URL
-  E2E_ACCESS_TOKEN   — valid Bearer token for the UI to use
+  HIVE_UI_URL   — deployed UI URL (CloudFront)
+  HIVE_API_URL  — deployed API URL (used to issue a fresh token)
 """
 
 from __future__ import annotations
@@ -11,12 +11,13 @@ import os
 
 import pytest
 
-UI_URL = os.environ.get("HIVE_UI_URL", "http://localhost:5173")
-E2E_TOKEN = os.environ.get("E2E_ACCESS_TOKEN")
+from tests.e2e.conftest import issue_token_sync
+
+UI_URL = os.environ.get("HIVE_UI_URL", "")
 
 pytestmark = pytest.mark.skipif(
-    not E2E_TOKEN,
-    reason="E2E_ACCESS_TOKEN not set — skipping UI e2e tests",
+    not UI_URL,
+    reason="HIVE_UI_URL not set — skipping UI e2e tests",
 )
 
 
@@ -24,13 +25,15 @@ pytestmark = pytest.mark.skipif(
 def browser_page():
     from playwright.sync_api import sync_playwright
 
+    token = issue_token_sync()
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
 
         # Inject token into localStorage before navigating
         page.goto(UI_URL)
-        page.evaluate(f"localStorage.setItem('hive_token', '{E2E_TOKEN}')")
+        page.evaluate(f"localStorage.setItem('hive_token', '{token}')")
         page.reload()
 
         yield page

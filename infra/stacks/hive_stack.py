@@ -8,17 +8,22 @@ Resources:
   - Function URLs for both Lambdas (auth=NONE, TLS enforced)
   - IAM roles scoped to DynamoDB table access
   - SSM Parameter for JWT secret
+  - S3 bucket + CloudFront distribution for the React management UI
 """
 
 from __future__ import annotations
 
+import os
+
 import aws_cdk as cdk
-from aws_cdk import (
-    aws_dynamodb as dynamodb,
-    aws_iam as iam,
-    aws_lambda as lambda_,
-    aws_ssm as ssm,
-)
+from aws_cdk import aws_cloudfront as cloudfront
+from aws_cdk import aws_cloudfront_origins as origins
+from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_s3_deployment as s3deploy
+from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 
@@ -37,7 +42,9 @@ class HiveStack(cdk.Stack):
             sort_key=dynamodb.Attribute(name="SK", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=cdk.RemovalPolicy.RETAIN,
-            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(point_in_time_recovery_enabled=True),
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True
+            ),
             # TTL attribute used by token and auth-code items
             time_to_live_attribute="ttl",
         )
@@ -183,8 +190,88 @@ class HiveStack(cdk.Stack):
         )
 
         # ----------------------------------------------------------------
+        # S3 bucket + CloudFront distribution for the React management UI
+        # ----------------------------------------------------------------
+        ui_bucket = s3.Bucket(
+            self,
+            "UiBucket",
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+        )
+
+        # API origin — strip "https://" prefix and trailing "/" from the function URL
+        api_origin_domain = cdk.Fn.select(2, cdk.Fn.split("/", api_url.url))
+
+        api_cf_origin = origins.HttpOrigin(
+            api_origin_domain,
+            protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+            origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
+        )
+
+        api_behavior = cloudfront.BehaviorOptions(
+            origin=api_cf_origin,
+            viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+            cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+            origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+            allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+        )
+
+        distribution = cloudfront.Distribution(
+            self,
+            "UiDistribution",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.S3BucketOrigin.with_origin_access_control(ui_bucket),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+            ),
+            additional_behaviors={
+                "/api/*": api_behavior,
+                "/oauth/*": api_behavior,
+                "/.well-known/*": cloudfront.BehaviorOptions(
+                    origin=api_cf_origin,
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                ),
+                "/health": cloudfront.BehaviorOptions(
+                    origin=api_cf_origin,
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                ),
+            },
+            default_root_object="index.html",
+            error_responses=[
+                cloudfront.ErrorResponse(
+                    http_status=404,
+                    response_page_path="/index.html",
+                    response_http_status=200,
+                ),
+            ],
+        )
+
+        # Deploy built UI assets — only if ui/dist exists (built in CI before cdk deploy)
+        ui_dist_path = os.path.join(os.path.dirname(__file__), "../../ui/dist")
+        if os.path.exists(ui_dist_path):
+            s3deploy.BucketDeployment(
+                self,
+                "DeployUi",
+                sources=[s3deploy.Source.asset(ui_dist_path)],
+                destination_bucket=ui_bucket,
+                distribution=distribution,
+                distribution_paths=["/*"],
+            )
+
+        # ----------------------------------------------------------------
         # Outputs
         # ----------------------------------------------------------------
         cdk.CfnOutput(self, "McpFunctionUrl", value=mcp_url.url, description="MCP server URL")
         cdk.CfnOutput(self, "ApiFunctionUrl", value=api_url.url, description="Management API URL")
         cdk.CfnOutput(self, "TableName", value=table.table_name, description="DynamoDB table name")
+        cdk.CfnOutput(
+            self,
+            "UiUrl",
+            value=f"https://{distribution.domain_name}",
+            description="Management UI URL (CloudFront)",
+        )
