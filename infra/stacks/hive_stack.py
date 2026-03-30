@@ -3,12 +3,18 @@ Hive CDK Stack — defines all AWS infrastructure.
 
 Resources:
   - DynamoDB table (single-table design) with GSIs and TTL
-  - Lambda function for the MCP server (FastMCP + FastAPI via Mangum)
-  - Lambda function for the management API (FastAPI via Mangum)
+  - Lambda function for the MCP server (FastMCP + Mangum)
+  - Lambda function for the management API (FastAPI + Mangum)
   - Function URLs for both Lambdas (auth=NONE, TLS enforced)
-  - IAM roles scoped to DynamoDB table access
+  - IAM roles scoped to DynamoDB table and SSM access
   - SSM Parameter for JWT secret
   - S3 bucket + CloudFront distribution for the React management UI
+  - GitHub Actions OIDC deploy role (one per environment)
+
+Multi-environment usage:
+  cdk deploy HiveStack         -c env=prod   # production
+  cdk deploy HiveStack-dev     -c env=dev    # development
+  cdk deploy HiveStack-staging -c env=staging
 """
 
 from __future__ import annotations
@@ -26,26 +32,48 @@ from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
+GITHUB_REPO = "warlordofmars/hive"
+
 
 class HiveStack(cdk.Stack):
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        env_name: str = "prod",
+        **kwargs,
+    ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        is_prod = env_name == "prod"
+
+        # Non-prod stacks destroy resources on `cdk destroy` for easy teardown.
+        # The JWT secret is always retained to prevent accidental key loss.
+        data_removal = cdk.RemovalPolicy.RETAIN if is_prod else cdk.RemovalPolicy.DESTROY
+
+        # GitHub Actions environment name used in the OIDC trust condition.
+        # prod → "production" (matches existing GitHub environment); others → env_name.
+        github_env = "production" if is_prod else env_name
 
         # ----------------------------------------------------------------
         # DynamoDB single table
         # ----------------------------------------------------------------
+        # Table name is derived from env_name so arbitrary envs never conflict.
+        # Prod keeps "hive" for backward compatibility with existing data.
+        table_name = "hive" if is_prod else f"hive-{env_name}"
+
         table = dynamodb.Table(
             self,
             "HiveTable",
-            table_name="hive",
+            table_name=table_name,
             partition_key=dynamodb.Attribute(name="PK", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="SK", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            removal_policy=cdk.RemovalPolicy.RETAIN,
+            removal_policy=data_removal,
+            # PITR is expensive — only enable in prod
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
-                point_in_time_recovery_enabled=True
+                point_in_time_recovery_enabled=is_prod
             ),
-            # TTL attribute used by token and auth-code items
             time_to_live_attribute="ttl",
         )
 
@@ -65,7 +93,7 @@ class HiveStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
-        # GSI 3 — ClientIndex: client lookups (reserved for future cross-entity queries)
+        # GSI 3 — ClientIndex: OAuth client lookups
         table.add_global_secondary_index(
             index_name="ClientIndex",
             partition_key=dynamodb.Attribute(name="GSI3PK", type=dynamodb.AttributeType.STRING),
@@ -75,17 +103,23 @@ class HiveStack(cdk.Stack):
         # ----------------------------------------------------------------
         # SSM Parameter — JWT secret
         # ----------------------------------------------------------------
+        # Parameter path is per-environment to prevent secret sharing.
+        # Prod keeps the existing path for backward compatibility.
+        ssm_param_name = "/hive/jwt-secret" if is_prod else f"/hive/{env_name}/jwt-secret"
+
         jwt_secret_param = ssm.StringParameter(
             self,
             "JwtSecret",
-            parameter_name="/hive/jwt-secret",
+            parameter_name=ssm_param_name,
             string_value="CHANGE_ME_ON_FIRST_DEPLOY",
-            description="Hive JWT signing secret — rotate after first deploy",
+            description=f"Hive JWT signing secret ({env_name}) — rotate after first deploy",
             tier=ssm.ParameterTier.STANDARD,
         )
+        # Always retain the JWT secret — losing it invalidates all issued tokens.
+        jwt_secret_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
 
         # ----------------------------------------------------------------
-        # Shared Lambda code (from the built package)
+        # Shared Lambda code (Docker-bundled at cdk deploy time)
         # ----------------------------------------------------------------
         lambda_code = lambda_.Code.from_asset(
             "..",
@@ -107,10 +141,14 @@ class HiveStack(cdk.Stack):
             ),
         )
 
+        # JWT issuer URL embedded in tokens — must be unique per environment.
+        issuer_host = "hive" if is_prod else f"hive-{env_name}"
         common_env = {
             "HIVE_TABLE_NAME": table.table_name,
-            # AWS_REGION is reserved by the Lambda runtime — do not set it
-            "HIVE_ISSUER": f"https://hive.{self.account}.{self.region}.on.aws",
+            "HIVE_ISSUER": f"https://{issuer_host}.{self.account}.{self.region}.on.aws",
+            # APP_VERSION is injected at deploy time via the APP_VERSION env var.
+            # Falls back to "dev" for local synth/deploy without a version set.
+            "APP_VERSION": os.environ.get("APP_VERSION", "dev"),
         }
 
         # ----------------------------------------------------------------
@@ -139,7 +177,7 @@ class HiveStack(cdk.Stack):
             environment=common_env,
             memory_size=512,
             timeout=cdk.Duration.seconds(30),
-            description="Hive MCP server (FastMCP)",
+            description=f"Hive MCP server (FastMCP) [{env_name}]",
         )
 
         mcp_url = mcp_fn.add_function_url(
@@ -177,7 +215,7 @@ class HiveStack(cdk.Stack):
             environment=common_env,
             memory_size=512,
             timeout=cdk.Duration.seconds(30),
-            description="Hive management API (FastAPI)",
+            description=f"Hive management API (FastAPI) [{env_name}]",
         )
 
         api_url = api_fn.add_function_url(
@@ -195,8 +233,8 @@ class HiveStack(cdk.Stack):
         ui_bucket = s3.Bucket(
             self,
             "UiBucket",
-            removal_policy=cdk.RemovalPolicy.DESTROY,
-            auto_delete_objects=True,
+            removal_policy=data_removal,
+            auto_delete_objects=not is_prod,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
         )
 
@@ -264,6 +302,38 @@ class HiveStack(cdk.Stack):
             )
 
         # ----------------------------------------------------------------
+        # GitHub Actions OIDC deploy role
+        # ----------------------------------------------------------------
+        # One role per environment, scoped to its GitHub Actions environment.
+        # The OIDC provider must already exist in the account (created once via
+        # AWS console or: aws iam create-open-id-connect-provider).
+        github_oidc = iam.OpenIdConnectProvider.from_open_id_connect_provider_arn(
+            self,
+            "GitHubOidcProvider",
+            f"arn:aws:iam::{self.account}:oidc-provider/token.actions.githubusercontent.com",
+        )
+
+        deploy_role = iam.Role(
+            self,
+            "GitHubActionsDeployRole",
+            assumed_by=iam.WebIdentityPrincipal(
+                github_oidc.open_id_connect_provider_arn,
+                conditions={
+                    "StringEquals": {
+                        "token.actions.githubusercontent.com:sub": (
+                            f"repo:{GITHUB_REPO}:environment:{github_env}"
+                        ),
+                        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                    }
+                },
+            ),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name("AdministratorAccess")
+            ],
+            description=f"GitHub Actions OIDC deploy role for Hive ({env_name})",
+        )
+
+        # ----------------------------------------------------------------
         # Outputs
         # ----------------------------------------------------------------
         cdk.CfnOutput(self, "McpFunctionUrl", value=mcp_url.url, description="MCP server URL")
@@ -274,4 +344,10 @@ class HiveStack(cdk.Stack):
             "UiUrl",
             value=f"https://{distribution.domain_name}",
             description="Management UI URL (CloudFront)",
+        )
+        cdk.CfnOutput(
+            self,
+            "DeployRoleArn",
+            value=deploy_role.role_arn,
+            description=f"GitHub Actions OIDC deploy role ARN ({env_name})",
         )

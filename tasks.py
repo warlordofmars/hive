@@ -78,6 +78,14 @@ def _infer_next_version(ctx):
 
 
 
+def _aws_account(ctx) -> str:
+    """Get the current AWS account ID via STS."""
+    return ctx.run(
+        "aws sts get-caller-identity --query Account --output text",
+        hide=True,
+    ).stdout.strip()
+
+
 def _cfn_output(ctx, key, env="prod"):
     stack = _stack_name(env)
     return ctx.run(
@@ -315,26 +323,40 @@ def dev(ctx):
 @task
 def synth(ctx, env="prod"):
     """Synthesize CDK template locally (skips Docker bundling). Use --env dev for dev stack."""
+    account = _aws_account(ctx)
     stack = _stack_name(env)
     with ctx.cd(INFRA):
-        ctx.run(f"uv run cdk synth {stack} --no-staging -c env={env}", pty=True)
+        ctx.run(
+            f"uv run cdk synth {stack} --no-staging -c account={account} -c env={env}",
+            pty=True,
+        )
 
 
 @task
 def diff(ctx, env="prod"):
     """Show CDK diff against the deployed stack. Use --env dev for dev stack."""
+    account = _aws_account(ctx)
     stack = _stack_name(env)
     with ctx.cd(INFRA):
-        ctx.run(f"uv run cdk diff {stack} -c env={env}", pty=True)
+        ctx.run(f"uv run cdk diff {stack} -c account={account} -c env={env}", pty=True)
 
 
 @task
 def deploy(ctx, env="prod"):
     """Deploy CDK stack to AWS. Use --env dev for dev stack."""
+    account = _aws_account(ctx)
     stack = _stack_name(env)
+    if env == "prod":
+        # In CI, APP_VERSION is set by the release job. Locally, infer from commits.
+        app_version = os.environ.get("APP_VERSION", _infer_next_version(ctx))
+    else:
+        short_sha = ctx.run("git rev-parse --short HEAD", hide=True).stdout.strip()
+        app_version = f"{_infer_next_version(ctx)}-{env}.{short_sha}"
     with ctx.cd(INFRA):
         ctx.run(
-            f"uv run cdk deploy {stack} --require-approval never -c env={env}",
+            f"uv run cdk deploy {stack} --require-approval never"
+            f" -c account={account} -c env={env}",
+            env={"APP_VERSION": app_version},
             pty=True,
         )
 
@@ -386,6 +408,26 @@ def logs_api(ctx, env="prod"):
 def version(ctx):
     """Print the next semantic version inferred from conventional commits."""
     print(_infer_next_version(ctx))
+
+
+@task
+def back_merge(ctx):
+    """Open a PR to merge main back into development after a prod release (auto-merges)."""
+    result = ctx.run(
+        "gh pr create"
+        " --base development"
+        " --head main"
+        " --title 'chore: merge main back to development'"
+        " --body 'Back-merge after prod release. Merge using **merge commit** (not squash).'",
+        warn=True,
+        hide="both",
+    )
+    if result.ok:
+        pr_url = result.stdout.strip().splitlines()[-1]
+        print(f"PR created: {pr_url}")
+        ctx.run(f"gh pr merge '{pr_url}' --auto --merge", warn=True)
+    else:
+        print("PR already exists or nothing to merge — skipping")
 
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
