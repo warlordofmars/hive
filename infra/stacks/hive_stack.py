@@ -148,6 +148,8 @@ class HiveStack(cdk.Stack):
         common_env = {
             "HIVE_TABLE_NAME": table.table_name,
             "HIVE_ISSUER": f"https://{issuer_host}.{self.account}.{self.region}.on.aws",
+            # Tell both Lambdas which SSM parameter holds the JWT secret.
+            "HIVE_JWT_SECRET_PARAM": ssm_param_name,
             # APP_VERSION is injected at deploy time via the APP_VERSION env var.
             # Falls back to "dev" for local synth/deploy without a version set.
             "APP_VERSION": os.environ.get("APP_VERSION", "dev"),
