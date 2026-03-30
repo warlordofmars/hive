@@ -37,7 +37,7 @@ class HiveStack(cdk.Stack):
             sort_key=dynamodb.Attribute(name="SK", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=cdk.RemovalPolicy.RETAIN,
-            point_in_time_recovery=True,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(point_in_time_recovery_enabled=True),
             # TTL attribute used by token and auth-code items
             time_to_live_attribute="ttl",
         )
@@ -72,7 +72,7 @@ class HiveStack(cdk.Stack):
             self,
             "JwtSecret",
             parameter_name="/hive/jwt-secret",
-            string_value=cdk.SecretValue.unsafe_plain_text("CHANGE_ME_ON_FIRST_DEPLOY").to_string(),
+            string_value="CHANGE_ME_ON_FIRST_DEPLOY",
             description="Hive JWT signing secret — rotate after first deploy",
             tier=ssm.ParameterTier.STANDARD,
         )
@@ -89,9 +89,10 @@ class HiveStack(cdk.Stack):
                     "-c",
                     " && ".join(
                         [
-                            "pip install uv --quiet",
-                            "uv export --no-hashes -o /tmp/requirements.txt",
-                            "pip install -r /tmp/requirements.txt -t /asset-output --quiet",
+                            "pip install uv --quiet --no-cache-dir",
+                            # Export only runtime deps — exclude dev and infra (CDK) groups
+                            "UV_CACHE_DIR=/tmp/uv-cache uv export --no-hashes --no-group dev --no-group infra -o /tmp/requirements.txt",
+                            "pip install -r /tmp/requirements.txt -t /asset-output --quiet --no-cache-dir",
                             "cp -r src/hive /asset-output/hive",
                         ]
                     ),
@@ -101,9 +102,7 @@ class HiveStack(cdk.Stack):
 
         common_env = {
             "HIVE_TABLE_NAME": table.table_name,
-            "AWS_REGION": self.region,
-            # JWT secret fetched at runtime from SSM via Lambda env var expansion
-            # (or you can use Secrets Manager for rotation support)
+            # AWS_REGION is reserved by the Lambda runtime — do not set it
             "HIVE_ISSUER": f"https://hive.{self.account}.{self.region}.on.aws",
         }
 
