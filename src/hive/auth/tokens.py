@@ -8,6 +8,7 @@ every request — but we still persist tokens for revocation support.
 
 from __future__ import annotations
 
+import functools
 import os
 import secrets
 
@@ -16,9 +17,30 @@ from jose import JWTError, jwt
 from hive.models import Token
 from hive.storage import HiveStorage
 
-JWT_SECRET = os.environ.get("HIVE_JWT_SECRET", secrets.token_hex(32))
 JWT_ALGORITHM = "HS256"
 ISSUER = os.environ.get("HIVE_ISSUER", "https://hive.example.com")
+
+
+@functools.lru_cache(maxsize=1)
+def _jwt_secret() -> str:
+    """Return the JWT signing secret.
+
+    Priority:
+    1. HIVE_JWT_SECRET env var (tests / local dev)
+    2. SSM Parameter /hive/jwt-secret (Lambda runtime)
+    3. Random fallback (single-process local dev only)
+    """
+    if secret := os.environ.get("HIVE_JWT_SECRET"):
+        return secret
+    try:
+        import boto3
+
+        param_name = os.environ.get("HIVE_JWT_SECRET_PARAM", "/hive/jwt-secret")
+        ssm = boto3.client("ssm")
+        resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
+        return resp["Parameter"]["Value"]
+    except Exception:
+        return secrets.token_hex(32)
 
 
 def issue_jwt(token: Token) -> str:
@@ -32,12 +54,12 @@ def issue_jwt(token: Token) -> str:
         "exp": int(token.expires_at.timestamp()),
         "token_type": token.token_type.value,
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
 def decode_jwt(token_str: str) -> dict:
     """Decode and verify a JWT. Raises JWTError on failure."""
-    return jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM], issuer=ISSUER)
+    return jwt.decode(token_str, _jwt_secret(), algorithms=[JWT_ALGORITHM], issuer=ISSUER)
 
 
 def validate_bearer_token(authorization_header: str | None, storage: HiveStorage) -> Token:
