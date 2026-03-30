@@ -13,10 +13,10 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from hive.auth.oauth import router as oauth_router
-from hive.api.memories import router as memories_router
 from hive.api.clients import router as clients_router
+from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
+from hive.auth.oauth import router as oauth_router
 
 app = FastAPI(
     title="Hive Management API",

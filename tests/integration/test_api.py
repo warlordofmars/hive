@@ -10,9 +10,9 @@ Usage:
 from __future__ import annotations
 
 import os
+
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
 
 # Point boto3 at DynamoDB Local if available, otherwise skip
 DYNAMO_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
@@ -38,10 +38,9 @@ def client():
     )
 
     table_name = "hive-integration-test"
-    try:
+    import contextlib
+    with contextlib.suppress(Exception):
         ddb.delete_table(TableName=table_name)
-    except Exception:
-        pass
 
     ddb.create_table(
         TableName=table_name,
@@ -82,8 +81,8 @@ def client():
     os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 
     from hive.api.main import app
-    from hive.storage import HiveStorage
     from hive.auth.tokens import issue_jwt
+    from hive.storage import HiveStorage
 
     # Create a client + token for auth
     storage = HiveStorage(
@@ -93,10 +92,9 @@ def client():
         aws_access_key_id="local",
         aws_secret_access_key="local",
     )
-    from hive.models import OAuthClient
-    from hive.storage import ACCESS_TOKEN_TTL_SECONDS
-    from datetime import datetime, timezone, timedelta
-    from hive.models import Token, TokenType
+    from datetime import datetime, timedelta, timezone
+
+    from hive.models import OAuthClient, Token
 
     oauth_client = OAuthClient(client_name="Test Client")
     storage.put_client(oauth_client)

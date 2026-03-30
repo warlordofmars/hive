@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import secrets
-from datetime import datetime, timezone
 
 from jose import JWTError, jwt
 

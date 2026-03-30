@@ -21,7 +21,6 @@ from boto3.dynamodb.conditions import Key
 from hive.models import (
     ActivityEvent,
     AuthorizationCode,
-    EventType,
     Memory,
     OAuthClient,
     Token,
@@ -30,6 +29,7 @@ from hive.models import (
 
 TABLE_NAME = os.environ.get("HIVE_TABLE_NAME", "hive")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
 # Token lifetimes
 ACCESS_TOKEN_TTL_SECONDS = 3600           # 1 hour
@@ -45,6 +45,8 @@ class HiveStorage:
     """All DynamoDB read/write operations for Hive."""
 
     def __init__(self, table_name: str = TABLE_NAME, region: str = AWS_REGION, **kwargs: Any) -> None:
+        # Auto-use DYNAMODB_ENDPOINT for local dev / integration tests
+        kwargs.setdefault("endpoint_url", DYNAMODB_ENDPOINT)
         dynamodb = boto3.resource("dynamodb", region_name=region, **kwargs)
         self.table = dynamodb.Table(table_name)
 
@@ -111,7 +113,6 @@ class HiveStorage:
         """Scan for all META items (optionally filtered by owner_client_id).
         Use sparingly — prefer tag-based queries in production.
         """
-        filter_expr = Key("SK").eq("META")
         if client_id:
             resp = self.table.scan(
                 FilterExpression="SK = :sk AND begins_with(PK, :pk_prefix) AND owner_client_id = :cid",

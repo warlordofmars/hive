@@ -5,8 +5,9 @@ Integration tests for the FastMCP tools against DynamoDB Local.
 from __future__ import annotations
 
 import os
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 DYNAMO_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
@@ -27,10 +28,12 @@ def _make_context(token_str: str):
 @pytest.fixture(scope="module")
 def setup():
     """Set up DynamoDB Local table + a valid token for MCP tool calls."""
-    import boto3
     from datetime import datetime, timedelta, timezone
-    from hive.models import OAuthClient, Token, TokenType
+
+    import boto3
+
     from hive.auth.tokens import issue_jwt
+    from hive.models import OAuthClient, Token
 
     table_name = "hive-mcp-integration"
     ddb = boto3.client(
@@ -40,10 +43,9 @@ def setup():
         aws_access_key_id="local",
         aws_secret_access_key="local",
     )
-    try:
+    import contextlib
+    with contextlib.suppress(Exception):
         ddb.delete_table(TableName=table_name)
-    except Exception:
-        pass
 
     ddb.create_table(
         TableName=table_name,
@@ -109,7 +111,7 @@ def setup():
 @pytest.mark.asyncio
 class TestMCPTools:
     async def test_remember_and_recall(self, setup):
-        from hive.server import remember, recall
+        from hive.server import recall, remember
 
         jwt = setup
         ctx = _make_context(jwt)
@@ -120,8 +122,9 @@ class TestMCPTools:
         assert recalled == "Hello, Hive!"
 
     async def test_forget(self, setup):
-        from hive.server import remember, forget, recall
         from fastmcp.exceptions import ToolError
+
+        from hive.server import forget, recall, remember
 
         jwt = setup
         ctx = _make_context(jwt)
@@ -133,7 +136,7 @@ class TestMCPTools:
             await recall(key="temp", ctx=ctx)
 
     async def test_list_memories(self, setup):
-        from hive.server import remember, list_memories
+        from hive.server import list_memories, remember
 
         jwt = setup
         ctx = _make_context(jwt)

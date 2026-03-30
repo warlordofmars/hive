@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, Query
 
 from hive.api._auth import require_token
-from hive.models import ActivityEvent, StatsResponse
+from hive.models import StatsResponse
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["stats"])

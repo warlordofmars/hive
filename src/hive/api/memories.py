@@ -27,10 +27,7 @@ async def list_memories(
     auth: tuple[HiveStorage, str] = Depends(require_token),
 ) -> list[MemoryResponse]:
     storage, client_id = auth
-    if tag:
-        memories = storage.list_memories_by_tag(tag)
-    else:
-        memories = storage.list_all_memories()
+    memories = storage.list_memories_by_tag(tag) if tag else storage.list_all_memories()
     return [MemoryResponse.from_memory(m) for m in memories]
 
 

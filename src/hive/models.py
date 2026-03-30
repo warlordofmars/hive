@@ -22,7 +22,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ class Memory(BaseModel):
         return items
 
     @classmethod
-    def from_dynamo(cls, item: dict[str, Any]) -> "Memory":
+    def from_dynamo(cls, item: dict[str, Any]) -> Memory:
         return cls(
             memory_id=item["memory_id"],
             key=item["key"],
@@ -149,7 +148,7 @@ class OAuthClient(BaseModel):
         }
 
     @classmethod
-    def from_dynamo(cls, item: dict[str, Any]) -> "OAuthClient":
+    def from_dynamo(cls, item: dict[str, Any]) -> OAuthClient:
         return cls(
             client_id=item["client_id"],
             client_secret=item.get("client_secret"),
@@ -197,7 +196,7 @@ class AuthorizationCode(BaseModel):
         }
 
     @classmethod
-    def from_dynamo(cls, item: dict[str, Any]) -> "AuthorizationCode":
+    def from_dynamo(cls, item: dict[str, Any]) -> AuthorizationCode:
         return cls(
             code=item["code"],
             client_id=item["client_id"],
@@ -246,7 +245,7 @@ class Token(BaseModel):
         }
 
     @classmethod
-    def from_dynamo(cls, item: dict[str, Any]) -> "Token":
+    def from_dynamo(cls, item: dict[str, Any]) -> Token:
         return cls(
             jti=item["jti"],
             token_type=TokenType(item["token_type"]),
@@ -306,7 +305,7 @@ class ActivityEvent(BaseModel):
         }
 
     @classmethod
-    def from_dynamo(cls, item: dict[str, Any]) -> "ActivityEvent":
+    def from_dynamo(cls, item: dict[str, Any]) -> ActivityEvent:
         return cls(
             event_id=item["event_id"],
             event_type=EventType(item["event_type"]),
@@ -340,7 +339,7 @@ class MemoryResponse(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def from_memory(cls, m: Memory) -> "MemoryResponse":
+    def from_memory(cls, m: Memory) -> MemoryResponse:
         return cls(
             memory_id=m.memory_id,
             key=m.key,
@@ -376,7 +375,7 @@ class ClientRegistrationResponse(BaseModel):
     client_id_issued_at: int  # Unix timestamp
 
     @classmethod
-    def from_client(cls, c: OAuthClient) -> "ClientRegistrationResponse":
+    def from_client(cls, c: OAuthClient) -> ClientRegistrationResponse:
         return cls(
             client_id=c.client_id,
             client_secret=c.client_secret,

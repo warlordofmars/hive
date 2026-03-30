@@ -13,7 +13,6 @@ from hive.models import (
     ClientRegistrationRequest,
     ClientRegistrationResponse,
     EventType,
-    OAuthClient,
 )
 from hive.storage import HiveStorage
 

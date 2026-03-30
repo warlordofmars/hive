@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
-import base64
-import secrets
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from hive.auth.dcr import register_client, SUPPORTED_GRANT_TYPES
+from hive.auth.dcr import register_client
 from hive.auth.tokens import decode_jwt, issue_jwt, validate_bearer_token
 from hive.models import (
     ClientRegistrationRequest,
-    OAuthClient,
-    OAuthClientType,
     Token,
-    TokenType,
 )
-
 
 # ---------------------------------------------------------------------------
 # DCR tests
@@ -145,7 +138,6 @@ class TestValidateBearerToken:
             expires_at=now - timedelta(hours=1),
         )
         # JWT exp check will fire before DynamoDB lookup for expired tokens
-        from jose import JWTError
 
         jwt_str = issue_jwt(t)
         storage = MagicMock()

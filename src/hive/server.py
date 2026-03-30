@@ -14,7 +14,6 @@ Tools:
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -67,11 +66,12 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
 async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
     value: Annotated[str, "Content of the memory"],
-    tags: Annotated[list[str], "Optional tags for categorisation"] = [],
+    tags: Annotated[list[str], "Optional tags for categorisation"] = None,  # type: ignore[assignment]
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Store or update a memory with optional tags."""
     storage, client_id = _auth(ctx)
+    tags = tags or []
 
     # Check if a memory with this key already exists (update path)
     existing = storage.get_memory_by_key(key)
@@ -207,7 +207,6 @@ async def summarize_context(
 
 def lambda_handler(event: dict, context: object) -> dict:
     """AWS Lambda + Function URL handler (HTTP mode)."""
-    from fastmcp.server.http import create_sse_app
 
     # Re-use FastAPI ASGI app via Mangum
     try:

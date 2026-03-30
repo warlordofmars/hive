@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta, timezone
-
-import pytest
 
 from hive.models import (
     AuthorizationCode,
@@ -13,7 +10,6 @@ from hive.models import (
     OAuthClient,
     OAuthClientType,
     Token,
-    TokenType,
 )
 
 

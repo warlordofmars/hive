@@ -5,7 +5,6 @@ Unit tests for the storage layer using moto to mock DynamoDB.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
 
 import boto3
 import pytest
@@ -18,8 +17,8 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 from moto import mock_aws
 
-from hive.models import Memory, OAuthClient, Token, TokenType, ActivityEvent, EventType
-from hive.storage import HiveStorage, ACCESS_TOKEN_TTL_SECONDS
+from hive.models import ActivityEvent, EventType, Memory, OAuthClient, TokenType
+from hive.storage import HiveStorage
 
 
 @pytest.fixture()

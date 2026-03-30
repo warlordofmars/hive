@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import os
 import secrets
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -22,7 +21,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from hive.auth.dcr import register_client
-from hive.auth.tokens import ISSUER, issue_jwt, validate_bearer_token
+from hive.auth.tokens import ISSUER, issue_jwt
 from hive.models import (
     ActivityEvent,
     ClientRegistrationRequest,
@@ -166,8 +165,8 @@ async def token(
             basic_client_id, basic_secret = decoded.split(":", 1)
             client_id = client_id or basic_client_id
             client_secret = client_secret or basic_secret
-        except Exception:
-            raise HTTPException(status_code=401, detail="Invalid Basic auth header")
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail="Invalid Basic auth header") from exc
 
     if not client_id:
         raise HTTPException(status_code=400, detail="client_id is required")
@@ -209,8 +208,9 @@ async def token(
             raise HTTPException(status_code=400, detail="refresh_token is required")
 
         # Refresh tokens are opaque JTIs stored in DynamoDB
-        from hive.auth.tokens import decode_jwt
         from jose import JWTError
+
+        from hive.auth.tokens import decode_jwt
 
         try:
             claims = decode_jwt(refresh_token)
@@ -260,8 +260,9 @@ async def revoke(
     token: str = Form(...),
     storage: HiveStorage = Depends(get_storage),
 ) -> Response:
-    from hive.auth.tokens import decode_jwt
     from jose import JWTError
+
+    from hive.auth.tokens import decode_jwt
 
     try:
         claims = decode_jwt(token)

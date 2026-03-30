@@ -10,6 +10,7 @@ Requires environment variables:
 from __future__ import annotations
 
 import os
+
 import pytest
 
 MCP_URL = os.environ.get("HIVE_MCP_URL")
