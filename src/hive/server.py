@@ -19,6 +19,7 @@ from typing import Annotated
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_request
 
 from hive.auth.tokens import validate_bearer_token
 from hive.models import ActivityEvent, EventType, Memory
@@ -38,15 +39,16 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _auth(ctx: Context) -> tuple[HiveStorage, str]:
-    """Validate Bearer token from context metadata; return (storage, client_id)."""
+def _auth(ctx: Context) -> tuple[HiveStorage, str]:  # noqa: ARG001
+    """Validate Bearer token from HTTP Authorization header; return (storage, client_id)."""
     storage = HiveStorage()
     auth_header: str | None = None
 
-    # MCP clients pass HTTP headers in the request context metadata
-    if ctx.request_context and ctx.request_context.meta:
-        meta: dict = ctx.request_context.meta  # type: ignore[assignment]
-        auth_header = meta.get("authorization") or meta.get("Authorization")
+    try:
+        request = get_http_request()
+        auth_header = request.headers.get("authorization")
+    except RuntimeError:
+        pass
 
     try:
         token = validate_bearer_token(auth_header, storage)
