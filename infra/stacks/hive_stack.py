@@ -52,8 +52,10 @@ class HiveStack(cdk.Stack):
         data_removal = cdk.RemovalPolicy.RETAIN if is_prod else cdk.RemovalPolicy.DESTROY
 
         # GitHub Actions environment name used in the OIDC trust condition.
-        # prod → "production" (matches existing GitHub environment); others → env_name.
-        github_env = "production" if is_prod else env_name
+        # Must match the `environment:` key in the workflow job exactly.
+        # prod → "production", dev → "development", others → env_name as-is.
+        _github_env_map = {"prod": "production", "dev": "development"}
+        github_env = _github_env_map.get(env_name, env_name)
 
         # ----------------------------------------------------------------
         # DynamoDB single table
