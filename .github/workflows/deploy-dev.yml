@@ -1,0 +1,43 @@
+name: Deploy Dev (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-dev:
+    name: CDK Deploy (dev)
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Install CDK
+        run: npm install -g aws-cdk
+
+      - name: Install Python dependencies
+        run: uv sync --group dev --group infra
+
+      - name: Build React UI
+        working-directory: ui
+        run: npm install && npm run build
+
+      - name: Deploy
+        run: uv run inv deploy --env dev
