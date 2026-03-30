@@ -214,7 +214,7 @@ def lambda_handler(event: dict, context: object) -> dict:
     except ImportError as exc:
         raise RuntimeError("mangum is required for Lambda deployment") from exc
 
-    asgi_app = mcp.http_app()
+    asgi_app = mcp.http_app(stateless_http=True)
     handler = Mangum(asgi_app, lifespan="off")
     return handler(event, context)  # type: ignore[arg-type]
 
