@@ -25,18 +25,25 @@ class TestMCPE2E:
         """Full round-trip against the deployed Lambda."""
         import httpx
 
-        async with httpx.AsyncClient(base_url=MCP_URL) as http:
+        async with httpx.AsyncClient(base_url=MCP_URL, timeout=60.0) as http:
+            headers = {
+                "Authorization": f"Bearer {live_token}",
+                "Content-Type": "application/json",
+            }
+
             # POST remember
             resp = await http.post(
                 "/mcp",
                 json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
                     "method": "tools/call",
                     "params": {
                         "name": "remember",
                         "arguments": {"key": "e2e-test", "value": "e2e-value", "tags": ["e2e"]},
                     },
                 },
-                headers={"Authorization": f"Bearer {live_token}"},
+                headers=headers,
             )
             assert resp.status_code == 200
 
@@ -44,10 +51,12 @@ class TestMCPE2E:
             resp2 = await http.post(
                 "/mcp",
                 json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
                     "method": "tools/call",
                     "params": {"name": "recall", "arguments": {"key": "e2e-test"}},
                 },
-                headers={"Authorization": f"Bearer {live_token}"},
+                headers=headers,
             )
             assert resp2.status_code == 200
             content = resp2.json()
