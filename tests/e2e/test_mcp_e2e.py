@@ -29,6 +29,7 @@ class TestMCPE2E:
             headers = {
                 "Authorization": f"Bearer {live_token}",
                 "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
             }
 
             # POST remember
