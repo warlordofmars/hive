@@ -57,4 +57,4 @@ def lambda_handler(event: dict, context: object) -> dict:
         raise RuntimeError("mangum is required for Lambda deployment") from exc
 
     handler = Mangum(app, lifespan="off")
-    return handler(event, context)
+    return handler(event, context)  # type: ignore[arg-type]

@@ -230,6 +230,7 @@ async def token(
             raise HTTPException(status_code=400, detail="refresh_token not issued to this client")
 
         # Rotate: revoke old refresh token, issue new pair
+        assert jti is not None
         storage.revoke_token(jti)
         access, refresh = storage.create_token_pair(client_id, stored.scope)
 

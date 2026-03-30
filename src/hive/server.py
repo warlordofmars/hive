@@ -45,9 +45,8 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
 
     # MCP clients pass HTTP headers in the request context metadata
     if ctx.request_context and ctx.request_context.meta:
-        auth_header = ctx.request_context.meta.get("authorization") or ctx.request_context.meta.get(
-            "Authorization"
-        )
+        meta: dict = ctx.request_context.meta  # type: ignore[assignment]
+        auth_header = meta.get("authorization") or meta.get("Authorization")
 
     try:
         token = validate_bearer_token(auth_header, storage)
@@ -217,7 +216,7 @@ def lambda_handler(event: dict, context: object) -> dict:
 
     asgi_app = mcp.http_app()
     handler = Mangum(asgi_app, lifespan="off")
-    return handler(event, context)
+    return handler(event, context)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
