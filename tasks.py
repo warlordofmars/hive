@@ -413,6 +413,28 @@ def version(ctx):
 @task
 def back_merge(ctx):
     """Open a PR to merge main back into development after a prod release (auto-merges)."""
+    # Check if main has commits not in development — nothing to do if branches are identical.
+    ahead = ctx.run(
+        "git fetch origin main development --quiet"
+        " && git rev-list --count origin/development..origin/main",
+        hide=True,
+        warn=True,
+    ).stdout.strip()
+    if ahead == "0":
+        print("main and development are already in sync — nothing to back-merge")
+        return
+
+    # Check if a PR already exists.
+    existing = ctx.run(
+        "gh pr list --base development --head main --state open --json number --jq '.[0].number'",
+        hide=True,
+        warn=True,
+    ).stdout.strip()
+    if existing:
+        print(f"Back-merge PR #{existing} already open — enabling auto-merge")
+        ctx.run(f"gh pr merge '{existing}' --auto --merge", warn=True)
+        return
+
     result = ctx.run(
         "gh pr create"
         " --base development"
@@ -420,14 +442,13 @@ def back_merge(ctx):
         " --title 'chore: merge main back to development'"
         " --body 'Back-merge after prod release. Merge using **merge commit** (not squash).'",
         warn=True,
-        hide="both",
     )
     if result.ok:
         pr_url = result.stdout.strip().splitlines()[-1]
         print(f"PR created: {pr_url}")
         ctx.run(f"gh pr merge '{pr_url}' --auto --merge", warn=True)
     else:
-        print("PR already exists or nothing to merge — skipping")
+        print(f"gh pr create failed: {result.stderr.strip()}")
 
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
