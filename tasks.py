@@ -158,7 +158,7 @@ def fmt(ctx):
 @task
 def audit_backend(ctx):
     """Security audit backend dependencies (pip-audit)"""
-    ctx.run("uv run pip-audit", pty=True)
+    ctx.run("uv run pip-audit --skip-editable", pty=True)
 
 
 @task

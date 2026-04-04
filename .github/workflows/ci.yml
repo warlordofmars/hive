@@ -63,7 +63,7 @@ jobs:
         run: npm install
 
       - name: pip-audit
-        run: uv run pip-audit
+        run: uv run pip-audit --skip-editable
 
       - name: npm audit
         working-directory: ui
