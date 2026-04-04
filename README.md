@@ -153,3 +153,17 @@ See [tests/README.md](tests/README.md) for full details.
 ## Deployment
 
 Hive deploys automatically to AWS on every push to `main` via GitHub Actions. See [infra/README.md](infra/README.md) for manual deployment and initial setup instructions.
+
+## Cost monitoring
+
+All AWS resources are tagged with `project=hive` and `env=<environment>` for cost allocation.
+
+View costs in [AWS Cost Explorer](https://us-east-1.console.aws.amazon.com/cost-management/home#/cost-explorer) — filter by tag:
+
+| Environment | Tag filter |
+|---|---|
+| Production | `env = prod` |
+| Development | `env = dev` |
+| All Hive | `project = hive` |
+
+> **Note:** Tags must be activated in [Billing → Cost allocation tags](https://us-east-1.console.aws.amazon.com/billing/home#/tags) before they appear as filters in Cost Explorer. New tags can take up to 24 hours to propagate into billing data.

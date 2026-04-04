@@ -46,6 +46,10 @@ class HiveStack(cdk.Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        # Apply cost-allocation tags to every resource in the stack.
+        cdk.Tags.of(self).add("project", "hive")
+        cdk.Tags.of(self).add("env", env_name)
+
         is_prod = env_name == "prod"
 
         # Non-prod stacks destroy resources on `cdk destroy` for easy teardown.
