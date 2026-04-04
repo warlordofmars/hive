@@ -159,7 +159,7 @@ async def token(
     client_secret: str | None = Form(None),
     code_verifier: str | None = Form(None),
     refresh_token: str | None = Form(None),
-    request: Request = None,  # type: ignore[assignment]
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects this; None satisfies Python's default-after-default rule
     storage: HiveStorage = Depends(get_storage),
 ) -> JSONResponse:
     # --- Client authentication ---

@@ -19,7 +19,7 @@ import importlib.metadata
 import os
 import time
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
@@ -57,7 +57,7 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _auth(ctx: Context) -> tuple[HiveStorage, str]:
+def _auth(ctx: Context | None) -> tuple[HiveStorage, str]:
     """Validate Bearer token; return (storage, client_id).
 
     Reads the Authorization header from the HTTP request when running under
@@ -84,7 +84,7 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
 
     # Fallback: direct invocation or integration tests pass token via meta
     if not auth_header and ctx and ctx.request_context and ctx.request_context.meta:
-        meta: dict = ctx.request_context.meta  # type: ignore[assignment]
+        meta: dict[str, Any] = ctx.request_context.meta  # type: ignore[assignment]
         auth_header = meta.get("Authorization") or meta.get("authorization")
 
     try:
@@ -105,8 +105,8 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
 async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
     value: Annotated[str, "Content of the memory"],
-    tags: Annotated[list[str], "Optional tags for categorisation"] = None,  # type: ignore[assignment]
-    ctx: Context = None,  # type: ignore[assignment]
+    tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ctx: Context | None = None,
 ) -> str:
     """Store or update a memory with optional tags."""
     t0 = time.monotonic()
@@ -169,7 +169,7 @@ async def remember(
 @mcp.tool()
 async def recall(
     key: Annotated[str, "Key of the memory to retrieve"],
-    ctx: Context = None,  # type: ignore[assignment]
+    ctx: Context | None = None,
 ) -> str:
     """Retrieve a memory by its key."""
     t0 = time.monotonic()
@@ -210,7 +210,7 @@ async def recall(
 @mcp.tool()
 async def forget(
     key: Annotated[str, "Key of the memory to delete"],
-    ctx: Context = None,  # type: ignore[assignment]
+    ctx: Context | None = None,
 ) -> str:
     """Delete a memory by its key."""
     t0 = time.monotonic()
@@ -254,8 +254,8 @@ async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
     cursor: Annotated[str | None, "Pagination cursor from a previous call"] = None,
-    ctx: Context = None,  # type: ignore[assignment]
-) -> dict:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
     storage, client_id = _auth(ctx)
@@ -279,7 +279,7 @@ async def list_memories(
             "status": "success",
         },
     )
-    result: dict = {
+    result: dict[str, Any] = {
         "items": [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories],
         "count": len(memories),
         "has_more": next_cursor is not None,
@@ -292,7 +292,7 @@ async def list_memories(
 @mcp.tool()
 async def summarize_context(
     topic: Annotated[str, "Topic or tag to summarise memories about"],
-    ctx: Context = None,  # type: ignore[assignment]
+    ctx: Context | None = None,
 ) -> str:
     """
     Retrieve all memories related to a topic and return a synthesised summary.
@@ -356,7 +356,7 @@ async def summarize_context(
 asgi_app = mcp.http_app(stateless_http=True, json_response=True)
 
 
-def lambda_handler(event: dict, context: object) -> dict:  # pragma: no cover
+def lambda_handler(event: dict[str, Any], context: object) -> dict[str, Any]:  # pragma: no cover
     """AWS Lambda + Function URL handler (HTTP mode).
 
     Creates a fresh ASGI app per Lambda container initialisation.
@@ -371,7 +371,7 @@ def lambda_handler(event: dict, context: object) -> dict:  # pragma: no cover
 
     _app = mcp.http_app(stateless_http=True, json_response=True)
     handler = Mangum(_app, lifespan="on")
-    return handler(event, context)  # type: ignore[arg-type]
+    return handler(event, context)  # type: ignore[arg-type]  # mangum stubs incomplete
 
 
 if __name__ == "__main__":

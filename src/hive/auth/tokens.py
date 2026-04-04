@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import os
 import secrets
+from typing import Any
 
 from jose import JWTError, jwt
 
@@ -58,7 +59,7 @@ def issue_jwt(token: Token) -> str:
     return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
-def decode_jwt(token_str: str) -> dict:
+def decode_jwt(token_str: str) -> dict[str, Any]:
     """Decode and verify a JWT. Raises JWTError on failure."""
     return jwt.decode(token_str, _jwt_secret(), algorithms=[JWT_ALGORITHM], issuer=ISSUER)
 

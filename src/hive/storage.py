@@ -45,12 +45,12 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _encode_cursor(last_evaluated_key: dict) -> str:
+def _encode_cursor(last_evaluated_key: dict[str, Any]) -> str:
     """Encode a DynamoDB LastEvaluatedKey as an opaque base64 cursor."""
     return base64.urlsafe_b64encode(json.dumps(last_evaluated_key).encode()).decode()
 
 
-def _decode_cursor(cursor: str) -> dict:
+def _decode_cursor(cursor: str) -> dict[str, Any]:
     """Decode a base64 cursor back to a DynamoDB ExclusiveStartKey."""
     try:
         return json.loads(base64.urlsafe_b64decode(cursor.encode()))
@@ -375,7 +375,8 @@ class HiveStorage:
 
     def _get_memory_meta(self, memory_id: str) -> dict[str, Any] | None:
         resp = self.table.get_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
-        return resp.get("Item")  # type: ignore[return-value]
+        item: dict[str, Any] | None = resp.get("Item")  # type: ignore[assignment]
+        return item
 
     def _delete_tag_items(self, memory: Memory) -> None:
         with self.table.batch_writer() as batch:
