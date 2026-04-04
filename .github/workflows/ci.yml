@@ -83,7 +83,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run unit tests with coverage
-        run: uv run pytest tests/unit -v --cov=hive --cov-report=xml:coverage-unit.xml --cov-fail-under=100
+        run: uv run pytest tests/unit -v --cov=hive --cov-report=xml:coverage-unit.xml
 
       - name: Write coverage summary
         if: always()
@@ -115,26 +115,27 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run integration tests with coverage
+      - name: Run combined unit + integration tests with coverage
         env:
           DYNAMODB_ENDPOINT: http://localhost:8000
           AWS_ACCESS_KEY_ID: local
           AWS_SECRET_ACCESS_KEY: local
           AWS_DEFAULT_REGION: us-east-1
           HIVE_JWT_SECRET: test-secret
-        run: uv run pytest tests/integration -v --cov=hive --cov-report=xml:coverage-integration.xml
+          HIVE_TABLE_NAME: hive-integration
+        run: uv run pytest tests/unit tests/integration -v --cov=hive --cov-report=xml:coverage-combined.xml --cov-fail-under=100
 
       - name: Write coverage summary
         if: always()
         run: |
-          echo "## Integration Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "## Combined Test Coverage" >> $GITHUB_STEP_SUMMARY
           uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload integration coverage artifact
+      - name: Upload combined coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-integration
-          path: coverage-integration.xml
+          name: coverage-combined
+          path: coverage-combined.xml
 
   coverage:
     name: Coverage Report
@@ -151,10 +152,10 @@ jobs:
         with:
           name: coverage-unit
 
-      - name: Download integration coverage
+      - name: Download combined coverage
         uses: actions/download-artifact@v4
         with:
-          name: coverage-integration
+          name: coverage-combined
 
       - name: Post coverage comment on PR
         if: github.event_name == 'pull_request'
@@ -220,7 +221,7 @@ jobs:
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:
-          files: coverage-unit.xml,coverage-integration.xml
+          files: coverage-unit.xml,coverage-combined.xml,ui/coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
@@ -242,8 +243,8 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Run vitest
-        run: npm test -- --reporter=verbose
+      - name: Run vitest with coverage
+        run: npm run test:coverage -- --reporter=verbose
 
       - name: Build
         run: npm run build

@@ -20,7 +20,7 @@ export default function ClientManager() {
     setError("");
     try {
       const data = await api.listClients();
-      setClients(data);
+      setClients(data.items ?? []);
     } catch (e) {
       setError(e.message);
     } finally {
