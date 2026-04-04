@@ -113,7 +113,6 @@ async def authorize(
     response_type: str,
     client_id: str,
     redirect_uri: str,
-    request: Request = None,  # type: ignore[assignment]  # FastAPI injects this
     state: str = "",
     scope: str = "memories:read memories:write",
     code_challenge: str = "",
@@ -168,8 +167,7 @@ async def authorize(
         code_challenge_method=code_challenge_method,
         original_state=state,
     )
-    base = str(request.base_url).rstrip("/")
-    google_callback_uri = f"{base}/oauth/google/callback"
+    google_callback_uri = f"{ISSUER}/oauth/google/callback"
     return RedirectResponse(
         google_authorization_url(pending.state, google_callback_uri), status_code=302
     )
@@ -182,7 +180,6 @@ async def authorize(
 
 @router.get("/oauth/google/callback")
 async def google_callback(
-    request: Request = None,  # type: ignore[assignment]  # FastAPI injects this
     code: str = "",
     state: str = "",
     error: str = "",
@@ -206,8 +203,7 @@ async def google_callback(
     # Consume the pending auth (single use)
     storage.delete_pending_auth(state)
 
-    base = str(request.base_url).rstrip("/")
-    google_callback_uri = f"{base}/oauth/google/callback"
+    google_callback_uri = f"{ISSUER}/oauth/google/callback"
 
     try:
         id_token = await exchange_google_code(code, google_callback_uri)
