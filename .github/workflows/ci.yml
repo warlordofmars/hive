@@ -124,6 +124,12 @@ jobs:
           HIVE_JWT_SECRET: test-secret
         run: uv run pytest tests/integration -v --cov=hive --cov-report=xml:coverage-integration.xml
 
+      - name: Write coverage summary
+        if: always()
+        run: |
+          echo "## Integration Test Coverage" >> $GITHUB_STEP_SUMMARY
+          uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+
       - name: Upload integration coverage artifact
         uses: actions/upload-artifact@v4
         with:
