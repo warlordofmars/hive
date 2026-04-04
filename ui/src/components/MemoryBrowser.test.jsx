@@ -5,7 +5,7 @@ import MemoryBrowser from "./MemoryBrowser.jsx";
 
 vi.mock("../api.js", () => ({
   api: {
-    listMemories: vi.fn().mockResolvedValue([]),
+    listMemories: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
   },
 }));
 
