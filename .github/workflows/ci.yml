@@ -63,7 +63,7 @@ jobs:
         run: npm install
 
       - name: pip-audit
-        run: uv run pip-audit
+        run: uv run pip-audit --skip-editable
 
       - name: npm audit
         working-directory: ui
@@ -82,13 +82,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run unit tests
-        run: uv run pytest tests/unit -v --cov=hive --cov-report=xml
+      - name: Run unit tests with coverage
+        run: uv run pytest tests/unit -v --cov=hive --cov-report=xml:coverage-unit.xml
 
-      - uses: codecov/codecov-action@v4
+      - name: Write coverage summary
         if: always()
+        run: |
+          echo "## Unit Test Coverage" >> $GITHUB_STEP_SUMMARY
+          uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload unit coverage artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: coverage.xml
+          name: coverage-unit
+          path: coverage-unit.xml
 
   integration-tests:
     name: Integration Tests (DynamoDB Local)
@@ -108,14 +115,154 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run integration tests
+      - name: Run combined unit + integration tests with coverage
         env:
           DYNAMODB_ENDPOINT: http://localhost:8000
           AWS_ACCESS_KEY_ID: local
           AWS_SECRET_ACCESS_KEY: local
           AWS_DEFAULT_REGION: us-east-1
           HIVE_JWT_SECRET: test-secret
-        run: uv run pytest tests/integration -v
+          HIVE_TABLE_NAME: hive-integration
+        run: uv run pytest tests/unit tests/integration -v --cov=hive --cov-report=xml:coverage-combined.xml --cov-fail-under=100
+
+      - name: Write coverage summary
+        if: always()
+        run: |
+          echo "## Combined Test Coverage" >> $GITHUB_STEP_SUMMARY
+          uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload combined coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: coverage-combined.xml
+
+  coverage:
+    name: Coverage Report
+    needs: [unit-tests, integration-tests, frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download unit coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+
+      - name: Download combined coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-combined
+
+      - name: Download JS coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-js
+
+      - name: Post coverage comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Parse Python unit coverage XML
+            const xml = fs.readFileSync('coverage-unit.xml', 'utf8');
+            const lineRate = parseFloat(xml.match(/line-rate="([^"]+)"/)?.[1] ?? '0');
+            const pct = (lineRate * 100).toFixed(1);
+            const emoji = lineRate >= 0.9 ? '🟢' : lineRate >= 0.8 ? '🟡' : '🔴';
+
+            // Build Python module rows from XML
+            const rows = [];
+            const classMatches = [...xml.matchAll(/<class[^>]*filename="([^"]*)"[^>]*line-rate="([^"]*)"[^>]*>/g)];
+            for (const m of classMatches) {
+              const name = m[1].replace('src/', '');
+              const rate = (parseFloat(m[2]) * 100).toFixed(0);
+              const bar = rate >= 90 ? '🟢' : rate >= 80 ? '🟡' : '🔴';
+              rows.push(`| \`${name}\` | ${rate}% | ${bar} |`);
+            }
+
+            // Parse JS lcov coverage — sum lines found/hit across all files
+            let jsLines = 0, jsHit = 0;
+            const jsRows = [];
+            try {
+              const lcov = fs.readFileSync('lcov.info', 'utf8');
+              let curFile = null, curFound = 0, curHit = 0;
+              for (const line of lcov.split('\n')) {
+                if (line.startsWith('SF:')) {
+                  curFile = line.slice(3).replace(/^.*\/src\//, 'src/');
+                  curFound = 0; curHit = 0;
+                } else if (line.startsWith('LF:')) {
+                  curFound = parseInt(line.slice(3), 10);
+                  jsLines += curFound;
+                } else if (line.startsWith('LH:')) {
+                  curHit = parseInt(line.slice(3), 10);
+                  jsHit += curHit;
+                } else if (line === 'end_of_record' && curFile) {
+                  const r = curFound > 0 ? (curHit / curFound * 100).toFixed(0) : '100';
+                  const b = parseInt(r) >= 90 ? '🟢' : parseInt(r) >= 80 ? '🟡' : '🔴';
+                  jsRows.push(`| \`${curFile}\` | ${r}% | ${b} |`);
+                  curFile = null;
+                }
+              }
+            } catch (_) { /* lcov not available */ }
+
+            const jsPct = jsLines > 0 ? (jsHit / jsLines * 100).toFixed(1) : null;
+            const jsEmoji = jsPct !== null ? (parseFloat(jsPct) >= 90 ? '🟢' : '🟡') : '⚪';
+
+            const body = [
+              `<!-- coverage-report -->`,
+              `## Coverage Report`,
+              ``,
+              `### ${emoji} Python — ${pct}%`,
+              ``,
+              `| File | Cover | |`,
+              `|:---|---:|:---|`,
+              ...rows,
+              ``,
+              ...(jsPct !== null ? [
+                `### ${jsEmoji} JavaScript — ${jsPct}%`,
+                ``,
+                `| File | Cover | |`,
+                `|:---|---:|:---|`,
+                ...jsRows,
+                ``,
+              ] : []),
+              `> [full run](${context.payload.pull_request.html_url}/checks)`,
+            ].join('\n');
+
+            // Find existing comment and update, or create new
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes('<!-- coverage-report -->'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-unit.xml,coverage-combined.xml,lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
   frontend:
     name: Frontend Tests & Build
@@ -135,11 +282,55 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Run vitest
-        run: npm test -- --reporter=verbose
+      - name: Run vitest with coverage
+        run: npm run test:coverage -- --reporter=verbose
 
       - name: Build
         run: npm run build
+
+      - name: Write JS coverage summary
+        if: always()
+        run: |
+          echo "## Frontend Test Coverage" >> $GITHUB_STEP_SUMMARY
+          node - << 'EOF'
+          const fs = require('fs');
+          const lcov = fs.readFileSync('coverage/lcov.info', 'utf8');
+          let totalFound = 0, totalHit = 0;
+          const rows = [];
+          let curFile = null, curFound = 0, curHit = 0;
+          for (const line of lcov.split('\n')) {
+            if (line.startsWith('SF:')) {
+              curFile = line.slice(3).replace(/^.*\/src\//, 'src/');
+              curFound = 0; curHit = 0;
+            } else if (line.startsWith('LF:')) {
+              curFound = parseInt(line.slice(3), 10);
+              totalFound += curFound;
+            } else if (line.startsWith('LH:')) {
+              curHit = parseInt(line.slice(3), 10);
+              totalHit += curHit;
+            } else if (line === 'end_of_record' && curFile) {
+              const pct = curFound > 0 ? (curHit / curFound * 100).toFixed(0) : 100;
+              const bar = pct >= 90 ? '🟢' : pct >= 80 ? '🟡' : '🔴';
+              rows.push(`| \`${curFile}\` | ${pct}% | ${bar} |`);
+              curFile = null;
+            }
+          }
+          const total = totalFound > 0 ? (totalHit / totalFound * 100).toFixed(1) : 100;
+          const summary = [
+            `| File | Lines | |`,
+            `|:---|---:|:---|`,
+            ...rows,
+            ``,
+            `**Total: ${total}%**`,
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+          EOF
+
+      - name: Upload JS coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-js
+          path: ui/coverage/lcov.info
 
   infra-synth:
     name: Infra Synth
@@ -173,7 +364,7 @@ jobs:
 
   deploy-dev:
     name: Deploy (dev)
-    needs: [lint-typecheck, audit, unit-tests, integration-tests, frontend, infra-synth]
+    needs: [lint-typecheck, audit, unit-tests, integration-tests, coverage, frontend, infra-synth]
     if: github.event_name == 'push' && github.ref == 'refs/heads/development'
     runs-on: ubuntu-latest
     environment: development
@@ -258,7 +449,7 @@ jobs:
 
   release:
     name: Release
-    needs: [lint-typecheck, audit, unit-tests, integration-tests, frontend, infra-synth]
+    needs: [lint-typecheck, audit, unit-tests, integration-tests, coverage, frontend, infra-synth]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

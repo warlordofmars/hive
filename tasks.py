@@ -14,6 +14,10 @@ Usage:
     uv run inv deploy                       # deploy to AWS via CDK
     uv run inv synth                        # synthesize CDK template (no Docker bundling)
     uv run inv outputs                      # print CloudFormation stack outputs
+    uv run inv seed                         # seed local DynamoDB with demo data
+    uv run inv seed --env jc               # seed deployed jc env via management API
+    uv run inv install-hooks               # install pre-push hook (run once after clone)
+    uv run inv pre-push                    # full local CI gate (lint+typecheck+unit+frontend)
 """
 
 import os
@@ -35,6 +39,7 @@ REGION = "us-east-1"
 DYNAMO_CONTAINER = "hive-dynamo-local"
 DYNAMO_PORT = 8000
 API_PORT = 8001
+MCP_PORT = 8002
 UI_PORT = 5173
 
 
@@ -56,9 +61,7 @@ def _infer_next_version(ctx):
     major, minor, patch = (int(x) for x in version.split("."))
 
     try:
-        log = ctx.run(
-            f"git log {last_tag}..HEAD --pretty=format:%s", hide=True
-        ).stdout.strip()
+        log = ctx.run(f"git log {last_tag}..HEAD --pretty=format:%s", hide=True).stdout.strip()
     except Exception:
         log = ""
 
@@ -76,7 +79,6 @@ def _infer_next_version(ctx):
         return f"{major}.{minor + 1}.0"
     else:
         return f"{major}.{minor}.{patch + 1}"
-
 
 
 def _aws_account(ctx) -> str:
@@ -156,7 +158,7 @@ def fmt(ctx):
 @task
 def audit_backend(ctx):
     """Security audit backend dependencies (pip-audit)"""
-    ctx.run("uv run pip-audit", pty=True)
+    ctx.run("uv run pip-audit --skip-editable", pty=True)
 
 
 @task
@@ -207,6 +209,11 @@ def test(ctx):
     """Run all tests (unit + integration + frontend)"""
 
 
+@task(lint_backend, typecheck, test_unit, test_frontend)
+def pre_push(ctx):
+    """Local CI gate: lint + typecheck + unit tests + frontend tests (run before every push)"""
+
+
 @task
 def e2e(ctx, env="prod"):
     """Run e2e tests against the deployed stack. Fetches URLs from CloudFormation."""
@@ -249,10 +256,11 @@ def dynamo_stop(ctx):
 
 @task
 def dev(ctx):
-    """Start DynamoDB Local + management API + UI dev server (Ctrl-C to stop all)"""
+    """Start DynamoDB Local + MCP server + management API + UI dev server (Ctrl-C to stop all)"""
+    jwt_secret = os.environ.get("HIVE_JWT_SECRET", "dev-secret")
     dev_env = {
         **os.environ,
-        "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
+        "HIVE_JWT_SECRET": jwt_secret,
         "HIVE_TABLE_NAME": "hive",
         "DYNAMODB_ENDPOINT": f"http://localhost:{DYNAMO_PORT}",
         "AWS_ACCESS_KEY_ID": "local",
@@ -283,6 +291,20 @@ def dev(ctx):
         stderr=subprocess.DEVNULL,
     )
 
+    # Start MCP server (HTTP transport, matches production)
+    mcp_proc = subprocess.Popen(
+        [
+            "uv",
+            "run",
+            "uvicorn",
+            "hive.server:asgi_app",
+            f"--port={MCP_PORT}",
+            "--reload",
+        ],
+        cwd=ROOT,
+        env=dev_env,
+    )
+
     # Start management API
     api_proc = subprocess.Popen(
         ["uv", "run", "uvicorn", "hive.api.main:app", f"--port={API_PORT}", "--reload"],
@@ -297,7 +319,7 @@ def dev(ctx):
         env=ui_env,
     )
 
-    procs = [dynamo_proc, api_proc, ui_proc]
+    procs = [dynamo_proc, mcp_proc, api_proc, ui_proc]
 
     def _shutdown(sig, frame):
         print("\nShutting down...")
@@ -311,12 +333,62 @@ def dev(ctx):
 
     print("\nServices starting:")
     print(f"  DynamoDB Local → http://localhost:{DYNAMO_PORT}")
+    print(f"  MCP server      → http://localhost:{MCP_PORT}/mcp")
     print(f"  Management API  → http://localhost:{API_PORT}")
     print(f"  UI dev server   → http://localhost:{UI_PORT}")
-    print("\nPress Ctrl-C to stop all services.\n")
+    print()
+    print("Claude Desktop stdio config (add to claude_desktop_config.json):")
+    print("  {")
+    print('    "mcpServers": {')
+    print('      "hive-local": {')
+    print('        "command": "uv",')
+    print('        "args": ["run", "python", "-m", "hive.server"],')
+    print('        "env": {')
+    print(f'          "HIVE_JWT_SECRET": "{jwt_secret}",')
+    print('          "HIVE_TABLE_NAME": "hive",')
+    print(f'          "DYNAMODB_ENDPOINT": "http://localhost:{DYNAMO_PORT}",')
+    print('          "AWS_ACCESS_KEY_ID": "local",')
+    print('          "AWS_SECRET_ACCESS_KEY": "local",')
+    print('          "AWS_DEFAULT_REGION": "us-east-1"')
+    print("        }")
+    print("      }")
+    print("    }")
+    print("  }")
+    print("\nRun 'uv run inv seed' in a new terminal to populate with demo data.")
+    print("Press Ctrl-C to stop all services.\n")
 
     for p in procs:
         p.wait()
+
+
+@task
+def seed(ctx, env=None, token=None, reset=False):
+    """Seed Hive with demo data.
+
+    Local (default):   inv seed [--reset]
+    Deployed env:      inv seed --env jc [--reset] [--token <bearer>]
+                       (token can also be set via HIVE_SEED_TOKEN env var)
+    """
+    seed_env = {
+        **os.environ,
+        "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
+        "HIVE_TABLE_NAME": os.environ.get("HIVE_TABLE_NAME", "hive"),
+        "DYNAMODB_ENDPOINT": os.environ.get("DYNAMODB_ENDPOINT", f"http://localhost:{DYNAMO_PORT}"),
+        "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "local"),
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "local"),
+        "AWS_DEFAULT_REGION": "us-east-1",
+    }
+    if token:
+        seed_env["HIVE_SEED_TOKEN"] = token
+
+    args = []
+    if env:
+        args += ["--env", env]
+    if reset:
+        args.append("--reset")
+
+    cmd = "uv run python scripts/seed_data.py " + " ".join(args)
+    ctx.run(cmd, env=seed_env, pty=True)
 
 
 # ── CDK ───────────────────────────────────────────────────────────────────────
@@ -363,8 +435,7 @@ def deploy(ctx, env="prod"):
 
     with ctx.cd(INFRA):
         ctx.run(
-            f"uv run cdk deploy {stack} --require-approval never"
-            f" -c account={account} -c env={env}",
+            f"uv run cdk deploy {stack} --require-approval never -c account={account} -c env={env}",
             env={"APP_VERSION": app_version},
             pty=True,
         )
@@ -458,6 +529,23 @@ def back_merge(ctx):
         ctx.run(f"gh pr merge '{pr_url}' --auto --merge", warn=True)
     else:
         print(f"gh pr create failed: {result.stderr.strip()}")
+
+
+# ── Hooks ─────────────────────────────────────────────────────────────────────
+
+
+@task
+def install_hooks(ctx):
+    """Install git hooks from hooks/ into .git/hooks/ (run once after cloning)"""
+    hooks_src = ROOT / "hooks"
+    hooks_dst = ROOT / ".git" / "hooks"
+    for hook in hooks_src.iterdir():
+        dst = hooks_dst / hook.name
+        dst.unlink(missing_ok=True)
+        dst.symlink_to(hook.resolve())
+        dst.chmod(0o755)
+        print(f"  Installed {hook.name} → .git/hooks/{hook.name}")
+    print("Git hooks installed.")
 
 
 # ── Clean ─────────────────────────────────────────────────────────────────────

@@ -1,5 +1,34 @@
 # Hive
 
+<!-- CI/CD & quality -->
+[![CI (main)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml?query=branch%3Amain)
+[![CI (dev)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml/badge.svg?branch=development)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml?query=branch%3Adevelopment)
+[![codecov](https://codecov.io/gh/warlordofmars/hive/branch/main/graph/badge.svg)](https://codecov.io/gh/warlordofmars/hive)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![mypy](https://img.shields.io/badge/type--checked-mypy-blue)](https://mypy-lang.org/)
+
+<!-- Project & versioning -->
+[![GitHub release](https://img.shields.io/github/v/release/warlordofmars/hive)](https://github.com/warlordofmars/hive/releases)
+[![GitHub issues](https://img.shields.io/github/issues/warlordofmars/hive)](https://github.com/warlordofmars/hive/issues)
+[![GitHub stars](https://img.shields.io/github/stars/warlordofmars/hive)](https://github.com/warlordofmars/hive/stargazers)
+
+<!-- Backend stack -->
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![FastMCP](https://img.shields.io/badge/FastMCP-3.x-7B2FBE?logo=python&logoColor=white)](https://github.com/jlowin/fastmcp)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.135%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![AWS Lambda](https://img.shields.io/badge/AWS_Lambda-FF9900?logo=awslambda&logoColor=white)](https://aws.amazon.com/lambda/)
+[![DynamoDB](https://img.shields.io/badge/DynamoDB-4053D6?logo=amazondynamodb&logoColor=white)](https://aws.amazon.com/dynamodb/)
+[![AWS CDK](https://img.shields.io/badge/CDK-Python-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/cdk/)
+
+<!-- Frontend stack -->
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://reactjs.org/)
+[![Vite](https://img.shields.io/badge/Vite-5.x-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Node](https://img.shields.io/badge/Node-20-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+
+<!-- MCP -->
+[![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet)](https://modelcontextprotocol.io/)
+
 Shared persistent memory for Claude agents and teams. Hive is a self-hosted MCP server that lets any number of Claude agents store, retrieve, and share memories across conversations — backed by DynamoDB and secured with OAuth 2.1.
 
 ## What it does

@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from hive.auth.dcr import register_client
 from hive.auth.tokens import decode_jwt, issue_jwt, validate_bearer_token
@@ -14,6 +19,13 @@ from hive.models import (
     ClientRegistrationRequest,
     Token,
 )
+
+os.environ.setdefault("HIVE_TABLE_NAME", "hive-unit-auth")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+os.environ.setdefault("HIVE_JWT_SECRET", "unit-test-secret")
+os.environ.pop("DYNAMODB_ENDPOINT", None)
 
 # ---------------------------------------------------------------------------
 # DCR tests
@@ -154,3 +166,735 @@ class TestValidateBearerToken:
         jwt_str = issue_jwt(t)
         with pytest.raises(ValueError, match="not found"):
             validate_bearer_token(f"Bearer {jwt_str}", storage)
+
+
+# ---------------------------------------------------------------------------
+# OAuth 2.1 endpoint tests (FastAPI routes in auth/oauth.py)
+# ---------------------------------------------------------------------------
+
+
+def _create_table(table_name: str = "hive-unit-auth") -> None:
+    ddb = boto3.client("dynamodb", region_name="us-east-1")
+    ddb.create_table(
+        TableName=table_name,
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+            {"AttributeName": "GSI1PK", "AttributeType": "S"},
+            {"AttributeName": "GSI1SK", "AttributeType": "S"},
+            {"AttributeName": "GSI2PK", "AttributeType": "S"},
+            {"AttributeName": "GSI2SK", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "KeyIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI1PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "TagIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI2PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def _pkce_pair() -> tuple[str, str]:
+    """Return (verifier, S256-challenge) pair."""
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+@pytest.fixture()
+def oauth_client():
+    """moto-backed app with a registered OAuth client that has a redirect_uri."""
+    with mock_aws():
+        _create_table()
+        from fastapi.testclient import TestClient
+
+        from hive.api.main import app
+        from hive.auth.oauth import get_storage
+        from hive.models import OAuthClient
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-auth", region="us-east-1")
+        client = OAuthClient(
+            client_name="Test OAuth App",
+            redirect_uris=["https://app.example.com/cb"],
+        )
+        storage.put_client(client)
+
+        app.dependency_overrides[get_storage] = lambda: storage
+        tc = TestClient(app, raise_server_exceptions=False)
+        yield tc, storage, client
+        app.dependency_overrides.clear()
+
+
+class TestOAuthDiscovery:
+    def test_discovery_document(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.get("/.well-known/oauth-authorization-server")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "authorization_endpoint" in data
+        assert "token_endpoint" in data
+        assert "code_challenge_methods_supported" in data
+        assert "S256" in data["code_challenge_methods_supported"]
+
+
+class TestOAuthRegister:
+    def test_register_public_client(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.post(
+            "/oauth/register",
+            json={
+                "client_name": "My Agent",
+                "redirect_uris": ["http://localhost/cb"],
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["client_id"]
+        assert data["client_secret"] is None
+
+    def test_register_invalid_grant_type_returns_400(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.post(
+            "/oauth/register",
+            json={"client_name": "Bad", "grant_types": ["password"]},
+        )
+        assert resp.status_code == 400
+
+
+class TestOAuthAuthorize:
+    def test_valid_authorize_redirects(self, oauth_client):
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "xyz",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        assert "code=" in location
+        assert "state=xyz" in location
+
+    def test_unknown_client_returns_400(self, oauth_client):
+        tc, *_ = oauth_client
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "no-such-client",
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_unregistered_redirect_uri_returns_400(self, oauth_client):
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://evil.com/steal",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_missing_pkce_returns_400(self, oauth_client):
+        tc, storage, client = oauth_client
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": "",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_unsupported_response_type_returns_400(self, oauth_client):
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "token",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+        )
+        assert resp.status_code == 400
+
+
+class TestOAuthToken:
+    def _get_auth_code(self, tc, storage, client) -> str:
+        """Drive authorize endpoint and return the code."""
+        verifier, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+        location = resp.headers["location"]
+        code = location.split("code=")[1].split("&")[0]
+        return code, verifier
+
+    def test_authorization_code_grant(self, oauth_client):
+        tc, storage, client = oauth_client
+        code, verifier = self._get_auth_code(tc, storage, client)
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["access_token"]
+        assert data["refresh_token"]
+        assert data["token_type"] == "Bearer"
+
+    def test_invalid_pkce_verifier_rejected(self, oauth_client):
+        tc, storage, client = oauth_client
+        code, _ = self._get_auth_code(tc, storage, client)
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": client.client_id,
+                "code_verifier": "wrong-verifier",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_refresh_token_grant(self, oauth_client):
+        tc, storage, client = oauth_client
+        # First do a full auth code flow to get a refresh token
+        code, verifier = self._get_auth_code(tc, storage, client)
+        token_resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        refresh_token = token_resp.json()["refresh_token"]
+
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client.client_id,
+                "refresh_token": refresh_token,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["access_token"]
+
+    def test_missing_client_id_returns_400(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.post(
+            "/oauth/token",
+            data={"grant_type": "authorization_code"},
+        )
+        assert resp.status_code == 400
+
+    def test_unsupported_grant_type_returns_400(self, oauth_client):
+        tc, storage, client = oauth_client
+        resp = tc.post(
+            "/oauth/token",
+            data={"grant_type": "password", "client_id": client.client_id},
+        )
+        assert resp.status_code == 400
+
+    def test_already_used_code_rejected(self, oauth_client):
+        tc, storage, client = oauth_client
+        code, verifier = self._get_auth_code(tc, storage, client)
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://app.example.com/cb",
+            "client_id": client.client_id,
+            "code_verifier": verifier,
+        }
+        tc.post("/oauth/token", data=data)  # first use — succeeds
+        resp = tc.post("/oauth/token", data=data)  # second use — rejected
+        assert resp.status_code == 400
+
+
+class TestOAuthAuthorizeEdgeCases:
+    def test_wrong_challenge_method_returns_400(self, oauth_client):
+        """Covers oauth.py:126 — only S256 is supported."""
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "plain",
+            },
+        )
+        assert resp.status_code == 400
+
+
+class TestOAuthTokenEdgeCases:
+    def _get_code(self, tc, client) -> tuple[str, str]:
+        verifier, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+        code = resp.headers["location"].split("code=")[1].split("&")[0]
+        return code, verifier
+
+    def test_basic_auth_header_used(self, oauth_client):
+        """Covers oauth.py:169-173 — Basic auth parsed from header."""
+        import base64
+
+        tc, storage, client = oauth_client
+        code, verifier = self._get_code(tc, client)
+        credentials = base64.b64encode(f"{client.client_id}:".encode()).decode()
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_verifier": verifier,
+            },
+            headers={"Authorization": f"Basic {credentials}"},
+        )
+        assert resp.status_code == 200
+
+    def test_invalid_basic_auth_header_returns_401(self, oauth_client):
+        """Covers oauth.py:174-175 — malformed Basic auth header."""
+        tc, *_ = oauth_client
+        resp = tc.post(
+            "/oauth/token",
+            data={"grant_type": "authorization_code"},
+            headers={"Authorization": "Basic !!!not-valid-base64!!!"},
+        )
+        assert resp.status_code == 401
+
+    def test_unknown_client_returns_401(self, oauth_client):
+        """Covers oauth.py:182 — client_id not in storage."""
+        tc, *_ = oauth_client
+        resp = tc.post(
+            "/oauth/token",
+            data={"grant_type": "authorization_code", "client_id": "no-such-client"},
+        )
+        assert resp.status_code == 401
+
+    def test_missing_code_returns_400(self, oauth_client):
+        """Covers oauth.py:193 — code/verifier/redirect_uri required."""
+        tc, storage, client = oauth_client
+        resp = tc.post(
+            "/oauth/token",
+            data={"grant_type": "authorization_code", "client_id": client.client_id},
+        )
+        assert resp.status_code == 400
+
+    def test_redirect_uri_mismatch_returns_400(self, oauth_client):
+        """Covers oauth.py:203 — redirect_uri in token request != authorized."""
+        tc, storage, client = oauth_client
+        code, verifier = self._get_code(tc, client)
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://evil.com/steal",
+                "client_id": client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_expired_auth_code_returns_400(self, oauth_client):
+        """Covers oauth.py:205 — expired authorization code."""
+        from datetime import timedelta, timezone
+        from unittest.mock import patch
+
+        tc, storage, client = oauth_client
+        code, verifier = self._get_code(tc, client)
+
+        # Patch datetime.now to return a time far in the future
+        future = datetime.now(timezone.utc) + timedelta(hours=2)
+        with patch("hive.auth.oauth.datetime") as mock_dt:
+            mock_dt.now.return_value = future
+            resp = tc.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "client_id": client.client_id,
+                    "code_verifier": verifier,
+                },
+            )
+        assert resp.status_code == 400
+
+    def test_refresh_token_missing_returns_400(self, oauth_client):
+        """Covers oauth.py:214 — refresh_token field required."""
+        tc, storage, client = oauth_client
+        resp = tc.post(
+            "/oauth/token",
+            data={"grant_type": "refresh_token", "client_id": client.client_id},
+        )
+        assert resp.status_code == 400
+
+    def test_invalid_refresh_token_jwt_returns_400(self, oauth_client):
+        """Covers oauth.py:223-224 — JWTError on bad refresh_token."""
+        tc, storage, client = oauth_client
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client.client_id,
+                "refresh_token": "not-a-jwt",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_refresh_token_not_in_storage_returns_400(self, oauth_client):
+        """Covers oauth.py:229 — refresh token valid JWT but not found/expired."""
+        from hive.auth.tokens import issue_jwt
+        from hive.models import Token
+
+        tc, storage, client = oauth_client
+        now = datetime.now(timezone.utc)
+        # Issue a refresh token but don't store it
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        jwt_str = issue_jwt(token)
+        # token is not in storage → should return 400
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client.client_id,
+                "refresh_token": jwt_str,
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_refresh_token_wrong_client_returns_400(self, oauth_client):
+        """Covers oauth.py:231 — refresh token issued to different client."""
+        tc, storage, client = oauth_client
+        # Register a second client
+        other = tc.post(
+            "/oauth/register",
+            json={"client_name": "Other App", "redirect_uris": ["https://other.com/cb"]},
+        ).json()
+
+        # Do full auth flow for original client to get a refresh token
+        verifier, challenge = _pkce_pair()
+        code_resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+        code = code_resp.headers["location"].split("code=")[1].split("&")[0]
+        token_resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        refresh_token = token_resp.json()["refresh_token"]
+
+        # Try to use that refresh token as the other client
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": other["client_id"],
+                "refresh_token": refresh_token,
+            },
+        )
+        assert resp.status_code == 400
+
+
+class TestOAuthRevoke:
+    def test_revoke_valid_token_returns_200(self, oauth_client):
+        tc, storage, client = oauth_client
+        # Issue a token directly
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt_str = issue_jwt(token)
+        resp = tc.post("/oauth/revoke", data={"token": jwt_str})
+        assert resp.status_code == 200
+
+    def test_revoke_invalid_token_still_returns_200(self, oauth_client):
+        """RFC 7009: revocation endpoint always returns 200."""
+        tc, *_ = oauth_client
+        resp = tc.post("/oauth/revoke", data={"token": "not-a-jwt"})
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# get_storage() dependency — covers oauth.py:43
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# DCR unsupported response_types — covers dcr.py:41
+# ---------------------------------------------------------------------------
+
+
+class TestDCRUnsupportedResponseType:
+    def test_register_unsupported_response_type_raises(self, oauth_client):
+        """Covers dcr.py:41 — unsupported response_types raises 400."""
+        tc, *_ = oauth_client
+        resp = tc.post(
+            "/oauth/register",
+            json={
+                "client_name": "Bad Response Type",
+                "response_types": ["token"],
+            },
+        )
+        assert resp.status_code == 400
+        assert "response_types" in resp.json()["detail"]
+
+
+class TestGetStorage:
+    def test_get_storage_returns_hive_storage(self):
+        """Covers oauth.py:43 — get_storage() factory returns a HiveStorage."""
+        from hive.auth.oauth import get_storage
+        from hive.storage import HiveStorage
+
+        result = get_storage()
+        assert isinstance(result, HiveStorage)
+
+
+# ---------------------------------------------------------------------------
+# Confidential client wrong secret — covers oauth.py:188
+# Auth code not issued to this client — covers oauth.py:201
+# ---------------------------------------------------------------------------
+
+
+class TestOAuthTokenConfidentialAndCodeClient:
+    def test_confidential_client_wrong_secret_returns_401(self, oauth_client):
+        """Covers oauth.py:188 — confidential client presents wrong secret."""
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        # Create a confidential client (has a client_secret)
+        conf_client = OAuthClient(
+            client_name="Confidential App",
+            client_secret="correct-secret",
+            token_endpoint_auth_method="client_secret_post",
+        )
+        storage.put_client(conf_client)
+
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": conf_client.client_id,
+                "client_secret": "wrong-secret",
+                "code": "dummy",
+                "redirect_uri": "https://app.example.com/cb",
+                "code_verifier": "dummy",
+            },
+        )
+        assert resp.status_code == 401
+
+    def test_auth_code_not_issued_to_client_returns_400(self, oauth_client):
+        """Covers oauth.py:201 — code was issued to a different client."""
+        tc, storage, client = oauth_client
+
+        # Register a second client
+        other = tc.post(
+            "/oauth/register",
+            json={"client_name": "Other App", "redirect_uris": ["https://other.com/cb"]},
+        ).json()
+
+        # Get an auth code for the original client
+        verifier, challenge = _pkce_pair()
+        code_resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+        code = code_resp.headers["location"].split("code=")[1].split("&")[0]
+
+        # Try to redeem the code as the other client
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": other["client_id"],
+                "code": code,
+                "redirect_uri": "https://other.com/cb",
+                "code_verifier": verifier,
+            },
+        )
+        assert resp.status_code == 400
+        assert "not issued to this client" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# SSM fallback path in _jwt_secret() — covers tokens.py:36-44
+# ---------------------------------------------------------------------------
+
+
+class TestJwtSecretSSMPath:
+    def test_ssm_path_returns_secret(self):
+        """Covers tokens.py:36-44 — SSM fetch when HIVE_JWT_SECRET is unset."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.auth import tokens
+
+        tokens._jwt_secret.cache_clear()
+        try:
+            mock_ssm = MagicMock()
+            mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "ssm-secret-value"}}
+
+            env = {k: v for k, v in os.environ.items() if k != "HIVE_JWT_SECRET"}
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("boto3.client", return_value=mock_ssm),
+            ):
+                secret = tokens._jwt_secret()
+
+            assert secret == "ssm-secret-value"
+        finally:
+            tokens._jwt_secret.cache_clear()
+            # Restore the env var so other tests keep working
+            os.environ.setdefault("HIVE_JWT_SECRET", "unit-test-secret")
+
+    def test_ssm_failure_returns_random_secret(self):
+        """Covers tokens.py:43-44 — random fallback when SSM raises."""
+        from unittest.mock import patch
+
+        from hive.auth import tokens
+
+        tokens._jwt_secret.cache_clear()
+        try:
+            env = {k: v for k, v in os.environ.items() if k != "HIVE_JWT_SECRET"}
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("boto3.client", side_effect=Exception("no SSM")),
+            ):
+                secret = tokens._jwt_secret()
+
+            assert len(secret) == 64  # hex(32 bytes)
+        finally:
+            tokens._jwt_secret.cache_clear()
+            os.environ.setdefault("HIVE_JWT_SECRET", "unit-test-secret")
+
+
+# ---------------------------------------------------------------------------
+# validate_bearer_token missing jti — covers tokens.py:88
+# ---------------------------------------------------------------------------
+
+
+class TestValidateBearerMissingJti:
+    def test_token_missing_jti_raises(self):
+        """Covers tokens.py:88 — JWT has no jti claim → ValueError."""
+        from unittest.mock import MagicMock
+
+        # Build a JWT without a jti claim, signed with the actual runtime secret
+        from jose import jwt as jose_jwt
+
+        from hive.auth.tokens import _jwt_secret, validate_bearer_token
+
+        payload = {
+            "iss": "https://hive.example.com",
+            "sub": "some-client",
+            "scope": "memories:read",
+            "iat": 0,
+            "exp": 9999999999,
+        }
+        token_str = jose_jwt.encode(payload, _jwt_secret(), algorithm="HS256")
+
+        storage = MagicMock()
+        with pytest.raises(ValueError, match="missing jti"):
+            validate_bearer_token(f"Bearer {token_str}", storage)

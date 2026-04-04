@@ -11,14 +11,19 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from hive.api.clients import router as clients_router
 from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
 from hive.auth.oauth import router as oauth_router
+from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
+
+configure_logging("api")
+logger = get_logger("hive.api")
 
 
 # APP_VERSION is injected at deploy time via Lambda env var.
@@ -51,6 +56,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    """Log every request with method, path, status code, and duration."""
+    request_id = (
+        request.headers.get("x-amzn-requestid")
+        or request.headers.get("x-request-id")
+        or new_request_id()
+    )
+    set_request_context(request_id)
+
+    t0 = time.monotonic()
+    response = await call_next(request)
+    duration_ms = int((time.monotonic() - t0) * 1000)
+
+    level = "warning" if response.status_code >= 400 else "info"
+    getattr(logger, level)(
+        "%s %s %d",
+        request.method,
+        request.url.path,
+        response.status_code,
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    return response
+
+
 # OAuth 2.1 endpoints (unauthenticated)
 app.include_router(oauth_router)
 
@@ -65,7 +101,7 @@ async def health() -> dict:
     return {"status": "ok", "version": APP_VERSION}
 
 
-def lambda_handler(event: dict, context: object) -> dict:
+def lambda_handler(event: dict, context: object) -> dict:  # pragma: no cover
     """AWS Lambda + Function URL handler for the management API."""
     try:
         from mangum import Mangum

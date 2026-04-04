@@ -12,24 +12,41 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from hive.api._auth import require_token
-from hive.models import ActivityEvent, EventType, Memory, MemoryCreate, MemoryResponse, MemoryUpdate
+from hive.models import (
+    ActivityEvent,
+    EventType,
+    Memory,
+    MemoryCreate,
+    MemoryResponse,
+    MemoryUpdate,
+    PagedResponse,
+)
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["memories"])
 
+_LIMIT_DEFAULT = 50
+_LIMIT_MAX = 200
 
-def _storage() -> HiveStorage:
-    return HiveStorage()
 
-
-@router.get("/memories", response_model=list[MemoryResponse])
+@router.get("/memories", response_model=PagedResponse)
 async def list_memories(
     tag: str | None = Query(None, description="Filter by tag"),
+    limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX, description="Max items to return"),
+    cursor: str | None = Query(None, description="Pagination cursor from previous response"),
     auth: tuple[HiveStorage, str] = Depends(require_token),
-) -> list[MemoryResponse]:
-    storage, client_id = auth
-    memories = storage.list_memories_by_tag(tag) if tag else storage.list_all_memories()
-    return [MemoryResponse.from_memory(m) for m in memories]
+) -> PagedResponse:
+    storage, _ = auth
+    if tag:
+        items, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
+    else:
+        items, next_cursor = storage.list_all_memories(limit=limit, cursor=cursor)
+    return PagedResponse(
+        items=[MemoryResponse.from_memory(m).model_dump() for m in items],
+        count=len(items),
+        has_more=next_cursor is not None,
+        next_cursor=next_cursor,
+    )
 
 
 @router.post("/memories", response_model=MemoryResponse)
@@ -46,7 +63,10 @@ async def create_memory(
         existing.value = body.value
         existing.tags = body.tags
         existing.updated_at = datetime.now(timezone.utc)
-        storage.put_memory(existing)
+        try:
+            storage.put_memory(existing)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         storage.log_event(
             ActivityEvent(
                 event_type=EventType.memory_updated,
@@ -58,7 +78,10 @@ async def create_memory(
         return MemoryResponse.from_memory(existing)
 
     memory = Memory(key=body.key, value=body.value, tags=body.tags, owner_client_id=client_id)
-    storage.put_memory(memory)
+    try:
+        storage.put_memory(memory)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_created,
@@ -99,7 +122,10 @@ async def update_memory(
         memory.tags = body.tags
     memory.updated_at = datetime.now(timezone.utc)
 
-    storage.put_memory(memory)
+    try:
+        storage.put_memory(memory)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_updated,

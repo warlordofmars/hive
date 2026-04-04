@@ -115,3 +115,14 @@ hive/
 - All config via environment variables
 - Never hardcode credentials or secrets
 - AWS credentials in GitHub Actions via OIDC (no long-lived access keys)
+
+## Pre-PR checklist (required before every push)
+
+Run `uv run inv pre-push` — this runs the same gate as CI:
+
+  1. `inv lint-backend`  — ruff lint + format check
+  2. `inv typecheck`     — mypy
+  3. `inv test-unit`     — pytest unit tests
+  4. `inv test-frontend` — vitest
+This is enforced automatically if you install the git hook: `uv run inv install-hooks`
+If infra files changed, also run: `uv run inv synth`

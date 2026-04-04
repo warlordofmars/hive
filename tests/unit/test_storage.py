@@ -107,11 +107,11 @@ class TestMemoryStorage:
         for m in [m1, m2, m3]:
             storage.put_memory(m)
 
-        tagged_y = storage.list_memories_by_tag("y")
+        tagged_y, _ = storage.list_memories_by_tag("y")
         keys = {m.key for m in tagged_y}
         assert keys == {"a", "b"}
 
-        tagged_z = storage.list_memories_by_tag("z")
+        tagged_z, _ = storage.list_memories_by_tag("z")
         keys_z = {m.key for m in tagged_z}
         assert keys_z == {"b", "c"}
 
@@ -122,9 +122,9 @@ class TestMemoryStorage:
         m.tags = ["new"]
         storage.put_memory(m)
 
-        old_tagged = storage.list_memories_by_tag("old")
+        old_tagged, _ = storage.list_memories_by_tag("old")
         assert old_tagged == []
-        new_tagged = storage.list_memories_by_tag("new")
+        new_tagged, _ = storage.list_memories_by_tag("new")
         assert len(new_tagged) == 1
 
     def test_upsert_by_key(self, storage):
@@ -142,6 +142,41 @@ class TestMemoryStorage:
         assert result.value == "v2"
         assert result.tags == ["b"]
         assert result.memory_id == m.memory_id  # same item, not a new one
+
+    def test_put_memory_too_large_raises_value_error(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        oversized = Memory(key="big", value="x" * 1000, tags=[], owner_client_id="c1")
+        error_response = {
+            "Error": {
+                "Code": "ValidationException",
+                "Message": "Item size has exceeded the maximum allowed size",
+            }
+        }
+        with patch.object(storage.table, "batch_writer") as mock_bw:
+            mock_bw.return_value.__enter__.return_value.put_item.side_effect = ClientError(
+                error_response, "PutItem"
+            )
+            with pytest.raises(ValueError, match="too large"):
+                storage.put_memory(oversized)
+
+    def test_put_memory_other_client_error_reraises(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        m = Memory(key="err", value="v", tags=[], owner_client_id="c1")
+        error_response = {
+            "Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}
+        }
+        with patch.object(storage.table, "batch_writer") as mock_bw:
+            mock_bw.return_value.__enter__.return_value.put_item.side_effect = ClientError(
+                error_response, "PutItem"
+            )
+            with pytest.raises(ClientError):
+                storage.put_memory(m)
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +201,18 @@ class TestClientStorage:
     def test_list(self, storage):
         for i in range(3):
             storage.put_client(OAuthClient(client_name=f"App {i}"))
-        clients = storage.list_clients()
+        clients, _ = storage.list_clients()
         assert len(clients) == 3
+
+    def test_list_clients_with_cursor(self, storage):
+        """Covers storage.py:220 — list_clients pagination cursor."""
+        for i in range(4):
+            storage.put_client(OAuthClient(client_name=f"PagApp {i}"))
+        page1, cursor1 = storage.list_clients(limit=2)
+        assert len(page1) == 2
+        assert cursor1 is not None
+        page2, cursor2 = storage.list_clients(limit=2, cursor=cursor1)
+        assert len(page2) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -227,3 +272,112 @@ class TestActivityLog:
         ).get("Item")
         assert item is not None
         assert item["event_id"] == event.event_id
+
+    def test_get_events_for_dates(self, storage):
+        """get_events_for_dates aggregates across multiple days."""
+        from datetime import timedelta
+
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        for days_ago in range(3):
+            ts = now - timedelta(days=days_ago)
+            storage.log_event(
+                ActivityEvent(
+                    event_type=EventType.memory_created,
+                    client_id="c1",
+                    metadata={},
+                    timestamp=ts,
+                )
+            )
+        dates = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)]
+        events = storage.get_events_for_dates(dates)
+        assert len(events) == 3
+        # Results are sorted newest-first
+        assert events[0].timestamp >= events[-1].timestamp
+
+
+# ---------------------------------------------------------------------------
+# list_all_memories and count helpers
+# ---------------------------------------------------------------------------
+
+
+class TestListAllAndCounts:
+    def test_list_all_memories(self, storage):
+        storage.put_memory(Memory(key="x", value="1", owner_client_id="c1"))
+        storage.put_memory(Memory(key="y", value="2", owner_client_id="c2"))
+        all_mems, _ = storage.list_all_memories()
+        keys = {m.key for m in all_mems}
+        assert {"x", "y"}.issubset(keys)
+
+    def test_list_all_memories_filtered_by_client(self, storage):
+        storage.put_memory(Memory(key="a", value="1", owner_client_id="client-a"))
+        storage.put_memory(Memory(key="b", value="2", owner_client_id="client-b"))
+        mems, _ = storage.list_all_memories(client_id="client-a")
+        assert all(m.owner_client_id == "client-a" for m in mems)
+        assert any(m.key == "a" for m in mems)
+
+    def test_count_memories(self, storage):
+        assert storage.count_memories() == 0
+        storage.put_memory(Memory(key="k1", value="v", owner_client_id="c1"))
+        storage.put_memory(Memory(key="k2", value="v", owner_client_id="c1"))
+        assert storage.count_memories() == 2
+
+    def test_count_clients(self, storage):
+        assert storage.count_clients() == 0
+        from hive.models import OAuthClient
+
+        storage.put_client(OAuthClient(client_name="A"))
+        storage.put_client(OAuthClient(client_name="B"))
+        assert storage.count_clients() == 2
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+
+class TestPagination:
+    def test_list_all_memories_cursor(self, storage):
+        for i in range(5):
+            storage.put_memory(Memory(key=f"pg-{i}", value="v", owner_client_id="c1"))
+
+        page1, cursor1 = storage.list_all_memories(limit=3)
+        assert len(page1) == 3
+        assert cursor1 is not None
+
+        page2, cursor2 = storage.list_all_memories(limit=3, cursor=cursor1)
+        assert len(page2) == 2
+        assert cursor2 is None
+
+        all_keys = {m.key for m in page1 + page2}
+        assert all_keys == {f"pg-{i}" for i in range(5)}
+
+    def test_list_memories_by_tag_cursor(self, storage):
+        for i in range(4):
+            storage.put_memory(
+                Memory(key=f"tpg-{i}", value="v", tags=["page"], owner_client_id="c1")
+            )
+
+        page1, cursor1 = storage.list_memories_by_tag("page", limit=2)
+        assert len(page1) == 2
+        assert cursor1 is not None
+
+        page2, cursor2 = storage.list_memories_by_tag("page", limit=2, cursor=cursor1)
+        assert len(page2) == 2
+        assert cursor2 is None
+
+    def test_invalid_cursor_raises(self, storage):
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_all_memories(cursor="not-valid-base64!!!")
+
+    def test_activity_limit_respected(self, storage):
+        from datetime import date
+
+        from hive.models import ActivityEvent, EventType
+
+        today = date.today().isoformat()
+        for _i in range(10):
+            storage.log_event(
+                ActivityEvent(event_type=EventType.memory_recalled, client_id="c1", metadata={})
+            )
+        events = storage.get_events_for_dates([today], limit=5)
+        assert len(events) <= 5
