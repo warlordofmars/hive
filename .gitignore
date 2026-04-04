@@ -12,3 +12,19 @@ wheels/
 # Node
 node_modules/
 ui/dist/
+
+# Test / coverage artifacts
+.coverage
+coverage.xml
+.pytest_cache/
+htmlcov/
+
+# CDK
+infra/cdk.out/
+
+# Misc
+.mypy_cache/
+.ruff_cache/
+
+# Claude Code
+.claude/
