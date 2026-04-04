@@ -20,6 +20,7 @@ from hive.storage import HiveStorage
 SUPPORTED_GRANT_TYPES = {"authorization_code", "refresh_token"}
 SUPPORTED_RESPONSE_TYPES = {"code"}
 SUPPORTED_AUTH_METHODS = {"none", "client_secret_post", "client_secret_basic"}
+ALLOWED_SCOPES = frozenset({"memories:read", "memories:write", "clients:read", "clients:write"})
 
 
 def register_client(
@@ -45,6 +46,12 @@ def register_client(
         raise ValueError(
             f"Unsupported token_endpoint_auth_method: {req.token_endpoint_auth_method}"
         )
+
+    # Validate requested scopes against the allowed set
+    requested_scopes = set(req.scope.split())
+    unknown_scopes = requested_scopes - ALLOWED_SCOPES
+    if unknown_scopes:
+        raise ValueError(f"Unknown scope(s): {unknown_scopes}")
 
     # Determine client type
     is_confidential = req.token_endpoint_auth_method in {
