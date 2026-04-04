@@ -127,6 +127,22 @@ class TestMemoryStorage:
         new_tagged = storage.list_memories_by_tag("new")
         assert len(new_tagged) == 1
 
+    def test_upsert_by_key(self, storage):
+        m = Memory(key="upsert-key", value="v1", tags=["a"], owner_client_id="c1")
+        storage.put_memory(m)
+
+        m2 = storage.get_memory_by_key("upsert-key")
+        assert m2 is not None
+        m2.value = "v2"
+        m2.tags = ["b"]
+        storage.put_memory(m2)
+
+        result = storage.get_memory_by_key("upsert-key")
+        assert result is not None
+        assert result.value == "v2"
+        assert result.tags == ["b"]
+        assert result.memory_id == m.memory_id  # same item, not a new one
+
 
 # ---------------------------------------------------------------------------
 # Client tests
