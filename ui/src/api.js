@@ -21,6 +21,12 @@ async function request(method, path, body) {
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
+  if (res.status === 401) {
+    localStorage.removeItem("hive_token");
+    window.location.replace("/");
+    return null;
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Request failed");

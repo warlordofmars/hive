@@ -1,5 +1,5 @@
 # Copyright (c) 2026 John Carter. All rights reserved.
-"""Shared FastAPI auth dependency for management API routes."""
+"""Shared FastAPI auth dependencies for management API routes."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from hive.auth.tokens import validate_bearer_token
+from hive.metrics import emit_metric
 from hive.storage import HiveStorage
 
 _bearer = HTTPBearer()
@@ -27,5 +28,35 @@ async def require_token(
     try:
         token = validate_bearer_token(f"Bearer {credentials.credentials}", storage)
     except ValueError as exc:
+        await emit_metric("TokenValidationFailures")
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return storage, token.client_id
+
+
+def require_scope(required_scope: str):
+    """Return a FastAPI dependency that validates the Bearer token and checks for a scope."""
+
+    async def _dep(
+        credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+        storage: HiveStorage = Depends(_get_storage),
+    ) -> tuple[HiveStorage, str]:
+        try:
+            token = validate_bearer_token(f"Bearer {credentials.credentials}", storage)
+        except ValueError as exc:
+            await emit_metric("TokenValidationFailures")
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if required_scope not in set(token.scope.split()):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient scope: '{required_scope}' required",
+            )
+        return storage, token.client_id
+
+    return _dep
+
+
+# Module-level instances so tests can override them via app.dependency_overrides
+require_memories_read = require_scope("memories:read")
+require_memories_write = require_scope("memories:write")
+require_clients_read = require_scope("clients:read")
+require_clients_write = require_scope("clients:write")

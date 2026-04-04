@@ -7,7 +7,7 @@ import base64
 import hashlib
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
@@ -284,22 +284,25 @@ class TestOAuthAuthorize:
     def test_valid_authorize_redirects(self, oauth_client):
         tc, storage, client = oauth_client
         _, challenge = _pkce_pair()
-        resp = tc.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client.client_id,
-                "redirect_uri": "https://app.example.com/cb",
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-                "state": "xyz",
-            },
-            follow_redirects=False,
-        )
+        with patch(
+            "hive.auth.google.google_authorization_url",
+            return_value="https://accounts.google.com/mock?state=test",
+        ):
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "state": "xyz",
+                },
+                follow_redirects=False,
+            )
         assert resp.status_code == 302
         location = resp.headers["location"]
-        assert "code=" in location
-        assert "state=xyz" in location
+        assert "accounts.google.com" in location
 
     def test_unknown_client_returns_400(self, oauth_client):
         tc, *_ = oauth_client
@@ -359,25 +362,153 @@ class TestOAuthAuthorize:
         )
         assert resp.status_code == 400
 
+    def test_bypass_mode_issues_code_directly(self, oauth_client):
+        """When HIVE_BYPASS_GOOGLE_AUTH is set, authorize redirects directly with code."""
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        with patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True):
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "state": "bypass-state",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        assert "code=" in location
+        assert "state=bypass-state" in location
+        assert "accounts.google.com" not in location
+
+
+# ---------------------------------------------------------------------------
+# Google OAuth callback endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestGoogleCallback:
+    def _setup_pending(self, storage, client):
+        """Create a PendingAuth record in storage and return it."""
+        return storage.create_pending_auth(
+            client_id=client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read",
+            code_challenge=_pkce_pair()[1],
+            code_challenge_method="S256",
+            original_state="original-xyz",
+        )
+
+    def test_success_redirects_with_code(self, oauth_client):
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+        fake_claims = {"email": "user@example.com", "email_verified": True, "sub": "uid1"}
+        with (
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=fake_claims),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+        ):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "goog-code", "state": pending.state},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        assert "code=" in location
+        assert "state=original-xyz" in location
+
+    def test_error_param_returns_400(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.get(
+            "/oauth/google/callback",
+            params={"error": "access_denied", "state": "s"},
+        )
+        assert resp.status_code == 400
+
+    def test_missing_code_returns_400(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.get("/oauth/google/callback", params={"state": "s"})
+        assert resp.status_code == 400
+
+    def test_invalid_state_returns_400(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.get(
+            "/oauth/google/callback",
+            params={"code": "c", "state": "no-such-state"},
+        )
+        assert resp.status_code == 400
+
+    def test_expired_state_returns_400(self, oauth_client):
+        from unittest.mock import patch as _patch
+
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        with _patch("hive.auth.oauth.datetime") as mock_dt:
+            mock_dt.now.return_value = future
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "c", "state": pending.state},
+            )
+        assert resp.status_code == 400
+
+    def test_unverified_email_returns_400(self, oauth_client):
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+        fake_claims = {"email": "user@example.com", "email_verified": False, "sub": "uid1"}
+        with (
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=fake_claims),
+        ):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "c", "state": pending.state},
+            )
+        assert resp.status_code == 400
+
+    def test_disallowed_email_returns_403(self, oauth_client):
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+        fake_claims = {"email": "stranger@example.com", "email_verified": True, "sub": "uid2"}
+        with (
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=fake_claims),
+            patch("hive.auth.google.is_email_allowed", return_value=False),
+        ):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "c", "state": pending.state},
+            )
+        assert resp.status_code == 403
+
+    def test_google_token_error_returns_400(self, oauth_client):
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+        with patch("hive.auth.google.exchange_google_code", side_effect=Exception("Google error")):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "bad-code", "state": pending.state},
+            )
+        assert resp.status_code == 400
+
 
 class TestOAuthToken:
-    def _get_auth_code(self, tc, storage, client) -> str:
-        """Drive authorize endpoint and return the code."""
+    def _get_auth_code(self, tc, storage, client) -> tuple[str, str]:
+        """Create an auth code directly in storage, bypassing Google OAuth."""
         verifier, challenge = _pkce_pair()
-        resp = tc.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client.client_id,
-                "redirect_uri": "https://app.example.com/cb",
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            },
-            follow_redirects=False,
+        auth_code = storage.create_auth_code(
+            client_id=client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope=client.scope or "memories:read memories:write",
+            code_challenge=challenge,
+            code_challenge_method="S256",
         )
-        location = resp.headers["location"]
-        code = location.split("code=")[1].split("&")[0]
-        return code, verifier
+        return auth_code.code, verifier
 
     def test_authorization_code_grant(self, oauth_client):
         tc, storage, client = oauth_client
@@ -490,28 +621,24 @@ class TestOAuthAuthorizeEdgeCases:
 
 
 class TestOAuthTokenEdgeCases:
-    def _get_code(self, tc, client) -> tuple[str, str]:
+    def _get_code(self, tc, storage, client) -> tuple[str, str]:
+        """Create an auth code directly in storage, bypassing Google OAuth."""
         verifier, challenge = _pkce_pair()
-        resp = tc.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client.client_id,
-                "redirect_uri": "https://app.example.com/cb",
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            },
-            follow_redirects=False,
+        auth_code = storage.create_auth_code(
+            client_id=client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope=client.scope or "memories:read memories:write",
+            code_challenge=challenge,
+            code_challenge_method="S256",
         )
-        code = resp.headers["location"].split("code=")[1].split("&")[0]
-        return code, verifier
+        return auth_code.code, verifier
 
     def test_basic_auth_header_used(self, oauth_client):
         """Covers oauth.py:169-173 — Basic auth parsed from header."""
         import base64
 
         tc, storage, client = oauth_client
-        code, verifier = self._get_code(tc, client)
+        code, verifier = self._get_code(tc, storage, client)
         credentials = base64.b64encode(f"{client.client_id}:".encode()).decode()
         resp = tc.post(
             "/oauth/token",
@@ -556,7 +683,7 @@ class TestOAuthTokenEdgeCases:
     def test_redirect_uri_mismatch_returns_400(self, oauth_client):
         """Covers oauth.py:203 — redirect_uri in token request != authorized."""
         tc, storage, client = oauth_client
-        code, verifier = self._get_code(tc, client)
+        code, verifier = self._get_code(tc, storage, client)
         resp = tc.post(
             "/oauth/token",
             data={
@@ -575,7 +702,7 @@ class TestOAuthTokenEdgeCases:
         from unittest.mock import patch
 
         tc, storage, client = oauth_client
-        code, verifier = self._get_code(tc, client)
+        code, verifier = self._get_code(tc, storage, client)
 
         # Patch datetime.now to return a time far in the future
         future = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -650,20 +777,8 @@ class TestOAuthTokenEdgeCases:
             json={"client_name": "Other App", "redirect_uris": ["https://other.com/cb"]},
         ).json()
 
-        # Do full auth flow for original client to get a refresh token
-        verifier, challenge = _pkce_pair()
-        code_resp = tc.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client.client_id,
-                "redirect_uri": "https://app.example.com/cb",
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            },
-            follow_redirects=False,
-        )
-        code = code_resp.headers["location"].split("code=")[1].split("&")[0]
+        # Get a refresh token for the original client (bypass Google)
+        code, verifier = self._get_code(tc, storage, client)
         token_resp = tc.post(
             "/oauth/token",
             data={
@@ -790,20 +905,16 @@ class TestOAuthTokenConfidentialAndCodeClient:
             json={"client_name": "Other App", "redirect_uris": ["https://other.com/cb"]},
         ).json()
 
-        # Get an auth code for the original client
+        # Get an auth code for the original client (bypass Google)
         verifier, challenge = _pkce_pair()
-        code_resp = tc.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client.client_id,
-                "redirect_uri": "https://app.example.com/cb",
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            },
-            follow_redirects=False,
+        auth_code_obj = storage.create_auth_code(
+            client_id=client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope=client.scope or "memories:read memories:write",
+            code_challenge=challenge,
+            code_challenge_method="S256",
         )
-        code = code_resp.headers["location"].split("code=")[1].split("&")[0]
+        code = auth_code_obj.code
 
         # Try to redeem the code as the other client
         resp = tc.post(
@@ -898,3 +1009,214 @@ class TestValidateBearerMissingJti:
         storage = MagicMock()
         with pytest.raises(ValueError, match="missing jti"):
             validate_bearer_token(f"Bearer {token_str}", storage)
+
+
+# ---------------------------------------------------------------------------
+# DCR scope validation — covers dcr.py ALLOWED_SCOPES check
+# ---------------------------------------------------------------------------
+
+
+class TestDCRScopeValidation:
+    def test_unknown_scope_raises(self):
+        storage = MagicMock()
+        req = ClientRegistrationRequest(
+            client_name="Bad Scope App",
+            scope="memories:read unknown:scope",
+        )
+        with pytest.raises(ValueError, match="Unknown scope"):
+            register_client(req, storage)
+
+    def test_known_scopes_accepted(self):
+        storage = MagicMock()
+        req = ClientRegistrationRequest(
+            client_name="Read Only Agent",
+            redirect_uris=["http://localhost/cb"],
+            scope="memories:read",
+        )
+        resp = register_client(req, storage)
+        assert resp.scope == "memories:read"
+
+    def test_all_scopes_accepted(self):
+        storage = MagicMock()
+        req = ClientRegistrationRequest(
+            client_name="Admin App",
+            redirect_uris=["http://localhost/cb"],
+            scope="memories:read memories:write clients:read clients:write",
+        )
+        resp = register_client(req, storage)
+        assert "clients:write" in resp.scope
+
+
+# ---------------------------------------------------------------------------
+# Authorize scope restriction — covers oauth.py scope intersection
+# ---------------------------------------------------------------------------
+
+
+class TestAuthorizeScopeRestriction:
+    def test_requested_scope_restricted_to_client_scope(self, oauth_client):
+        """Authorize restricts requested scope to client's registered scope."""
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        # Register a read-only client
+        readonly_client = OAuthClient(
+            client_name="Read Only",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read",
+        )
+        storage.put_client(readonly_client)
+
+        _, challenge = _pkce_pair()
+        with patch("hive.auth.google.google_authorization_url") as mock_google_url:
+            mock_google_url.return_value = "https://accounts.google.com/mock"
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": readonly_client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    # Request write scope — should be restricted to read-only
+                    "scope": "memories:read memories:write",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        # Scope restriction is stored in the PendingAuth record
+        state = mock_google_url.call_args[0][0]
+        pending = storage.get_pending_auth(state)
+        assert pending is not None
+        assert "memories:write" not in pending.scope
+        assert "memories:read" in pending.scope
+
+    def test_scope_no_overlap_returns_400(self, oauth_client):
+        """Authorize returns 400 when requested scope has no overlap with client scope."""
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        readonly_client = OAuthClient(
+            client_name="Read Only 2",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read",
+        )
+        storage.put_client(readonly_client)
+
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": readonly_client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "scope": "clients:read clients:write",
+            },
+        )
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Token scope — scope in issued access token matches auth code scope
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshTokenScopeNarrowing:
+    def test_refresh_intersects_scope_with_current_client_scope(self, oauth_client):
+        """Covers oauth.py scope re-intersection — refresh token scope narrows to client scope."""
+        from hive.auth.tokens import decode_jwt
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        # Register a client with write+read scope
+        wide_client = OAuthClient(
+            client_name="Wide Scope Client",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read memories:write",
+        )
+        storage.put_client(wide_client)
+
+        verifier, challenge = _pkce_pair()
+        auth_code = storage.create_auth_code(
+            client_id=wide_client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read memories:write",
+            code_challenge=challenge,
+            code_challenge_method="S256",
+        )
+        code = auth_code.code
+        token_resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": wide_client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        refresh_token = token_resp.json()["refresh_token"]
+
+        # Narrow the client's scope in storage
+        wide_client.scope = "memories:read"
+        storage.put_client(wide_client)
+
+        # Refresh should issue new tokens with narrowed scope
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": wide_client.client_id,
+                "refresh_token": refresh_token,
+            },
+        )
+        assert resp.status_code == 200
+        claims = decode_jwt(resp.json()["access_token"])
+        assert "memories:write" not in claims["scope"]
+        assert "memories:read" in claims["scope"]
+
+
+class TestTokenScopeIntersection:
+    def test_access_token_carries_restricted_scope(self, oauth_client):
+        """Access token scope matches the effective scope from the auth code."""
+        from hive.auth.tokens import decode_jwt
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        readonly_client = OAuthClient(
+            client_name="Scope Test Client",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read",
+        )
+        storage.put_client(readonly_client)
+
+        verifier, challenge = _pkce_pair()
+        auth_code = storage.create_auth_code(
+            client_id=readonly_client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read",  # scope already restricted to client's registered scope
+            code_challenge=challenge,
+            code_challenge_method="S256",
+        )
+        code = auth_code.code
+
+        token_resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": readonly_client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        assert token_resp.status_code == 200
+        data = token_resp.json()
+        claims = decode_jwt(data["access_token"])
+        assert claims["scope"] == "memories:read"
+        assert "memories:write" not in claims["scope"]

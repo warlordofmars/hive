@@ -27,6 +27,7 @@ from hive.models import (
     AuthorizationCode,
     Memory,
     OAuthClient,
+    PendingAuth,
     Token,
     TokenType,
 )
@@ -39,18 +40,19 @@ DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
 REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
 AUTH_CODE_TTL_SECONDS = 300  # 5 minutes
+PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _encode_cursor(last_evaluated_key: dict) -> str:
+def _encode_cursor(last_evaluated_key: dict[str, Any]) -> str:
     """Encode a DynamoDB LastEvaluatedKey as an opaque base64 cursor."""
     return base64.urlsafe_b64encode(json.dumps(last_evaluated_key).encode()).decode()
 
 
-def _decode_cursor(cursor: str) -> dict:
+def _decode_cursor(cursor: str) -> dict[str, Any]:
     """Decode a base64 cursor back to a DynamoDB ExclusiveStartKey."""
     try:
         return json.loads(base64.urlsafe_b64decode(cursor.encode()))
@@ -165,27 +167,42 @@ class HiveStorage:
         """Scan for all META memory items (optionally filtered by owner_client_id).
 
         Returns (memories, next_cursor). Use sparingly — prefer tag-based queries.
-        """
-        kwargs: dict[str, Any] = {
-            "FilterExpression": "SK = :sk AND begins_with(PK, :pk_prefix)",
-            "ExpressionAttributeValues": {":sk": "META", ":pk_prefix": "MEMORY#"},
-            "Limit": limit,
-        }
-        if client_id:
-            kwargs["FilterExpression"] += " AND owner_client_id = :cid"
-            kwargs["ExpressionAttributeValues"][":cid"] = client_id
-        if cursor:
-            kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
 
-        resp = self.table.scan(**kwargs)
-        memories = [
-            Memory.from_dynamo(i)
-            for i in resp.get("Items", [])
-            if i["SK"] == "META" and i["PK"].startswith("MEMORY#")
-        ]
-        lek = resp.get("LastEvaluatedKey")
-        next_cursor = _encode_cursor(lek) if lek else None
-        return memories, next_cursor
+        Iterates DynamoDB scan pages until *limit* matching items are collected,
+        avoiding the "Limit evaluates N items before filter" footgun that causes
+        misses in single-table designs with mixed item types.
+        """
+        filter_expr = "SK = :sk AND begins_with(PK, :pk_prefix)"
+        expr_vals: dict[str, Any] = {":sk": "META", ":pk_prefix": "MEMORY#"}
+        if client_id:
+            filter_expr += " AND owner_client_id = :cid"
+            expr_vals[":cid"] = client_id
+
+        start_key = _decode_cursor(cursor) if cursor else None
+        memories: list[Memory] = []
+
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": filter_expr,
+                "ExpressionAttributeValues": expr_vals,
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                memories.append(Memory.from_dynamo(item))
+                if len(memories) >= limit:
+                    break
+
+            lek = resp.get("LastEvaluatedKey")
+            if len(memories) >= limit:
+                last = memories[limit - 1]
+                next_key = {"PK": f"MEMORY#{last.memory_id}", "SK": "META"}
+                return memories[:limit], _encode_cursor(next_key)
+            if lek is None:
+                return memories, None
+            start_key = lek
 
     # ------------------------------------------------------------------
     # OAuth Client management
@@ -211,19 +228,34 @@ class HiveStorage:
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[OAuthClient], str | None]:
-        kwargs: dict[str, Any] = {
-            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk",
-            "ExpressionAttributeValues": {":prefix": "CLIENT#", ":sk": "META"},
-            "Limit": limit,
-        }
-        if cursor:
-            kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
+        filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
+        expr_vals: dict[str, Any] = {":prefix": "CLIENT#", ":sk": "META"}
 
-        resp = self.table.scan(**kwargs)
-        clients = [OAuthClient.from_dynamo(i) for i in resp.get("Items", [])]
-        lek = resp.get("LastEvaluatedKey")
-        next_cursor = _encode_cursor(lek) if lek else None
-        return clients, next_cursor
+        start_key = _decode_cursor(cursor) if cursor else None
+        clients: list[OAuthClient] = []
+
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": filter_expr,
+                "ExpressionAttributeValues": expr_vals,
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                clients.append(OAuthClient.from_dynamo(item))
+                if len(clients) >= limit:
+                    break
+
+            lek = resp.get("LastEvaluatedKey")
+            if len(clients) >= limit:
+                last = clients[limit - 1]
+                next_key = {"PK": f"CLIENT#{last.client_id}", "SK": "META"}
+                return clients[:limit], _encode_cursor(next_key)
+            if lek is None:
+                return clients, None
+            start_key = lek
 
     # ------------------------------------------------------------------
     # Authorization codes
@@ -244,6 +276,42 @@ class HiveStorage:
             ExpressionAttributeNames={"#u": "used"},
             ExpressionAttributeValues={":t": True},
         )
+
+    # ------------------------------------------------------------------
+    # Pending auth (PKCE state stored while user authenticates with Google)
+    # ------------------------------------------------------------------
+
+    def put_pending_auth(self, pending: PendingAuth) -> None:
+        self.table.put_item(Item=pending.to_dynamo())
+
+    def get_pending_auth(self, state: str) -> PendingAuth | None:
+        resp = self.table.get_item(Key={"PK": f"PENDING#{state}", "SK": "META"})
+        item = resp.get("Item")
+        return PendingAuth.from_dynamo(item) if item else None
+
+    def delete_pending_auth(self, state: str) -> None:
+        self.table.delete_item(Key={"PK": f"PENDING#{state}", "SK": "META"})
+
+    def create_pending_auth(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        code_challenge: str,
+        code_challenge_method: str,
+        original_state: str,
+    ) -> PendingAuth:
+        pending = PendingAuth(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            scope=scope,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            original_state=original_state,
+            expires_at=_now() + timedelta(seconds=PENDING_AUTH_TTL_SECONDS),
+        )
+        self.put_pending_auth(pending)
+        return pending
 
     # ------------------------------------------------------------------
     # Tokens
@@ -375,7 +443,8 @@ class HiveStorage:
 
     def _get_memory_meta(self, memory_id: str) -> dict[str, Any] | None:
         resp = self.table.get_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
-        return resp.get("Item")  # type: ignore[return-value]
+        item: dict[str, Any] | None = resp.get("Item")  # type: ignore[assignment]
+        return item
 
     def _delete_tag_items(self, memory: Memory) -> None:
         with self.table.batch_writer() as batch:

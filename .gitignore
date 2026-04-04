@@ -12,6 +12,7 @@ wheels/
 # Node
 node_modules/
 ui/dist/
+ui/coverage/
 
 # Test / coverage artifacts
 .coverage

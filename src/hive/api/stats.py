@@ -9,7 +9,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query
 
-from hive.api._auth import require_token
+from hive.api._auth import require_clients_read
 from hive.models import PagedResponse, StatsResponse
 from hive.storage import HiveStorage
 
@@ -21,7 +21,7 @@ _ACTIVITY_LIMIT_MAX = 500
 
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats(
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_clients_read),
 ) -> StatsResponse:
     storage, _ = auth
     today = date.today()
@@ -47,7 +47,7 @@ async def get_activity(
         le=_ACTIVITY_LIMIT_MAX,
         description="Max events to return",
     ),
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_clients_read),
 ) -> PagedResponse:
     storage, _ = auth
     today = date.today()

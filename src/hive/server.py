@@ -19,7 +19,7 @@ import importlib.metadata
 import os
 import time
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
@@ -27,6 +27,7 @@ from fastmcp.server.dependencies import get_http_request
 
 from hive.auth.tokens import validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
+from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory
 from hive.storage import HiveStorage
 
@@ -57,13 +58,15 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _auth(ctx: Context) -> tuple[HiveStorage, str]:
+def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveStorage, str]:
     """Validate Bearer token; return (storage, client_id).
 
     Reads the Authorization header from the HTTP request when running under
     FastMCP's HTTP transport, falling back to ctx.request_context.meta for
     direct invocation (integration tests).  Also sets per-request logging
     context (request_id, client_id).
+
+    If required_scope is given, raises ToolError if the token lacks that scope.
     """
     storage = HiveStorage()
     auth_header: str | None = None
@@ -84,13 +87,16 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
 
     # Fallback: direct invocation or integration tests pass token via meta
     if not auth_header and ctx and ctx.request_context and ctx.request_context.meta:
-        meta: dict = ctx.request_context.meta  # type: ignore[assignment]
+        meta: dict[str, Any] = ctx.request_context.meta  # type: ignore[assignment]
         auth_header = meta.get("Authorization") or meta.get("authorization")
 
     try:
         token = validate_bearer_token(auth_header, storage)
     except ValueError as exc:
         raise ToolError(f"Unauthorized: {exc}") from exc
+
+    if required_scope and required_scope not in set(token.scope.split()):
+        raise ToolError(f"Insufficient scope: '{required_scope}' required")
 
     set_request_context(request_id, token.client_id)
     return storage, token.client_id
@@ -105,12 +111,12 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
 async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
     value: Annotated[str, "Content of the memory"],
-    tags: Annotated[list[str], "Optional tags for categorisation"] = None,  # type: ignore[assignment]
-    ctx: Context = None,  # type: ignore[assignment]
+    tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ctx: Context | None = None,
 ) -> str:
     """Store or update a memory with optional tags."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:write")
     tags = tags or []
 
     # Check if a memory with this key already exists (upsert path)
@@ -134,6 +140,7 @@ async def remember(
         try:
             storage.put_memory(existing)
         except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember")
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_updated
         action = "Updated"
@@ -142,6 +149,7 @@ async def remember(
         try:
             storage.put_memory(memory)
         except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember")
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_created
         action = "Stored"
@@ -153,15 +161,20 @@ async def remember(
             metadata={"key": key, "tags": tags},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "%s memory '%s'",
         action,
         key,
         extra={
             "tool": "remember",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="remember")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="remember"
     )
     return f"{action} memory '{key}'."
 
@@ -169,11 +182,11 @@ async def remember(
 @mcp.tool()
 async def recall(
     key: Annotated[str, "Key of the memory to retrieve"],
-    ctx: Context = None,  # type: ignore[assignment]
+    ctx: Context | None = None,
 ) -> str:
     """Retrieve a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:read")
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -186,6 +199,7 @@ async def recall(
                 "status": "not_found",
             },
         )
+        await emit_metric("ToolErrors", operation="recall")
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.log_event(
@@ -195,14 +209,19 @@ async def recall(
             metadata={"key": key},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Recalled memory '%s'",
         key,
         extra={
             "tool": "recall",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="recall")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="recall"
     )
     return memory.value
 
@@ -210,11 +229,11 @@ async def recall(
 @mcp.tool()
 async def forget(
     key: Annotated[str, "Key of the memory to delete"],
-    ctx: Context = None,  # type: ignore[assignment]
+    ctx: Context | None = None,
 ) -> str:
     """Delete a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:write")
 
     existing = storage.get_memory_by_key(key)
     if existing is None:
@@ -227,6 +246,7 @@ async def forget(
                 "status": "not_found",
             },
         )
+        await emit_metric("ToolErrors", operation="forget")
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.delete_memory(existing.memory_id)
@@ -237,14 +257,19 @@ async def forget(
             metadata={"key": key},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Deleted memory '%s'",
         key,
         extra={
             "tool": "forget",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="forget")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="forget"
     )
     return f"Deleted memory '{key}'."
 
@@ -254,11 +279,11 @@ async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
     cursor: Annotated[str | None, "Pagination cursor from a previous call"] = None,
-    ctx: Context = None,  # type: ignore[assignment]
-) -> dict:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:read")
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
@@ -269,17 +294,22 @@ async def list_memories(
             metadata={"tag": tag, "count": len(memories)},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Listed %d memories for tag '%s'",
         len(memories),
         tag,
         extra={
             "tool": "list_memories",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
     )
-    result: dict = {
+    await emit_metric("ToolInvocations", operation="list_memories")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_memories"
+    )
+    result: dict[str, Any] = {
         "items": [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories],
         "count": len(memories),
         "has_more": next_cursor is not None,
@@ -292,7 +322,7 @@ async def list_memories(
 @mcp.tool()
 async def summarize_context(
     topic: Annotated[str, "Topic or tag to summarise memories about"],
-    ctx: Context = None,  # type: ignore[assignment]
+    ctx: Context | None = None,
 ) -> str:
     """
     Retrieve all memories related to a topic and return a synthesised summary.
@@ -301,7 +331,7 @@ async def summarize_context(
     memory and then provides a combined overview paragraph.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:read")
 
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
 
@@ -315,6 +345,7 @@ async def summarize_context(
                 "status": "empty",
             },
         )
+        await emit_metric("ToolInvocations", operation="summarize_context")
         return f"No memories found for topic '{topic}'."
 
     lines = [f"## Memories tagged '{topic}'\n"]
@@ -333,15 +364,23 @@ async def summarize_context(
             metadata={"topic": topic, "memory_count": len(memories)},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Summarized %d memories for topic '%s'",
         len(memories),
         topic,
         extra={
             "tool": "summarize_context",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="summarize_context")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="summarize_context",
     )
     return "\n".join(lines)
 
@@ -356,7 +395,7 @@ async def summarize_context(
 asgi_app = mcp.http_app(stateless_http=True, json_response=True)
 
 
-def lambda_handler(event: dict, context: object) -> dict:  # pragma: no cover
+def lambda_handler(event: dict[str, Any], context: object) -> dict[str, Any]:  # pragma: no cover
     """AWS Lambda + Function URL handler (HTTP mode).
 
     Creates a fresh ASGI app per Lambda container initialisation.
@@ -371,7 +410,7 @@ def lambda_handler(event: dict, context: object) -> dict:  # pragma: no cover
 
     _app = mcp.http_app(stateless_http=True, json_response=True)
     handler = Mangum(_app, lifespan="on")
-    return handler(event, context)  # type: ignore[arg-type]
+    return handler(event, context)  # type: ignore[arg-type]  # mangum stubs incomplete
 
 
 if __name__ == "__main__":

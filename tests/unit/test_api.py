@@ -65,10 +65,16 @@ def _create_table(table_name: str = "hive-unit-api") -> None:
 
 @pytest.fixture()
 def client():
-    """TestClient with require_token overridden — no JWT needed."""
+    """TestClient with all auth dependencies overridden — no JWT needed."""
     with mock_aws():
         _create_table()
-        from hive.api._auth import require_token
+        from hive.api._auth import (
+            require_clients_read,
+            require_clients_write,
+            require_memories_read,
+            require_memories_write,
+            require_token,
+        )
         from hive.api.main import app
         from hive.models import OAuthClient
         from hive.storage import HiveStorage
@@ -80,7 +86,14 @@ def client():
         def _override():
             return (storage, oauth_client.client_id)
 
-        app.dependency_overrides[require_token] = _override
+        for dep in (
+            require_token,
+            require_memories_read,
+            require_memories_write,
+            require_clients_read,
+            require_clients_write,
+        ):
+            app.dependency_overrides[dep] = _override
         yield TestClient(app), storage, oauth_client.client_id
         app.dependency_overrides.clear()
 
@@ -379,7 +392,7 @@ class TestClientCreateErrors:
 
 class TestRequireTokenSuccessPath:
     def test_valid_jwt_reaches_endpoint(self):
-        """Covers _auth.py:31 — return storage, token.client_id on valid token."""
+        """Covers _auth.py require_scope — valid token reaches endpoint."""
         from datetime import datetime, timedelta, timezone
 
         from hive.auth.tokens import issue_jwt
@@ -400,7 +413,7 @@ class TestRequireTokenSuccessPath:
                 now = datetime.now(timezone.utc)
                 token = Token(
                     client_id=oauth_client.client_id,
-                    scope="memories:read memories:write",
+                    scope="memories:read memories:write clients:read clients:write",
                     issued_at=now,
                     expires_at=now + timedelta(hours=1),
                 )
@@ -421,6 +434,62 @@ class TestRequireTokenSuccessPath:
             else:
                 os.environ.pop("HIVE_TABLE_NAME", None)
 
+    async def test_require_token_valid_token(self):
+        """Covers _auth.py:28-33 — require_token returns (storage, client_id) on valid token."""
+        from datetime import datetime, timedelta, timezone
+
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        from hive.api._auth import require_token
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.storage import HiveStorage
+
+        old_table = os.environ.get("HIVE_TABLE_NAME")
+        os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+        try:
+            with mock_aws():
+                _create_table()
+                storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+                oauth_client = OAuthClient(client_name="Direct Token Test")
+                storage.put_client(oauth_client)
+
+                now = datetime.now(timezone.utc)
+                token = Token(
+                    client_id=oauth_client.client_id,
+                    scope="memories:read",
+                    issued_at=now,
+                    expires_at=now + timedelta(hours=1),
+                )
+                storage.put_token(token)
+                jwt_str = issue_jwt(token)
+
+                creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt_str)
+                result_storage, result_client_id = await require_token(
+                    credentials=creds, storage=storage
+                )
+                assert result_client_id == oauth_client.client_id
+        finally:
+            if old_table is not None:
+                os.environ["HIVE_TABLE_NAME"] = old_table
+            else:
+                os.environ.pop("HIVE_TABLE_NAME", None)
+
+    async def test_require_token_invalid_jwt_raises_401(self):
+        """Covers _auth.py:30-32 — invalid JWT raises HTTP 401."""
+        from unittest.mock import MagicMock
+
+        from fastapi import HTTPException
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        from hive.api._auth import require_token
+
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt")
+        storage = MagicMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await require_token(credentials=creds, storage=storage)
+        assert exc_info.value.status_code == 401
+
 
 class TestMemoryUpsertOversized:
     def test_upsert_existing_oversized_returns_413(self, client):
@@ -435,3 +504,114 @@ class TestMemoryUpsertOversized:
         ):
             resp = tc.post("/api/memories", json={"key": "upsert-big", "value": "x" * 1000})
         assert resp.status_code == 413
+
+
+# ---------------------------------------------------------------------------
+# Scope enforcement — covers api/_auth.py require_scope
+# ---------------------------------------------------------------------------
+
+
+def _scoped_client_fixture(scope: str):
+    """Build a TestClient with a real token limited to the given scope."""
+    from datetime import datetime, timedelta, timezone
+
+    from hive.api.main import app
+    from hive.auth.tokens import issue_jwt
+    from hive.models import OAuthClient, Token
+    from hive.storage import HiveStorage
+
+    storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+    oauth_client = OAuthClient(client_name="Scope Test Client", scope=scope)
+    storage.put_client(oauth_client)
+
+    now = datetime.now(timezone.utc)
+    token = Token(
+        client_id=oauth_client.client_id,
+        scope=scope,
+        issued_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    storage.put_token(token)
+    jwt = issue_jwt(token)
+
+    # Clear all dependency overrides so actual scope checks run
+    app.dependency_overrides.clear()
+    return TestClient(app, raise_server_exceptions=False), jwt
+
+
+class TestScopeEnforcement:
+    def test_read_scope_allows_get_memories(self):
+        with mock_aws():
+            _create_table()
+            old = os.environ.get("HIVE_TABLE_NAME")
+            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+            try:
+                tc, jwt = _scoped_client_fixture("memories:read")
+                resp = tc.get("/api/memories", headers={"Authorization": f"Bearer {jwt}"})
+                assert resp.status_code == 200
+            finally:
+                if old is not None:
+                    os.environ["HIVE_TABLE_NAME"] = old
+                else:
+                    os.environ.pop("HIVE_TABLE_NAME", None)
+                from hive.api.main import app
+
+                app.dependency_overrides.clear()
+
+    def test_read_scope_blocks_post_memories(self):
+        with mock_aws():
+            _create_table()
+            old = os.environ.get("HIVE_TABLE_NAME")
+            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+            try:
+                tc, jwt = _scoped_client_fixture("memories:read")
+                resp = tc.post(
+                    "/api/memories",
+                    json={"key": "k", "value": "v"},
+                    headers={"Authorization": f"Bearer {jwt}"},
+                )
+                assert resp.status_code == 403
+            finally:
+                if old is not None:
+                    os.environ["HIVE_TABLE_NAME"] = old
+                else:
+                    os.environ.pop("HIVE_TABLE_NAME", None)
+                from hive.api.main import app
+
+                app.dependency_overrides.clear()
+
+    def test_memories_scope_blocks_clients_endpoint(self):
+        with mock_aws():
+            _create_table()
+            old = os.environ.get("HIVE_TABLE_NAME")
+            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+            try:
+                tc, jwt = _scoped_client_fixture("memories:read memories:write")
+                resp = tc.get("/api/clients", headers={"Authorization": f"Bearer {jwt}"})
+                assert resp.status_code == 403
+            finally:
+                if old is not None:
+                    os.environ["HIVE_TABLE_NAME"] = old
+                else:
+                    os.environ.pop("HIVE_TABLE_NAME", None)
+                from hive.api.main import app
+
+                app.dependency_overrides.clear()
+
+    def test_clients_read_scope_allows_list_clients(self):
+        with mock_aws():
+            _create_table()
+            old = os.environ.get("HIVE_TABLE_NAME")
+            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+            try:
+                tc, jwt = _scoped_client_fixture("clients:read")
+                resp = tc.get("/api/clients", headers={"Authorization": f"Bearer {jwt}"})
+                assert resp.status_code == 200
+            finally:
+                if old is not None:
+                    os.environ["HIVE_TABLE_NAME"] = old
+                else:
+                    os.environ.pop("HIVE_TABLE_NAME", None)
+                from hive.api.main import app
+
+                app.dependency_overrides.clear()

@@ -89,6 +89,20 @@ def _aws_account(ctx) -> str:
     ).stdout.strip()
 
 
+def _hosted_zone_id(ctx, zone_name: str = "warlordofmars.net") -> str:
+    """Resolve the Route53 hosted zone ID.
+
+    Checks HOSTED_ZONE_ID env var first; falls back to a Route53 API lookup.
+    """
+    if zone_id := os.environ.get("HOSTED_ZONE_ID"):
+        return zone_id
+    return ctx.run(
+        f"aws route53 list-hosted-zones-by-name --dns-name {zone_name}"
+        " --query 'HostedZones[0].Id' --output text",
+        hide=True,
+    ).stdout.strip().split("/")[-1]
+
+
 def _cfn_output(ctx, key, env="prod"):
     stack = _stack_name(env)
     return ctx.run(
@@ -140,7 +154,13 @@ def typecheck(ctx):
     ctx.run("uv run mypy src/hive", pty=True)
 
 
-@task(lint_backend, lint_frontend, lint_infra, typecheck)
+@task
+def check_copyright(ctx):
+    """Check all source files have a copyright header"""
+    ctx.run("uv run python scripts/check_copyright.py", pty=True)
+
+
+@task(lint_backend, lint_frontend, lint_infra, typecheck, check_copyright)
 def lint(ctx):
     """Lint + typecheck everything (backend + frontend + infra)"""
 
@@ -209,9 +229,9 @@ def test(ctx):
     """Run all tests (unit + integration + frontend)"""
 
 
-@task(lint_backend, typecheck, test_unit, test_frontend)
+@task(lint_backend, typecheck, check_copyright, test_unit, test_frontend)
 def pre_push(ctx):
-    """Local CI gate: lint + typecheck + unit tests + frontend tests (run before every push)"""
+    """Local CI gate: lint + typecheck + copyright check + unit tests + frontend tests (run before every push)"""
 
 
 @task
@@ -398,10 +418,12 @@ def seed(ctx, env=None, token=None, reset=False):
 def synth(ctx, env="prod"):
     """Synthesize CDK template locally (skips Docker bundling). Use --env dev for dev stack."""
     account = _aws_account(ctx)
+    zone_id = _hosted_zone_id(ctx)
     stack = _stack_name(env)
     with ctx.cd(INFRA):
         ctx.run(
-            f"uv run cdk synth {stack} --no-staging -c account={account} -c env={env}",
+            f"uv run cdk synth {stack} --no-staging"
+            f" -c account={account} -c env={env} -c hosted_zone_id={zone_id}",
             pty=True,
         )
 
@@ -410,15 +432,21 @@ def synth(ctx, env="prod"):
 def diff(ctx, env="prod"):
     """Show CDK diff against the deployed stack. Use --env dev for dev stack."""
     account = _aws_account(ctx)
+    zone_id = _hosted_zone_id(ctx)
     stack = _stack_name(env)
     with ctx.cd(INFRA):
-        ctx.run(f"uv run cdk diff {stack} -c account={account} -c env={env}", pty=True)
+        ctx.run(
+            f"uv run cdk diff {stack}"
+            f" -c account={account} -c env={env} -c hosted_zone_id={zone_id}",
+            pty=True,
+        )
 
 
 @task
 def deploy(ctx, env="prod"):
     """Deploy CDK stack to AWS. Use --env dev for dev stack."""
     account = _aws_account(ctx)
+    zone_id = _hosted_zone_id(ctx)
     stack = _stack_name(env)
     if env == "prod":
         # In CI, APP_VERSION is set by the release job. Locally, infer from commits.
@@ -435,7 +463,8 @@ def deploy(ctx, env="prod"):
 
     with ctx.cd(INFRA):
         ctx.run(
-            f"uv run cdk deploy {stack} --require-approval never -c account={account} -c env={env}",
+            f"uv run cdk deploy {stack} --require-approval never"
+            f" -c account={account} -c env={env} -c hosted_zone_id={zone_id}",
             env={"APP_VERSION": app_version},
             pty=True,
         )
