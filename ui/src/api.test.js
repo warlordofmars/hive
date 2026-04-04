@@ -217,4 +217,18 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("days=30");
     expect(fetchMock.mock.calls[0][0]).toContain("limit=50");
   });
+
+  // ---------------------------------------------------------------------------
+  // 401 handling — clears token and redirects
+  // ---------------------------------------------------------------------------
+
+  it("401 response clears token and redirects to /", async () => {
+    storage["hive_token"] = "old-token";
+    vi.stubGlobal("location", { replace: vi.fn() });
+    fetchMock.mockResolvedValue({ ok: false, status: 401, json: () => Promise.resolve({}) });
+    const result = await api.getStats();
+    expect(result).toBeNull();
+    expect(storage["hive_token"]).toBeUndefined();
+    expect(window.location.replace).toHaveBeenCalledWith("/");
+  });
 });

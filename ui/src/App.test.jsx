@@ -102,6 +102,22 @@ describe("App", () => {
     expect(screen.getByTestId("login-page")).toBeTruthy();
   });
 
+  it("shows LoginPage when token is malformed", async () => {
+    _storage["hive_token"] = "not.a.jwt"; // base64 decodes but no exp field
+    await act(async () => render(<App />));
+    // isTokenValid catches the exception and returns false
+    expect(screen.getByTestId("login-page")).toBeTruthy();
+  });
+
+  it("sign out button clears token and reloads", async () => {
+    const replaceMock = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace: replaceMock });
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Sign out"));
+    expect(_storage["hive_token"]).toBeUndefined();
+    expect(replaceMock).toHaveBeenCalledWith("/");
+  });
+
   it("shows AuthCallback on /oauth/callback route", async () => {
     vi.stubGlobal("location", { ...window.location, pathname: "/oauth/callback" });
     await act(async () => render(<App />));
