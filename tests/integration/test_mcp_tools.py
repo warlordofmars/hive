@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Integration tests for the FastMCP tools against DynamoDB Local.
 """

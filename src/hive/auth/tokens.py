@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Token issuance and validation for Hive OAuth 2.1.
 

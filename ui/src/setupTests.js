@@ -1,1 +1,2 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
 import "@testing-library/jest-dom";

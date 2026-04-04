@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Unit tests for the storage layer using moto to mock DynamoDB.
 """

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Memory CRUD endpoints for the Hive management API.
 

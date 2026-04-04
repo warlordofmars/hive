@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 OAuth 2.1 Authorization Server endpoints for Hive.
 

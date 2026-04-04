@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Usage stats and activity log endpoints for the Hive management API.
 """

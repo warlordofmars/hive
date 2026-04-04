@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """Shared FastAPI auth dependency for management API routes."""
 
 from __future__ import annotations

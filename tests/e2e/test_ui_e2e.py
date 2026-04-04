@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Playwright E2E tests for the Hive management UI.
 Requires:
