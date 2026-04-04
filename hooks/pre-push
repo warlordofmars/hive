@@ -16,6 +16,9 @@ uv run ruff format --check src tests
 echo "pre-push: mypy..."
 uv run mypy src/hive
 
+echo "pre-push: copyright headers..."
+uv run python scripts/check_copyright.py
+
 echo "pre-push: unit tests..."
 uv run pytest tests/unit -q
 

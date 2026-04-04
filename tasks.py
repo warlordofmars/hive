@@ -140,7 +140,13 @@ def typecheck(ctx):
     ctx.run("uv run mypy src/hive", pty=True)
 
 
-@task(lint_backend, lint_frontend, lint_infra, typecheck)
+@task
+def check_copyright(ctx):
+    """Check all source files have a copyright header"""
+    ctx.run("uv run python scripts/check_copyright.py", pty=True)
+
+
+@task(lint_backend, lint_frontend, lint_infra, typecheck, check_copyright)
 def lint(ctx):
     """Lint + typecheck everything (backend + frontend + infra)"""
 
@@ -209,9 +215,9 @@ def test(ctx):
     """Run all tests (unit + integration + frontend)"""
 
 
-@task(lint_backend, typecheck, test_unit, test_frontend)
+@task(lint_backend, typecheck, check_copyright, test_unit, test_frontend)
 def pre_push(ctx):
-    """Local CI gate: lint + typecheck + unit tests + frontend tests (run before every push)"""
+    """Local CI gate: lint + typecheck + copyright check + unit tests + frontend tests (run before every push)"""
 
 
 @task
