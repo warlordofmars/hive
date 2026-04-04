@@ -85,6 +85,12 @@ jobs:
       - name: Run unit tests with coverage
         run: uv run pytest tests/unit -v --cov=hive --cov-report=xml:coverage-unit.xml --cov-fail-under=80
 
+      - name: Write coverage summary
+        if: always()
+        run: |
+          echo "## Unit Test Coverage" >> $GITHUB_STEP_SUMMARY
+          uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+
       - name: Upload unit coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -128,6 +134,9 @@ jobs:
     name: Coverage Report
     needs: [unit-tests, integration-tests]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -140,6 +149,67 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: coverage-integration
+
+      - name: Post coverage comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            // Parse unit coverage XML for the summary table
+            const xml = fs.readFileSync('coverage-unit.xml', 'utf8');
+            const lineRate = parseFloat(xml.match(/line-rate="([^"]+)"/)?.[1] ?? '0');
+            const pct = (lineRate * 100).toFixed(1);
+            const emoji = lineRate >= 0.9 ? '🟢' : lineRate >= 0.8 ? '🟡' : '🔴';
+
+            // Build module rows from XML
+            const rows = [];
+            for (const m of xml.matchAll(/<package[^>]*name="([^"]*)"[^>]*line-rate="([^"]*)"[^>]*>/g)) {
+              // skip — class-level detail is too verbose; use file-level below
+            }
+            const classMatches = [...xml.matchAll(/<class[^>]*filename="([^"]*)"[^>]*line-rate="([^"]*)"[^>]*>/g)];
+            for (const m of classMatches) {
+              const name = m[1].replace('src/', '');
+              const rate = (parseFloat(m[2]) * 100).toFixed(0);
+              const bar = rate >= 90 ? '🟢' : rate >= 80 ? '🟡' : '🔴';
+              rows.push(`| \`${name}\` | ${rate}% | ${bar} |`);
+            }
+
+            const body = [
+              `<!-- coverage-report -->`,
+              `## ${emoji} Coverage Report — ${pct}%`,
+              ``,
+              `| File | Cover | |`,
+              `|:---|---:|:---|`,
+              ...rows,
+              ``,
+              `> Unit tests only · threshold 80% · [full run](${context.payload.pull_request.html_url}/checks)`,
+            ].join('\n');
+
+            // Find existing comment and update, or create new
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes('<!-- coverage-report -->'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
