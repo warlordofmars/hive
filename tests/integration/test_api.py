@@ -127,7 +127,7 @@ class TestMemoryEndpoints:
 
         resp2 = client.get("/api/memories")
         assert resp2.status_code == 200
-        keys = [m["key"] for m in resp2.json()]
+        keys = [m["key"] for m in resp2.json()["items"]]
         assert "test-key" in keys
 
     def test_get_by_id(self, client):
@@ -163,7 +163,7 @@ class TestMemoryEndpoints:
 
         resp = client.get("/api/memories?tag=zz")
         assert resp.status_code == 200
-        keys = [m["key"] for m in resp.json()]
+        keys = [m["key"] for m in resp.json()["items"]]
         assert "tagged-1" in keys
         assert "tagged-2" in keys
         assert "untagged" not in keys
