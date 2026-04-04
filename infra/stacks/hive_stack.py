@@ -28,6 +28,7 @@ from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_ssm as ssm
@@ -344,6 +345,73 @@ class HiveStack(cdk.Stack):
                 iam.ManagedPolicy.from_aws_managed_policy_name("AdministratorAccess")
             ],
             description=f"GitHub Actions OIDC deploy role for Hive ({env_name})",
+        )
+
+        # ----------------------------------------------------------------
+        # CloudWatch log groups — 30-day retention + saved Insights queries
+        # ----------------------------------------------------------------
+        mcp_log_group = logs.LogGroup(
+            self,
+            "McpLogGroup",
+            log_group_name=f"/aws/lambda/{mcp_fn.function_name}",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=data_removal,
+        )
+
+        api_log_group = logs.LogGroup(
+            self,
+            "ApiLogGroup",
+            log_group_name=f"/aws/lambda/{api_fn.function_name}",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=data_removal,
+        )
+
+        # Saved CloudWatch Insights queries for operational visibility.
+        logs.QueryDefinition(
+            self,
+            "QueryErrors",
+            query_definition_name=f"Hive/{env_name}/errors",
+            query_string=logs.QueryString(
+                fields=["@timestamp", "client_id", "tool", "error_message"],
+                filter_statements=['level = "ERROR"'],
+                sort="@timestamp desc",
+            ),
+            log_groups=[mcp_log_group, api_log_group],
+        )
+
+        logs.QueryDefinition(
+            self,
+            "QueryToolLatency",
+            query_definition_name=f"Hive/{env_name}/tool-latency-p99",
+            query_string=logs.QueryString(
+                stats=["pct(duration_ms, 99) as p99 by tool"],
+                sort="p99 desc",
+            ),
+            log_groups=[mcp_log_group],
+        )
+
+        logs.QueryDefinition(
+            self,
+            "QueryTopClients",
+            query_definition_name=f"Hive/{env_name}/top-clients",
+            query_string=logs.QueryString(
+                stats=["count(*) as requests by client_id"],
+                sort="requests desc",
+            ),
+            log_groups=[mcp_log_group, api_log_group],
+        )
+
+        logs.QueryDefinition(
+            self,
+            "QueryApiLatency",
+            query_definition_name=f"Hive/{env_name}/api-latency",
+            query_string=logs.QueryString(
+                fields=["@timestamp", "method", "path", "status_code", "duration_ms"],
+                filter_statements=["ispresent(method)"],
+                sort="duration_ms desc",
+                limit=100,
+            ),
+            log_groups=[api_log_group],
         )
 
         # ----------------------------------------------------------------
