@@ -160,6 +160,8 @@ class HiveStack(cdk.Stack):
             # APP_VERSION is injected at deploy time via the APP_VERSION env var.
             # Falls back to "dev" for local synth/deploy without a version set.
             "APP_VERSION": app_version,
+            # Used by EMF metrics as the "Environment" dimension.
+            "HIVE_ENV": env_name,
         }
 
         # Tag every resource with the deployed version for operational visibility.
