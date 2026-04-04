@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import time
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -25,8 +26,12 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
 
 from hive.auth.tokens import validate_bearer_token
+from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.models import ActivityEvent, EventType, Memory
 from hive.storage import HiveStorage
+
+configure_logging("mcp")
+logger = get_logger("hive.server")
 
 
 def _app_version() -> str:
@@ -57,15 +62,23 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
 
     Reads the Authorization header from the HTTP request when running under
     FastMCP's HTTP transport, falling back to ctx.request_context.meta for
-    direct invocation (integration tests).
+    direct invocation (integration tests).  Also sets per-request logging
+    context (request_id, client_id).
     """
     storage = HiveStorage()
     auth_header: str | None = None
+    request_id = new_request_id()
 
     # HTTP transport (Lambda / local HTTP server)
     try:
         request = get_http_request()
         auth_header = request.headers.get("authorization")
+        # Prefer the Lambda / ALB request ID for correlation with CloudWatch.
+        request_id = (
+            request.headers.get("x-amzn-requestid")
+            or request.headers.get("x-request-id")
+            or request_id
+        )
     except RuntimeError:
         pass
 
@@ -79,6 +92,7 @@ def _auth(ctx: Context) -> tuple[HiveStorage, str]:
     except ValueError as exc:
         raise ToolError(f"Unauthorized: {exc}") from exc
 
+    set_request_context(request_id, token.client_id)
     return storage, token.client_id
 
 
@@ -95,6 +109,7 @@ async def remember(
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Store or update a memory with optional tags."""
+    t0 = time.monotonic()
     storage, client_id = _auth(ctx)
     tags = tags or []
 
@@ -104,6 +119,14 @@ async def remember(
     if existing:
         # Idempotent: skip write and log if nothing changed
         if existing.value == value and set(existing.tags) == set(tags):
+            logger.info(
+                "Memory unchanged",
+                extra={
+                    "tool": "remember",
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "status": "unchanged",
+                },
+            )
             return f"Memory '{key}' unchanged."
         existing.value = value
         existing.tags = tags
@@ -124,6 +147,16 @@ async def remember(
             metadata={"key": key, "tags": tags},
         )
     )
+    logger.info(
+        "%s memory '%s'",
+        action,
+        key,
+        extra={
+            "tool": "remember",
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "status": "success",
+        },
+    )
     return f"{action} memory '{key}'."
 
 
@@ -133,10 +166,20 @@ async def recall(
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Retrieve a memory by its key."""
+    t0 = time.monotonic()
     storage, client_id = _auth(ctx)
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
+        logger.warning(
+            "Memory not found for key '%s'",
+            key,
+            extra={
+                "tool": "recall",
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+                "status": "not_found",
+            },
+        )
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.log_event(
@@ -145,6 +188,15 @@ async def recall(
             client_id=client_id,
             metadata={"key": key},
         )
+    )
+    logger.info(
+        "Recalled memory '%s'",
+        key,
+        extra={
+            "tool": "recall",
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "status": "success",
+        },
     )
     return memory.value
 
@@ -155,10 +207,20 @@ async def forget(
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Delete a memory by its key."""
+    t0 = time.monotonic()
     storage, client_id = _auth(ctx)
 
     existing = storage.get_memory_by_key(key)
     if existing is None:
+        logger.warning(
+            "Memory not found for key '%s'",
+            key,
+            extra={
+                "tool": "forget",
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+                "status": "not_found",
+            },
+        )
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.delete_memory(existing.memory_id)
@@ -169,6 +231,15 @@ async def forget(
             metadata={"key": key},
         )
     )
+    logger.info(
+        "Deleted memory '%s'",
+        key,
+        extra={
+            "tool": "forget",
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "status": "success",
+        },
+    )
     return f"Deleted memory '{key}'."
 
 
@@ -178,6 +249,7 @@ async def list_memories(
     ctx: Context = None,  # type: ignore[assignment]
 ) -> list[dict]:
     """List all memories that have a specific tag."""
+    t0 = time.monotonic()
     storage, client_id = _auth(ctx)
 
     memories = storage.list_memories_by_tag(tag)
@@ -187,6 +259,16 @@ async def list_memories(
             client_id=client_id,
             metadata={"tag": tag, "count": len(memories)},
         )
+    )
+    logger.info(
+        "Listed %d memories for tag '%s'",
+        len(memories),
+        tag,
+        extra={
+            "tool": "list_memories",
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "status": "success",
+        },
     )
     return [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories]
 
@@ -202,12 +284,21 @@ async def summarize_context(
     Memories are retrieved by tag matching the topic.  The summary lists each
     memory and then provides a combined overview paragraph.
     """
+    t0 = time.monotonic()
     storage, client_id = _auth(ctx)
 
     memories = storage.list_memories_by_tag(topic)
 
     if not memories:
-        # Fallback: try as a key prefix scan isn't cheap; just report no memories
+        logger.info(
+            "No memories for topic '%s'",
+            topic,
+            extra={
+                "tool": "summarize_context",
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+                "status": "empty",
+            },
+        )
         return f"No memories found for topic '{topic}'."
 
     lines = [f"## Memories tagged '{topic}'\n"]
@@ -225,6 +316,16 @@ async def summarize_context(
             client_id=client_id,
             metadata={"topic": topic, "memory_count": len(memories)},
         )
+    )
+    logger.info(
+        "Summarized %d memories for topic '%s'",
+        len(memories),
+        topic,
+        extra={
+            "tool": "summarize_context",
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "status": "success",
+        },
     )
     return "\n".join(lines)
 
