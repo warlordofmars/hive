@@ -16,6 +16,8 @@ Usage:
     uv run inv outputs                      # print CloudFormation stack outputs
     uv run inv seed                         # seed local DynamoDB with demo data
     uv run inv seed --env jc               # seed deployed jc env via management API
+    uv run inv install-hooks               # install pre-push hook (run once after clone)
+    uv run inv pre-push                    # full local CI gate (lint+typecheck+unit+frontend)
 """
 
 import os
@@ -205,6 +207,11 @@ def test_frontend(ctx):
 @task(test_unit, test_integration, test_frontend)
 def test(ctx):
     """Run all tests (unit + integration + frontend)"""
+
+
+@task(lint_backend, typecheck, test_unit, test_frontend)
+def pre_push(ctx):
+    """Local CI gate: lint + typecheck + unit tests + frontend tests (run before every push)"""
 
 
 @task
@@ -522,6 +529,23 @@ def back_merge(ctx):
         ctx.run(f"gh pr merge '{pr_url}' --auto --merge", warn=True)
     else:
         print(f"gh pr create failed: {result.stderr.strip()}")
+
+
+# ── Hooks ─────────────────────────────────────────────────────────────────────
+
+
+@task
+def install_hooks(ctx):
+    """Install git hooks from hooks/ into .git/hooks/ (run once after cloning)"""
+    hooks_src = ROOT / "hooks"
+    hooks_dst = ROOT / ".git" / "hooks"
+    for hook in hooks_src.iterdir():
+        dst = hooks_dst / hook.name
+        dst.unlink(missing_ok=True)
+        dst.symlink_to(hook.resolve())
+        dst.chmod(0o755)
+        print(f"  Installed {hook.name} → .git/hooks/{hook.name}")
+    print("Git hooks installed.")
 
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
