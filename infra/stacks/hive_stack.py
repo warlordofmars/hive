@@ -384,7 +384,7 @@ class HiveStack(cdk.Stack):
             "QueryToolLatency",
             query_definition_name=f"Hive/{env_name}/tool-latency-p99",
             query_string=logs.QueryString(
-                stats=["pct(duration_ms, 99) as p99 by tool"],
+                stats_statements=["pct(duration_ms, 99) as p99 by tool"],
                 sort="p99 desc",
             ),
             log_groups=[mcp_log_group],
@@ -395,7 +395,7 @@ class HiveStack(cdk.Stack):
             "QueryTopClients",
             query_definition_name=f"Hive/{env_name}/top-clients",
             query_string=logs.QueryString(
-                stats=["count(*) as requests by client_id"],
+                stats_statements=["count(*) as requests by client_id"],
                 sort="requests desc",
             ),
             log_groups=[mcp_log_group, api_log_group],
