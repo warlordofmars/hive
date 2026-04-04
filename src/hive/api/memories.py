@@ -46,7 +46,10 @@ async def create_memory(
         existing.value = body.value
         existing.tags = body.tags
         existing.updated_at = datetime.now(timezone.utc)
-        storage.put_memory(existing)
+        try:
+            storage.put_memory(existing)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         storage.log_event(
             ActivityEvent(
                 event_type=EventType.memory_updated,
@@ -58,7 +61,10 @@ async def create_memory(
         return MemoryResponse.from_memory(existing)
 
     memory = Memory(key=body.key, value=body.value, tags=body.tags, owner_client_id=client_id)
-    storage.put_memory(memory)
+    try:
+        storage.put_memory(memory)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_created,
@@ -99,7 +105,10 @@ async def update_memory(
         memory.tags = body.tags
     memory.updated_at = datetime.now(timezone.utc)
 
-    storage.put_memory(memory)
+    try:
+        storage.put_memory(memory)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_updated,

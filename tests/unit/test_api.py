@@ -149,6 +149,24 @@ class TestMemories:
         assert resp.status_code == 200
         assert resp.json()["value"] == "updated"
 
+    def test_create_oversized_returns_413(self, client):
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        with patch.object(storage, "put_memory", side_effect=ValueError("Memory value is too large")):
+            resp = tc.post("/api/memories", json={"key": "big", "value": "x" * 1000})
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"]
+
+    def test_update_oversized_returns_413(self, client):
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        mid = tc.post("/api/memories", json={"key": "upd-big", "value": "small"}).json()["memory_id"]
+        with patch.object(storage, "put_memory", side_effect=ValueError("Memory value is too large")):
+            resp = tc.patch(f"/api/memories/{mid}", json={"value": "x" * 1000})
+        assert resp.status_code == 413
+
     def test_list_all(self, client):
         tc, *_ = client
         tc.post("/api/memories", json={"key": "a", "value": "1", "tags": ["x"]})

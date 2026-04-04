@@ -131,12 +131,18 @@ async def remember(
         existing.value = value
         existing.tags = tags
         existing.updated_at = datetime.now(timezone.utc)
-        storage.put_memory(existing)
+        try:
+            storage.put_memory(existing)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
         event_type = EventType.memory_updated
         action = "Updated"
     else:
         memory = Memory(key=key, value=value, tags=tags, owner_client_id=client_id)
-        storage.put_memory(memory)
+        try:
+            storage.put_memory(memory)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
         event_type = EventType.memory_created
         action = "Stored"
 

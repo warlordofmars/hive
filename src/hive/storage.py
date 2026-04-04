@@ -18,6 +18,7 @@ from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from hive.models import (
     ActivityEvent,
@@ -67,10 +68,19 @@ class HiveStorage:
         if existing_raw:
             self._delete_tag_items(Memory.from_dynamo(existing_raw))
 
-        with self.table.batch_writer() as batch:
-            batch.put_item(Item=memory.to_dynamo_meta())
-            for tag_item in memory.to_dynamo_tag_items():
-                batch.put_item(Item=tag_item)
+        try:
+            with self.table.batch_writer() as batch:
+                batch.put_item(Item=memory.to_dynamo_meta())
+                for tag_item in memory.to_dynamo_tag_items():
+                    batch.put_item(Item=tag_item)
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            msg = exc.response["Error"]["Message"]
+            if code == "ValidationException" and "size" in msg.lower():
+                raise ValueError(
+                    "Memory value is too large to store (DynamoDB 400 KB item limit exceeded)."
+                ) from exc
+            raise
 
     def get_memory_by_id(self, memory_id: str) -> Memory | None:
         item = self._get_memory_meta(memory_id)
