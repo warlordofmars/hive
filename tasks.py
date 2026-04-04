@@ -14,6 +14,8 @@ Usage:
     uv run inv deploy                       # deploy to AWS via CDK
     uv run inv synth                        # synthesize CDK template (no Docker bundling)
     uv run inv outputs                      # print CloudFormation stack outputs
+    uv run inv seed                         # seed local DynamoDB with demo data
+    uv run inv seed --env jc               # seed deployed jc env via management API
 """
 
 import os
@@ -57,9 +59,7 @@ def _infer_next_version(ctx):
     major, minor, patch = (int(x) for x in version.split("."))
 
     try:
-        log = ctx.run(
-            f"git log {last_tag}..HEAD --pretty=format:%s", hide=True
-        ).stdout.strip()
+        log = ctx.run(f"git log {last_tag}..HEAD --pretty=format:%s", hide=True).stdout.strip()
     except Exception:
         log = ""
 
@@ -77,7 +77,6 @@ def _infer_next_version(ctx):
         return f"{major}.{minor + 1}.0"
     else:
         return f"{major}.{minor}.{patch + 1}"
-
 
 
 def _aws_account(ctx) -> str:
@@ -348,10 +347,41 @@ def dev(ctx):
     print("      }")
     print("    }")
     print("  }")
-    print("\nPress Ctrl-C to stop all services.\n")
+    print("\nRun 'uv run inv seed' in a new terminal to populate with demo data.")
+    print("Press Ctrl-C to stop all services.\n")
 
     for p in procs:
         p.wait()
+
+
+@task
+def seed(ctx, env=None, token=None, reset=False):
+    """Seed Hive with demo data.
+
+    Local (default):   inv seed [--reset]
+    Deployed env:      inv seed --env jc [--reset] [--token <bearer>]
+                       (token can also be set via HIVE_SEED_TOKEN env var)
+    """
+    seed_env = {
+        **os.environ,
+        "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
+        "HIVE_TABLE_NAME": os.environ.get("HIVE_TABLE_NAME", "hive"),
+        "DYNAMODB_ENDPOINT": os.environ.get("DYNAMODB_ENDPOINT", f"http://localhost:{DYNAMO_PORT}"),
+        "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "local"),
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "local"),
+        "AWS_DEFAULT_REGION": "us-east-1",
+    }
+    if token:
+        seed_env["HIVE_SEED_TOKEN"] = token
+
+    args = []
+    if env:
+        args += ["--env", env]
+    if reset:
+        args.append("--reset")
+
+    cmd = "uv run python scripts/seed_data.py " + " ".join(args)
+    ctx.run(cmd, env=seed_env, pty=True)
 
 
 # ── CDK ───────────────────────────────────────────────────────────────────────
@@ -398,8 +428,7 @@ def deploy(ctx, env="prod"):
 
     with ctx.cd(INFRA):
         ctx.run(
-            f"uv run cdk deploy {stack} --require-approval never"
-            f" -c account={account} -c env={env}",
+            f"uv run cdk deploy {stack} --require-approval never -c account={account} -c env={env}",
             env={"APP_VERSION": app_version},
             pty=True,
         )
