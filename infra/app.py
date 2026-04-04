@@ -19,6 +19,11 @@ env = cdk.Environment(
     region=app.node.try_get_context("region") or "us-east-1",
 )
 
-HiveStack(app, stack_id, env_name=env_name, env=env)
+# hosted_zone_id is required for Route53 hosted zone lookup without live AWS credentials.
+# Pass at synth/deploy time: cdk deploy -c hosted_zone_id=Z1234567890ABC
+# In CI this is injected from the HOSTED_ZONE_ID Actions variable.
+hosted_zone_id = app.node.try_get_context("hosted_zone_id") or ""
+
+HiveStack(app, stack_id, env_name=env_name, hosted_zone_id=hosted_zone_id, env=env)
 
 app.synth()

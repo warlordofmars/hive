@@ -357,11 +357,11 @@ jobs:
 
       - name: Synth prod stack
         working-directory: infra
-        run: cdk synth HiveStack --no-staging -c env=prod
+        run: cdk synth HiveStack --no-staging -c env=prod -c hosted_zone_id=${{ vars.HOSTED_ZONE_ID }}
 
       - name: Synth dev stack
         working-directory: infra
-        run: cdk synth HiveStack-dev --no-staging -c env=dev
+        run: cdk synth HiveStack-dev --no-staging -c env=dev -c hosted_zone_id=${{ vars.HOSTED_ZONE_ID }}
 
 # ── Deploy to dev (push to development) ───────────────────────────────────────
 
