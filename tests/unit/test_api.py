@@ -317,3 +317,121 @@ class TestStats:
         tc, *_ = client
         resp = tc.get("/api/activity", params={"days": 0})
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# _app_version() branches — covers api/main.py:33 and 36-37
+# ---------------------------------------------------------------------------
+
+
+class TestAppVersion:
+    def test_returns_env_var_when_set(self):
+        """Covers main.py line where APP_VERSION env var is returned."""
+        from unittest.mock import patch
+
+        from hive.api.main import _app_version
+
+        with patch.dict(os.environ, {"APP_VERSION": "9.8.7"}):
+            assert _app_version() == "9.8.7"
+
+    def test_returns_dev_when_package_not_found(self):
+        """Covers main.py PackageNotFoundError fallback to 'dev'."""
+        import importlib.metadata
+        from unittest.mock import patch
+
+        from hive.api.main import _app_version
+
+        env = {k: v for k, v in os.environ.items() if k != "APP_VERSION"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "hive.api.main.importlib.metadata.version",
+                side_effect=importlib.metadata.PackageNotFoundError,
+            ),
+        ):
+            assert _app_version() == "dev"
+
+
+# ---------------------------------------------------------------------------
+# Client create — invalid grant type → 400 (covers clients.py:51-52)
+# ---------------------------------------------------------------------------
+
+
+class TestClientCreateErrors:
+    def test_create_invalid_grant_type_returns_400(self, client):
+        tc, *_ = client
+        resp = tc.post(
+            "/api/clients",
+            json={"client_name": "Bad App", "grant_types": ["password"]},
+        )
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Memory upsert oversized → 413 (covers memories.py:68-69)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# require_token success path — covers api/_auth.py:31
+# ---------------------------------------------------------------------------
+
+
+class TestRequireTokenSuccessPath:
+    def test_valid_jwt_reaches_endpoint(self):
+        """Covers _auth.py:31 — return storage, token.client_id on valid token."""
+        from datetime import datetime, timedelta, timezone
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.storage import HiveStorage
+
+        # Ensure the table name env var matches what we create, regardless of
+        # what the combined test run has set (e.g. hive-integration in CI).
+        old_table = os.environ.get("HIVE_TABLE_NAME")
+        os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+        try:
+            with mock_aws():
+                _create_table()
+                storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+                oauth_client = OAuthClient(client_name="Real Auth Client")
+                storage.put_client(oauth_client)
+
+                now = datetime.now(timezone.utc)
+                token = Token(
+                    client_id=oauth_client.client_id,
+                    scope="memories:read memories:write",
+                    issued_at=now,
+                    expires_at=now + timedelta(hours=1),
+                )
+                storage.put_token(token)
+                jwt = issue_jwt(token)
+
+                from hive.api.main import app
+
+                app.dependency_overrides.clear()
+                from fastapi.testclient import TestClient
+
+                tc = TestClient(app, raise_server_exceptions=False)
+                resp = tc.get("/api/memories", headers={"Authorization": f"Bearer {jwt}"})
+                assert resp.status_code == 200
+        finally:
+            if old_table is not None:
+                os.environ["HIVE_TABLE_NAME"] = old_table
+            else:
+                os.environ.pop("HIVE_TABLE_NAME", None)
+
+
+class TestMemoryUpsertOversized:
+    def test_upsert_existing_oversized_returns_413(self, client):
+        """POST with existing key hits upsert path; oversized raises 413."""
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        # Create the memory first so upsert path is taken
+        tc.post("/api/memories", json={"key": "upsert-big", "value": "small"})
+        with patch.object(
+            storage, "put_memory", side_effect=ValueError("Memory value is too large")
+        ):
+            resp = tc.post("/api/memories", json={"key": "upsert-big", "value": "x" * 1000})
+        assert resp.status_code == 413

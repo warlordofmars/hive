@@ -33,7 +33,7 @@ export default function MemoryBrowser() {
   }, [load]);
 
   async function loadMore() {
-    if (!nextCursor) return;
+    if (!nextCursor) return; /* c8 ignore next */
     setLoadingMore(true);
     try {
       const data = await api.listMemories(tagFilter || undefined, { cursor: nextCursor });

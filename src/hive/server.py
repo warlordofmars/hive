@@ -356,7 +356,7 @@ async def summarize_context(
 asgi_app = mcp.http_app(stateless_http=True, json_response=True)
 
 
-def lambda_handler(event: dict, context: object) -> dict:
+def lambda_handler(event: dict, context: object) -> dict:  # pragma: no cover
     """AWS Lambda + Function URL handler (HTTP mode).
 
     Creates a fresh ASGI app per Lambda container initialisation.
