@@ -12,6 +12,8 @@ GSIs:
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -41,6 +43,19 @@ AUTH_CODE_TTL_SECONDS = 300  # 5 minutes
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _encode_cursor(last_evaluated_key: dict) -> str:
+    """Encode a DynamoDB LastEvaluatedKey as an opaque base64 cursor."""
+    return base64.urlsafe_b64encode(json.dumps(last_evaluated_key).encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> dict:
+    """Decode a base64 cursor back to a DynamoDB ExclusiveStartKey."""
+    try:
+        return json.loads(base64.urlsafe_b64decode(cursor.encode()))
+    except Exception as exc:
+        raise ValueError(f"Invalid pagination cursor: {cursor!r}") from exc
 
 
 class HiveStorage:
@@ -112,45 +127,65 @@ class HiveStorage:
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         return True
 
-    def list_memories_by_tag(self, tag: str) -> list[Memory]:
-        """Query TagIndex GSI to find all memories with a given tag."""
-        resp = self.table.query(
-            IndexName="TagIndex",
-            KeyConditionExpression=Key("GSI2PK").eq(f"TAG#{tag}"),
-        )
+    def list_memories_by_tag(
+        self,
+        tag: str,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> tuple[list[Memory], str | None]:
+        """Query TagIndex GSI to find memories with a given tag.
+
+        Returns (memories, next_cursor). next_cursor is None when exhausted.
+        """
+        kwargs: dict[str, Any] = {
+            "IndexName": "TagIndex",
+            "KeyConditionExpression": Key("GSI2PK").eq(f"TAG#{tag}"),
+            "Limit": limit,
+        }
+        if cursor:
+            kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
+
+        resp = self.table.query(**kwargs)
         memories: list[Memory] = []
         for item in resp.get("Items", []):
             m = self.get_memory_by_id(item["memory_id"])
             if m is not None:
                 memories.append(m)
-        return memories
 
-    def list_all_memories(self, client_id: str | None = None) -> list[Memory]:
-        """Scan for all META items (optionally filtered by owner_client_id).
-        Use sparingly — prefer tag-based queries in production.
+        lek = resp.get("LastEvaluatedKey")
+        next_cursor = _encode_cursor(lek) if lek else None
+        return memories, next_cursor
+
+    def list_all_memories(
+        self,
+        client_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list[Memory], str | None]:
+        """Scan for all META memory items (optionally filtered by owner_client_id).
+
+        Returns (memories, next_cursor). Use sparingly — prefer tag-based queries.
         """
+        kwargs: dict[str, Any] = {
+            "FilterExpression": "SK = :sk AND begins_with(PK, :pk_prefix)",
+            "ExpressionAttributeValues": {":sk": "META", ":pk_prefix": "MEMORY#"},
+            "Limit": limit,
+        }
         if client_id:
-            resp = self.table.scan(
-                FilterExpression="SK = :sk AND begins_with(PK, :pk_prefix) AND owner_client_id = :cid",
-                ExpressionAttributeValues={
-                    ":sk": "META",
-                    ":pk_prefix": "MEMORY#",
-                    ":cid": client_id,
-                },
-            )
-        else:
-            resp = self.table.scan(
-                FilterExpression="SK = :sk AND begins_with(PK, :pk_prefix)",
-                ExpressionAttributeValues={
-                    ":sk": "META",
-                    ":pk_prefix": "MEMORY#",
-                },
-            )
-        return [
+            kwargs["FilterExpression"] += " AND owner_client_id = :cid"
+            kwargs["ExpressionAttributeValues"][":cid"] = client_id
+        if cursor:
+            kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
+
+        resp = self.table.scan(**kwargs)
+        memories = [
             Memory.from_dynamo(i)
             for i in resp.get("Items", [])
             if i["SK"] == "META" and i["PK"].startswith("MEMORY#")
         ]
+        lek = resp.get("LastEvaluatedKey")
+        next_cursor = _encode_cursor(lek) if lek else None
+        return memories, next_cursor
 
     # ------------------------------------------------------------------
     # OAuth Client management
@@ -171,12 +206,24 @@ class HiveStorage:
         self.table.delete_item(Key={"PK": f"CLIENT#{client_id}", "SK": "META"})
         return True
 
-    def list_clients(self) -> list[OAuthClient]:
-        resp = self.table.scan(
-            FilterExpression="begins_with(PK, :prefix) AND SK = :sk",
-            ExpressionAttributeValues={":prefix": "CLIENT#", ":sk": "META"},
-        )
-        return [OAuthClient.from_dynamo(i) for i in resp.get("Items", [])]
+    def list_clients(
+        self,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list[OAuthClient], str | None]:
+        kwargs: dict[str, Any] = {
+            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk",
+            "ExpressionAttributeValues": {":prefix": "CLIENT#", ":sk": "META"},
+            "Limit": limit,
+        }
+        if cursor:
+            kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
+
+        resp = self.table.scan(**kwargs)
+        clients = [OAuthClient.from_dynamo(i) for i in resp.get("Items", [])]
+        lek = resp.get("LastEvaluatedKey")
+        next_cursor = _encode_cursor(lek) if lek else None
+        return clients, next_cursor
 
     # ------------------------------------------------------------------
     # Authorization codes
@@ -290,11 +337,17 @@ class HiveStorage:
 
         return events
 
-    def get_events_for_dates(self, dates: list[str]) -> list[ActivityEvent]:
+    def get_events_for_dates(
+        self,
+        dates: list[str],
+        limit: int = 100,
+    ) -> list[ActivityEvent]:
+        """Fetch events across multiple dates, sorted newest-first, capped at limit."""
         events: list[ActivityEvent] = []
         for d in dates:
             events.extend(self.get_events_for_date(d))
-        return sorted(events, key=lambda e: e.timestamp, reverse=True)
+        events.sort(key=lambda e: e.timestamp, reverse=True)
+        return events[:limit]
 
     # ------------------------------------------------------------------
     # Stats

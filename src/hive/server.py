@@ -252,13 +252,16 @@ async def forget(
 @mcp.tool()
 async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
+    limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
+    cursor: Annotated[str | None, "Pagination cursor from a previous call"] = None,
     ctx: Context = None,  # type: ignore[assignment]
-) -> list[dict]:
-    """List all memories that have a specific tag."""
+) -> dict:
+    """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
     storage, client_id = _auth(ctx)
 
-    memories = storage.list_memories_by_tag(tag)
+    limit = max(1, min(limit, 500))
+    memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_listed,
@@ -276,7 +279,14 @@ async def list_memories(
             "status": "success",
         },
     )
-    return [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories]
+    result: dict = {
+        "items": [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories],
+        "count": len(memories),
+        "has_more": next_cursor is not None,
+    }
+    if next_cursor:
+        result["next_cursor"] = next_cursor
+    return result
 
 
 @mcp.tool()
@@ -293,7 +303,7 @@ async def summarize_context(
     t0 = time.monotonic()
     storage, client_id = _auth(ctx)
 
-    memories = storage.list_memories_by_tag(topic)
+    memories, _ = storage.list_memories_by_tag(topic, limit=500)
 
     if not memories:
         logger.info(

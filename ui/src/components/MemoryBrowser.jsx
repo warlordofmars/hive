@@ -4,19 +4,23 @@ import { api } from "../api.js";
 
 export default function MemoryBrowser() {
   const [memories, setMemories] = useState([]);
+  const [nextCursor, setNextCursor] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [tagFilter, setTagFilter] = useState("");
-  const [editing, setEditing] = useState(null);   // memory object or null
+  const [editing, setEditing] = useState(null); // memory object or null
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ key: "", value: "", tags: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
+    setNextCursor(null);
     try {
       const data = await api.listMemories(tagFilter || undefined);
-      setMemories(data);
+      setMemories(data.items);
+      setNextCursor(data.next_cursor ?? null);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -24,7 +28,23 @@ export default function MemoryBrowser() {
     }
   }, [tagFilter]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function loadMore() {
+    if (!nextCursor) return;
+    setLoadingMore(true);
+    try {
+      const data = await api.listMemories(tagFilter || undefined, { cursor: nextCursor });
+      setMemories((prev) => [...prev, ...data.items]);
+      setNextCursor(data.next_cursor ?? null);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function handleCreate(e) {
     e.preventDefault();
@@ -32,7 +52,10 @@ export default function MemoryBrowser() {
       await api.createMemory({
         key: form.key,
         value: form.value,
-        tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
+        tags: form.tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
       });
       setCreating(false);
       setForm({ key: "", value: "", tags: "" });
@@ -47,7 +70,10 @@ export default function MemoryBrowser() {
     try {
       await api.updateMemory(editing.memory_id, {
         value: form.value,
-        tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
+        tags: form.tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
       });
       setEditing(null);
       load();
@@ -90,7 +116,9 @@ export default function MemoryBrowser() {
             value={tagFilter}
             onChange={(e) => setTagFilter(e.target.value)}
           />
-          <button className="primary" onClick={openCreate}>+ New</button>
+          <button className="primary" onClick={openCreate}>
+            + New
+          </button>
         </div>
 
         {error && <p style={{ color: "red", marginBottom: 12 }}>{error}</p>}
@@ -110,20 +138,40 @@ export default function MemoryBrowser() {
               style={{ cursor: "pointer", borderLeft: "4px solid #1a73e8" }}
               onClick={() => openEdit(m)}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                }}
+              >
                 <div>
                   <strong>{m.key}</strong>
-                  <p style={{ marginTop: 4, color: "#555", fontSize: 13, whiteSpace: "pre-wrap" }}>
+                  <p
+                    style={{
+                      marginTop: 4,
+                      color: "#555",
+                      fontSize: 13,
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
                     {m.value.length > 160 ? m.value.slice(0, 160) + "…" : m.value}
                   </p>
                   <div style={{ marginTop: 6 }}>
-                    {m.tags.map((t) => <span key={t} className="badge">{t}</span>)}
+                    {m.tags.map((t) => (
+                      <span key={t} className="badge">
+                        {t}
+                      </span>
+                    ))}
                   </div>
                 </div>
                 <button
                   className="danger"
                   style={{ marginLeft: 12, flexShrink: 0 }}
-                  onClick={(e) => { e.stopPropagation(); handleDelete(m.memory_id); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(m.memory_id);
+                  }}
                 >
                   Delete
                 </button>
@@ -131,6 +179,14 @@ export default function MemoryBrowser() {
             </div>
           ))}
         </div>
+
+        {nextCursor && (
+          <div style={{ textAlign: "center", marginTop: 16 }}>
+            <button className="secondary" onClick={loadMore} disabled={loadingMore}>
+              {loadingMore ? "Loading…" : "Load more"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Side form */}
@@ -171,8 +227,19 @@ export default function MemoryBrowser() {
                 />
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="primary" type="submit">Save</button>
-                <button className="secondary" type="button" onClick={() => { setCreating(false); setEditing(null); }}>Cancel</button>
+                <button className="primary" type="submit">
+                  Save
+                </button>
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={() => {
+                    setCreating(false);
+                    setEditing(null);
+                  }}
+                >
+                  Cancel
+                </button>
               </div>
             </form>
           </div>

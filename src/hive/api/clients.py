@@ -5,7 +5,7 @@ OAuth client management endpoints for the Hive management API.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from hive.api._auth import require_token
 from hive.auth.dcr import register_client
@@ -14,22 +14,30 @@ from hive.models import (
     ClientRegistrationRequest,
     ClientRegistrationResponse,
     EventType,
+    PagedResponse,
 )
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["clients"])
 
+_LIMIT_DEFAULT = 50
+_LIMIT_MAX = 200
 
-class ClientSummary(ClientRegistrationResponse):
-    created_at: str
 
-
-@router.get("/clients", response_model=list[ClientRegistrationResponse])
+@router.get("/clients", response_model=PagedResponse)
 async def list_clients(
+    limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
+    cursor: str | None = Query(None),
     auth: tuple[HiveStorage, str] = Depends(require_token),
-) -> list[ClientRegistrationResponse]:
+) -> PagedResponse:
     storage, _ = auth
-    return [ClientRegistrationResponse.from_client(c) for c in storage.list_clients()]
+    clients, next_cursor = storage.list_clients(limit=limit, cursor=cursor)
+    return PagedResponse(
+        items=[ClientRegistrationResponse.from_client(c).model_dump() for c in clients],
+        count=len(clients),
+        has_more=next_cursor is not None,
+        next_cursor=next_cursor,
+    )
 
 
 @router.post("/clients", response_model=ClientRegistrationResponse, status_code=201)

@@ -17,6 +17,8 @@ const EVENT_COLORS = {
 
 export default function ActivityLog() {
   const [events, setEvents] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [limit, setLimit] = useState(100);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [stats, setStats] = useState(null);
@@ -26,17 +28,20 @@ export default function ActivityLog() {
     setLoading(true);
     setError("");
     try {
-      const [evts, s] = await Promise.all([api.getActivity(days), api.getStats()]);
-      setEvents(evts);
+      const [page, s] = await Promise.all([api.getActivity(days, { limit }), api.getStats()]);
+      setEvents(page.items);
+      setHasMore(page.has_more);
       setStats(s);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, [days]);
+  }, [days, limit]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <div>
@@ -68,7 +73,15 @@ export default function ActivityLog() {
             <option key={d} value={d}>{d} days</option>
           ))}
         </select>
-        <span style={{ color: "#888", fontSize: 13 }}>{events.length} events</span>
+        <label style={{ marginBottom: 0, marginLeft: 8 }}>Limit</label>
+        <select style={{ width: 80 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+          {[50, 100, 250, 500].map((l) => (
+            <option key={l} value={l}>{l}</option>
+          ))}
+        </select>
+        <span style={{ color: "#888", fontSize: 13 }}>
+          {events.length} events{hasMore ? " (more available)" : ""}
+        </span>
         <button className="secondary" onClick={load} style={{ marginLeft: "auto" }}>Refresh</button>
       </div>
 

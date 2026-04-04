@@ -107,11 +107,11 @@ class TestMemoryStorage:
         for m in [m1, m2, m3]:
             storage.put_memory(m)
 
-        tagged_y = storage.list_memories_by_tag("y")
+        tagged_y, _ = storage.list_memories_by_tag("y")
         keys = {m.key for m in tagged_y}
         assert keys == {"a", "b"}
 
-        tagged_z = storage.list_memories_by_tag("z")
+        tagged_z, _ = storage.list_memories_by_tag("z")
         keys_z = {m.key for m in tagged_z}
         assert keys_z == {"b", "c"}
 
@@ -122,9 +122,9 @@ class TestMemoryStorage:
         m.tags = ["new"]
         storage.put_memory(m)
 
-        old_tagged = storage.list_memories_by_tag("old")
+        old_tagged, _ = storage.list_memories_by_tag("old")
         assert old_tagged == []
-        new_tagged = storage.list_memories_by_tag("new")
+        new_tagged, _ = storage.list_memories_by_tag("new")
         assert len(new_tagged) == 1
 
     def test_upsert_by_key(self, storage):
@@ -201,7 +201,7 @@ class TestClientStorage:
     def test_list(self, storage):
         for i in range(3):
             storage.put_client(OAuthClient(client_name=f"App {i}"))
-        clients = storage.list_clients()
+        clients, _ = storage.list_clients()
         assert len(clients) == 3
 
 
@@ -294,14 +294,14 @@ class TestListAllAndCounts:
     def test_list_all_memories(self, storage):
         storage.put_memory(Memory(key="x", value="1", owner_client_id="c1"))
         storage.put_memory(Memory(key="y", value="2", owner_client_id="c2"))
-        all_mems = storage.list_all_memories()
+        all_mems, _ = storage.list_all_memories()
         keys = {m.key for m in all_mems}
         assert {"x", "y"}.issubset(keys)
 
     def test_list_all_memories_filtered_by_client(self, storage):
         storage.put_memory(Memory(key="a", value="1", owner_client_id="client-a"))
         storage.put_memory(Memory(key="b", value="2", owner_client_id="client-b"))
-        mems = storage.list_all_memories(client_id="client-a")
+        mems, _ = storage.list_all_memories(client_id="client-a")
         assert all(m.owner_client_id == "client-a" for m in mems)
         assert any(m.key == "a" for m in mems)
 
@@ -318,3 +318,56 @@ class TestListAllAndCounts:
         storage.put_client(OAuthClient(client_name="A"))
         storage.put_client(OAuthClient(client_name="B"))
         assert storage.count_clients() == 2
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+
+class TestPagination:
+    def test_list_all_memories_cursor(self, storage):
+        for i in range(5):
+            storage.put_memory(Memory(key=f"pg-{i}", value="v", owner_client_id="c1"))
+
+        page1, cursor1 = storage.list_all_memories(limit=3)
+        assert len(page1) == 3
+        assert cursor1 is not None
+
+        page2, cursor2 = storage.list_all_memories(limit=3, cursor=cursor1)
+        assert len(page2) == 2
+        assert cursor2 is None
+
+        all_keys = {m.key for m in page1 + page2}
+        assert all_keys == {f"pg-{i}" for i in range(5)}
+
+    def test_list_memories_by_tag_cursor(self, storage):
+        for i in range(4):
+            storage.put_memory(
+                Memory(key=f"tpg-{i}", value="v", tags=["page"], owner_client_id="c1")
+            )
+
+        page1, cursor1 = storage.list_memories_by_tag("page", limit=2)
+        assert len(page1) == 2
+        assert cursor1 is not None
+
+        page2, cursor2 = storage.list_memories_by_tag("page", limit=2, cursor=cursor1)
+        assert len(page2) == 2
+        assert cursor2 is None
+
+    def test_invalid_cursor_raises(self, storage):
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_all_memories(cursor="not-valid-base64!!!")
+
+    def test_activity_limit_respected(self, storage):
+        from datetime import date
+
+        from hive.models import ActivityEvent, EventType
+
+        today = date.today().isoformat()
+        for _i in range(10):
+            storage.log_event(
+                ActivityEvent(event_type=EventType.memory_recalled, client_id="c1", metadata={})
+            )
+        events = storage.get_events_for_dates([today], limit=5)
+        assert len(events) <= 5

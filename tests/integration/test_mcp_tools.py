@@ -146,7 +146,7 @@ class TestMCPTools:
         await remember(key="list-b", value="B", tags=["listtest"], ctx=ctx)
 
         result = await list_memories(tag="listtest", ctx=ctx)
-        keys = [m["key"] for m in result]
+        keys = [m["key"] for m in result["items"]]
         assert "list-a" in keys
         assert "list-b" in keys
 

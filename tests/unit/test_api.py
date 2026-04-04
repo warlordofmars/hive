@@ -179,7 +179,9 @@ class TestMemories:
         tc.post("/api/memories", json={"key": "b", "value": "2", "tags": ["y"]})
         resp = tc.get("/api/memories")
         assert resp.status_code == 200
-        keys = {m["key"] for m in resp.json()}
+        data = resp.json()
+        assert "items" in data and "has_more" in data
+        keys = {m["key"] for m in data["items"]}
         assert {"a", "b"}.issubset(keys)
 
     def test_list_filtered_by_tag(self, client):
@@ -188,7 +190,7 @@ class TestMemories:
         tc.post("/api/memories", json={"key": "untagged", "value": "v", "tags": []})
         resp = tc.get("/api/memories", params={"tag": "filter-tag"})
         assert resp.status_code == 200
-        keys = [m["key"] for m in resp.json()]
+        keys = [m["key"] for m in resp.json()["items"]]
         assert "tagged" in keys
         assert "untagged" not in keys
 
@@ -253,7 +255,9 @@ class TestClients:
         tc.post("/api/clients", json={"client_name": "App B"})
         resp = tc.get("/api/clients")
         assert resp.status_code == 200
-        assert len(resp.json()) >= 2
+        data = resp.json()
+        assert "items" in data and "has_more" in data
+        assert len(data["items"]) >= 2
 
     def test_get_by_id(self, client):
         tc, *_ = client
@@ -300,7 +304,9 @@ class TestStats:
         tc, *_ = client
         resp = tc.get("/api/activity")
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        data = resp.json()
+        assert "items" in data and "has_more" in data
+        assert isinstance(data["items"], list)
 
     def test_get_activity_custom_days(self, client):
         tc, *_ = client

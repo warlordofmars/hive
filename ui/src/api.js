@@ -32,20 +32,30 @@ async function request(method, path, body) {
 
 export const api = {
   // Memories
-  listMemories: (tag) =>
-    request("GET", `/api/memories${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`),
+  listMemories: (tag, { limit = 50, cursor } = {}) => {
+    const params = new URLSearchParams();
+    if (tag) params.set("tag", tag);
+    params.set("limit", limit);
+    if (cursor) params.set("cursor", cursor);
+    return request("GET", `/api/memories?${params}`);
+  },
   getMemory: (id) => request("GET", `/api/memories/${id}`),
   createMemory: (body) => request("POST", "/api/memories", body),
   updateMemory: (id, body) => request("PATCH", `/api/memories/${id}`, body),
   deleteMemory: (id) => request("DELETE", `/api/memories/${id}`),
 
   // Clients
-  listClients: () => request("GET", "/api/clients"),
+  listClients: ({ limit = 50, cursor } = {}) => {
+    const params = new URLSearchParams({ limit });
+    if (cursor) params.set("cursor", cursor);
+    return request("GET", `/api/clients?${params}`);
+  },
   getClient: (id) => request("GET", `/api/clients/${id}`),
   createClient: (body) => request("POST", "/api/clients", body),
   deleteClient: (id) => request("DELETE", `/api/clients/${id}`),
 
   // Stats & Activity
   getStats: () => request("GET", "/api/stats"),
-  getActivity: (days = 7) => request("GET", `/api/activity?days=${days}`),
+  getActivity: (days = 7, { limit = 100 } = {}) =>
+    request("GET", `/api/activity?days=${days}&limit=${limit}`),
 };
