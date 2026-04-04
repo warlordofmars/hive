@@ -15,6 +15,8 @@ Tools:
 
 from __future__ import annotations
 
+import importlib.metadata
+import os
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -26,10 +28,20 @@ from hive.auth.tokens import validate_bearer_token
 from hive.models import ActivityEvent, EventType, Memory
 from hive.storage import HiveStorage
 
+
+def _app_version() -> str:
+    if v := os.environ.get("APP_VERSION"):
+        return v
+    try:
+        return importlib.metadata.version("hive")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
 mcp = FastMCP(
     name="Hive",
     instructions=(
-        "Hive is a shared persistent memory server for Claude agents and teams. "
+        f"Hive {_app_version()} — shared persistent memory server for Claude agents and teams. "
         "Use the memory tools to store, retrieve, and organise information across "
         "conversations and agent runs."
     ),

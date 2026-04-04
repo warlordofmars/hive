@@ -1,6 +1,6 @@
 [project]
 name = "hive"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Shared persistent memory MCP server for Claude agents and teams"
 requires-python = ">=3.10"
 dependencies = [
@@ -60,8 +60,11 @@ module = ["jose.*", "moto.*"]
 ignore_missing_imports = true
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hive"]
