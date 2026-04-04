@@ -165,27 +165,42 @@ class HiveStorage:
         """Scan for all META memory items (optionally filtered by owner_client_id).
 
         Returns (memories, next_cursor). Use sparingly — prefer tag-based queries.
-        """
-        kwargs: dict[str, Any] = {
-            "FilterExpression": "SK = :sk AND begins_with(PK, :pk_prefix)",
-            "ExpressionAttributeValues": {":sk": "META", ":pk_prefix": "MEMORY#"},
-            "Limit": limit,
-        }
-        if client_id:
-            kwargs["FilterExpression"] += " AND owner_client_id = :cid"
-            kwargs["ExpressionAttributeValues"][":cid"] = client_id
-        if cursor:
-            kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
 
-        resp = self.table.scan(**kwargs)
-        memories = [
-            Memory.from_dynamo(i)
-            for i in resp.get("Items", [])
-            if i["SK"] == "META" and i["PK"].startswith("MEMORY#")
-        ]
-        lek = resp.get("LastEvaluatedKey")
-        next_cursor = _encode_cursor(lek) if lek else None
-        return memories, next_cursor
+        Iterates DynamoDB scan pages until *limit* matching items are collected,
+        avoiding the "Limit evaluates N items before filter" footgun that causes
+        misses in single-table designs with mixed item types.
+        """
+        filter_expr = "SK = :sk AND begins_with(PK, :pk_prefix)"
+        expr_vals: dict[str, Any] = {":sk": "META", ":pk_prefix": "MEMORY#"}
+        if client_id:
+            filter_expr += " AND owner_client_id = :cid"
+            expr_vals[":cid"] = client_id
+
+        start_key = _decode_cursor(cursor) if cursor else None
+        memories: list[Memory] = []
+
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": filter_expr,
+                "ExpressionAttributeValues": expr_vals,
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                memories.append(Memory.from_dynamo(item))
+                if len(memories) >= limit:
+                    break
+
+            lek = resp.get("LastEvaluatedKey")
+            if len(memories) >= limit:
+                last = memories[limit - 1]
+                next_key = {"PK": f"MEMORY#{last.memory_id}", "SK": "META"}
+                return memories[:limit], _encode_cursor(next_key)
+            if lek is None:
+                return memories, None
+            start_key = lek
 
     # ------------------------------------------------------------------
     # OAuth Client management
@@ -211,19 +226,34 @@ class HiveStorage:
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[OAuthClient], str | None]:
-        kwargs: dict[str, Any] = {
-            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk",
-            "ExpressionAttributeValues": {":prefix": "CLIENT#", ":sk": "META"},
-            "Limit": limit,
-        }
-        if cursor:
-            kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
+        filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
+        expr_vals: dict[str, Any] = {":prefix": "CLIENT#", ":sk": "META"}
 
-        resp = self.table.scan(**kwargs)
-        clients = [OAuthClient.from_dynamo(i) for i in resp.get("Items", [])]
-        lek = resp.get("LastEvaluatedKey")
-        next_cursor = _encode_cursor(lek) if lek else None
-        return clients, next_cursor
+        start_key = _decode_cursor(cursor) if cursor else None
+        clients: list[OAuthClient] = []
+
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": filter_expr,
+                "ExpressionAttributeValues": expr_vals,
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                clients.append(OAuthClient.from_dynamo(item))
+                if len(clients) >= limit:
+                    break
+
+            lek = resp.get("LastEvaluatedKey")
+            if len(clients) >= limit:
+                last = clients[limit - 1]
+                next_key = {"PK": f"CLIENT#{last.client_id}", "SK": "META"}
+                return clients[:limit], _encode_cursor(next_key)
+            if lek is None:
+                return clients, None
+            start_key = lek
 
     # ------------------------------------------------------------------
     # Authorization codes
