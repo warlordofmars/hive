@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from hive.auth.tokens import validate_bearer_token
+from hive.metrics import emit_metric
 from hive.storage import HiveStorage
 
 _bearer = HTTPBearer()
@@ -27,5 +28,6 @@ async def require_token(
     try:
         token = validate_bearer_token(f"Bearer {credentials.credentials}", storage)
     except ValueError as exc:
+        await emit_metric("TokenValidationFailures")
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return storage, token.client_id

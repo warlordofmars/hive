@@ -27,6 +27,7 @@ from fastmcp.server.dependencies import get_http_request
 
 from hive.auth.tokens import validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
+from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory
 from hive.storage import HiveStorage
 
@@ -134,6 +135,7 @@ async def remember(
         try:
             storage.put_memory(existing)
         except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember")
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_updated
         action = "Updated"
@@ -142,6 +144,7 @@ async def remember(
         try:
             storage.put_memory(memory)
         except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember")
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_created
         action = "Stored"
@@ -153,15 +156,20 @@ async def remember(
             metadata={"key": key, "tags": tags},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "%s memory '%s'",
         action,
         key,
         extra={
             "tool": "remember",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="remember")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="remember"
     )
     return f"{action} memory '{key}'."
 
@@ -186,6 +194,7 @@ async def recall(
                 "status": "not_found",
             },
         )
+        await emit_metric("ToolErrors", operation="recall")
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.log_event(
@@ -195,14 +204,19 @@ async def recall(
             metadata={"key": key},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Recalled memory '%s'",
         key,
         extra={
             "tool": "recall",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="recall")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="recall"
     )
     return memory.value
 
@@ -227,6 +241,7 @@ async def forget(
                 "status": "not_found",
             },
         )
+        await emit_metric("ToolErrors", operation="forget")
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.delete_memory(existing.memory_id)
@@ -237,14 +252,19 @@ async def forget(
             metadata={"key": key},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Deleted memory '%s'",
         key,
         extra={
             "tool": "forget",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="forget")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="forget"
     )
     return f"Deleted memory '{key}'."
 
@@ -269,15 +289,20 @@ async def list_memories(
             metadata={"tag": tag, "count": len(memories)},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Listed %d memories for tag '%s'",
         len(memories),
         tag,
         extra={
             "tool": "list_memories",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="list_memories")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_memories"
     )
     result: dict[str, Any] = {
         "items": [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories],
@@ -315,6 +340,7 @@ async def summarize_context(
                 "status": "empty",
             },
         )
+        await emit_metric("ToolInvocations", operation="summarize_context")
         return f"No memories found for topic '{topic}'."
 
     lines = [f"## Memories tagged '{topic}'\n"]
@@ -333,15 +359,23 @@ async def summarize_context(
             metadata={"topic": topic, "memory_count": len(memories)},
         )
     )
+    duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Summarized %d memories for topic '%s'",
         len(memories),
         topic,
         extra={
             "tool": "summarize_context",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
+            "duration_ms": duration_ms,
             "status": "success",
         },
+    )
+    await emit_metric("ToolInvocations", operation="summarize_context")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="summarize_context",
     )
     return "\n".join(lines)
 

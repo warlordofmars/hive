@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from hive.auth.dcr import register_client
 from hive.auth.tokens import ISSUER, issue_jwt
+from hive.metrics import emit_metric
 from hive.models import (
     ActivityEvent,
     ClientRegistrationRequest,
@@ -172,6 +173,7 @@ async def token(
             client_id = client_id or basic_client_id
             client_secret = client_secret or basic_secret
         except Exception as exc:
+            await emit_metric("TokenValidationFailures")
             raise HTTPException(status_code=401, detail="Invalid Basic auth header") from exc
 
     if not client_id:
@@ -179,12 +181,14 @@ async def token(
 
     client = storage.get_client(client_id)
     if client is None:
+        await emit_metric("TokenValidationFailures")
         raise HTTPException(status_code=401, detail="Unknown client")
 
     # Confidential clients must present their secret
     if client.client_secret and not secrets.compare_digest(
         client.client_secret, client_secret or ""
     ):
+        await emit_metric("TokenValidationFailures")
         raise HTTPException(status_code=401, detail="Invalid client_secret")
 
     # --- Grant type dispatch ---
@@ -247,6 +251,7 @@ async def token(
             metadata={"grant_type": grant_type},
         )
     )
+    await emit_metric("TokensIssued", grant_type=grant_type)
 
     return JSONResponse(
         TokenResponse(
