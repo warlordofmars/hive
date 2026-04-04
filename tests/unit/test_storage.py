@@ -227,3 +227,59 @@ class TestActivityLog:
         ).get("Item")
         assert item is not None
         assert item["event_id"] == event.event_id
+
+    def test_get_events_for_dates(self, storage):
+        """get_events_for_dates aggregates across multiple days."""
+        from datetime import timedelta
+
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        for days_ago in range(3):
+            ts = now - timedelta(days=days_ago)
+            storage.log_event(
+                ActivityEvent(
+                    event_type=EventType.memory_created,
+                    client_id="c1",
+                    metadata={},
+                    timestamp=ts,
+                )
+            )
+        dates = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)]
+        events = storage.get_events_for_dates(dates)
+        assert len(events) == 3
+        # Results are sorted newest-first
+        assert events[0].timestamp >= events[-1].timestamp
+
+
+# ---------------------------------------------------------------------------
+# list_all_memories and count helpers
+# ---------------------------------------------------------------------------
+
+
+class TestListAllAndCounts:
+    def test_list_all_memories(self, storage):
+        storage.put_memory(Memory(key="x", value="1", owner_client_id="c1"))
+        storage.put_memory(Memory(key="y", value="2", owner_client_id="c2"))
+        all_mems = storage.list_all_memories()
+        keys = {m.key for m in all_mems}
+        assert {"x", "y"}.issubset(keys)
+
+    def test_list_all_memories_filtered_by_client(self, storage):
+        storage.put_memory(Memory(key="a", value="1", owner_client_id="client-a"))
+        storage.put_memory(Memory(key="b", value="2", owner_client_id="client-b"))
+        mems = storage.list_all_memories(client_id="client-a")
+        assert all(m.owner_client_id == "client-a" for m in mems)
+        assert any(m.key == "a" for m in mems)
+
+    def test_count_memories(self, storage):
+        assert storage.count_memories() == 0
+        storage.put_memory(Memory(key="k1", value="v", owner_client_id="c1"))
+        storage.put_memory(Memory(key="k2", value="v", owner_client_id="c1"))
+        assert storage.count_memories() == 2
+
+    def test_count_clients(self, storage):
+        assert storage.count_clients() == 0
+        from hive.models import OAuthClient
+
+        storage.put_client(OAuthClient(client_name="A"))
+        storage.put_client(OAuthClient(client_name="B"))
+        assert storage.count_clients() == 2

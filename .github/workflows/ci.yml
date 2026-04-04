@@ -82,13 +82,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run unit tests
-        run: uv run pytest tests/unit -v --cov=hive --cov-report=xml
+      - name: Run unit tests with coverage
+        run: uv run pytest tests/unit -v --cov=hive --cov-report=xml:coverage-unit.xml
 
-      - uses: codecov/codecov-action@v4
-        if: always()
+      - name: Upload unit coverage artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: coverage.xml
+          name: coverage-unit
+          path: coverage-unit.xml
 
   integration-tests:
     name: Integration Tests (DynamoDB Local)
@@ -108,14 +109,69 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run integration tests
+      - name: Run integration tests with coverage
         env:
           DYNAMODB_ENDPOINT: http://localhost:8000
           AWS_ACCESS_KEY_ID: local
           AWS_SECRET_ACCESS_KEY: local
           AWS_DEFAULT_REGION: us-east-1
           HIVE_JWT_SECRET: test-secret
-        run: uv run pytest tests/integration -v
+        run: uv run pytest tests/integration -v --cov=hive --cov-report=xml:coverage-integration.xml
+
+      - name: Upload integration coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: coverage-integration.xml
+
+  coverage:
+    name: Coverage Report
+    needs: [unit-tests, integration-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Download unit coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+
+      - name: Download integration coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-integration
+
+      - name: Combine and report coverage
+        run: |
+          # Merge XML reports via coverage-lcov and re-export, or fall back to unit-only
+          uv run coverage combine --keep coverage-unit.xml coverage-integration.xml 2>/dev/null || true
+          if [ -f .coverage ]; then
+            uv run coverage xml -o coverage.xml
+          else
+            cp coverage-unit.xml coverage.xml
+          fi
+          uv run coverage report --fail-under=80 2>/dev/null || \
+            uv run python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('coverage.xml')
+          rate = float(tree.getroot().get('line-rate', 0)) * 100
+          print(f'Coverage: {rate:.1f}%')
+          assert rate >= 80, f'Coverage {rate:.1f}% is below 80% threshold'
+          "
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-unit.xml,coverage-integration.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
   frontend:
     name: Frontend Tests & Build
@@ -173,7 +229,7 @@ jobs:
 
   deploy-dev:
     name: Deploy (dev)
-    needs: [lint-typecheck, audit, unit-tests, integration-tests, frontend, infra-synth]
+    needs: [lint-typecheck, audit, unit-tests, integration-tests, coverage, frontend, infra-synth]
     if: github.event_name == 'push' && github.ref == 'refs/heads/development'
     runs-on: ubuntu-latest
     environment: development
@@ -258,7 +314,7 @@ jobs:
 
   release:
     name: Release
-    needs: [lint-typecheck, audit, unit-tests, integration-tests, frontend, infra-synth]
+    needs: [lint-typecheck, audit, unit-tests, integration-tests, coverage, frontend, infra-synth]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
