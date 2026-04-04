@@ -881,10 +881,10 @@ class TestValidateBearerMissingJti:
         """Covers tokens.py:88 — JWT has no jti claim → ValueError."""
         from unittest.mock import MagicMock
 
-        # Build a JWT without a jti claim
+        # Build a JWT without a jti claim, signed with the actual runtime secret
         from jose import jwt as jose_jwt
 
-        from hive.auth.tokens import validate_bearer_token
+        from hive.auth.tokens import _jwt_secret, validate_bearer_token
 
         payload = {
             "iss": "https://hive.example.com",
@@ -893,7 +893,7 @@ class TestValidateBearerMissingJti:
             "iat": 0,
             "exp": 9999999999,
         }
-        token_str = jose_jwt.encode(payload, "unit-test-secret", algorithm="HS256")
+        token_str = jose_jwt.encode(payload, _jwt_secret(), algorithm="HS256")
 
         storage = MagicMock()
         with pytest.raises(ValueError, match="missing jti"):

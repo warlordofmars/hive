@@ -386,30 +386,40 @@ class TestRequireTokenSuccessPath:
         from hive.models import OAuthClient, Token
         from hive.storage import HiveStorage
 
-        with mock_aws():
-            _create_table()
-            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
-            oauth_client = OAuthClient(client_name="Real Auth Client")
-            storage.put_client(oauth_client)
+        # Ensure the table name env var matches what we create, regardless of
+        # what the combined test run has set (e.g. hive-integration in CI).
+        old_table = os.environ.get("HIVE_TABLE_NAME")
+        os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+        try:
+            with mock_aws():
+                _create_table()
+                storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+                oauth_client = OAuthClient(client_name="Real Auth Client")
+                storage.put_client(oauth_client)
 
-            now = datetime.now(timezone.utc)
-            token = Token(
-                client_id=oauth_client.client_id,
-                scope="memories:read memories:write",
-                issued_at=now,
-                expires_at=now + timedelta(hours=1),
-            )
-            storage.put_token(token)
-            jwt = issue_jwt(token)
+                now = datetime.now(timezone.utc)
+                token = Token(
+                    client_id=oauth_client.client_id,
+                    scope="memories:read memories:write",
+                    issued_at=now,
+                    expires_at=now + timedelta(hours=1),
+                )
+                storage.put_token(token)
+                jwt = issue_jwt(token)
 
-            from hive.api.main import app
+                from hive.api.main import app
 
-            app.dependency_overrides.clear()
-            from fastapi.testclient import TestClient
+                app.dependency_overrides.clear()
+                from fastapi.testclient import TestClient
 
-            tc = TestClient(app, raise_server_exceptions=False)
-            resp = tc.get("/api/memories", headers={"Authorization": f"Bearer {jwt}"})
-            assert resp.status_code == 200
+                tc = TestClient(app, raise_server_exceptions=False)
+                resp = tc.get("/api/memories", headers={"Authorization": f"Bearer {jwt}"})
+                assert resp.status_code == 200
+        finally:
+            if old_table is not None:
+                os.environ["HIVE_TABLE_NAME"] = old_table
+            else:
+                os.environ.pop("HIVE_TABLE_NAME", None)
 
 
 class TestMemoryUpsertOversized:
