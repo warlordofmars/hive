@@ -9,6 +9,7 @@ OAuth endpoints (/oauth/*, /.well-known/*) are public.
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 
 from fastapi import FastAPI
@@ -19,9 +20,23 @@ from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
 from hive.auth.oauth import router as oauth_router
 
+
+# APP_VERSION is injected at deploy time via Lambda env var.
+# Falls back to the installed package version, then "dev" for local runs.
+def _app_version() -> str:
+    if v := os.environ.get("APP_VERSION"):
+        return v
+    try:
+        return importlib.metadata.version("hive")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
+APP_VERSION = _app_version()
+
 app = FastAPI(
     title="Hive Management API",
-    version="0.1.0",
+    version=APP_VERSION,
     description="REST API for managing Hive memories, OAuth clients, and viewing activity stats.",
 )
 
@@ -47,7 +62,7 @@ app.include_router(stats_router, prefix="/api")
 
 @app.get("/health", include_in_schema=False)
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 def lambda_handler(event: dict, context: object) -> dict:
