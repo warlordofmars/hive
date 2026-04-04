@@ -27,6 +27,7 @@ from hive.models import (
     AuthorizationCode,
     Memory,
     OAuthClient,
+    PendingAuth,
     Token,
     TokenType,
 )
@@ -39,6 +40,7 @@ DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
 REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
 AUTH_CODE_TTL_SECONDS = 300  # 5 minutes
+PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
 
 
 def _now() -> datetime:
@@ -274,6 +276,42 @@ class HiveStorage:
             ExpressionAttributeNames={"#u": "used"},
             ExpressionAttributeValues={":t": True},
         )
+
+    # ------------------------------------------------------------------
+    # Pending auth (PKCE state stored while user authenticates with Google)
+    # ------------------------------------------------------------------
+
+    def put_pending_auth(self, pending: PendingAuth) -> None:
+        self.table.put_item(Item=pending.to_dynamo())
+
+    def get_pending_auth(self, state: str) -> PendingAuth | None:
+        resp = self.table.get_item(Key={"PK": f"PENDING#{state}", "SK": "META"})
+        item = resp.get("Item")
+        return PendingAuth.from_dynamo(item) if item else None
+
+    def delete_pending_auth(self, state: str) -> None:
+        self.table.delete_item(Key={"PK": f"PENDING#{state}", "SK": "META"})
+
+    def create_pending_auth(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        code_challenge: str,
+        code_challenge_method: str,
+        original_state: str,
+    ) -> PendingAuth:
+        pending = PendingAuth(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            scope=scope,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            original_state=original_state,
+            expires_at=_now() + timedelta(seconds=PENDING_AUTH_TTL_SECONDS),
+        )
+        self.put_pending_auth(pending)
+        return pending
 
     # ------------------------------------------------------------------
     # Tokens
