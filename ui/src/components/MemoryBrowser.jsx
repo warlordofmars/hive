@@ -1,3 +1,4 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
 

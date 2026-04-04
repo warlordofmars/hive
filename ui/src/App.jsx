@@ -1,3 +1,4 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useState } from "react";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import ClientManager from "./components/ClientManager.jsx";

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Hive CDK Stack — defines all AWS infrastructure.
 

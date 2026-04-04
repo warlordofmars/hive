@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Dynamic Client Registration (RFC 7591) for Hive OAuth 2.1.
 

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
 /**
  * Hive API client — thin wrapper around fetch.
  * Token is read from localStorage.

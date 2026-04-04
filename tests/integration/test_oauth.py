@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Integration tests for the OAuth 2.1 authorization flow.
 Requires DYNAMODB_ENDPOINT env var (DynamoDB Local).

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Data models for Hive — shared persistent memory MCP server.
 

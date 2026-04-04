@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 E2E tests for the deployed Hive MCP server.
 Requires environment variables:

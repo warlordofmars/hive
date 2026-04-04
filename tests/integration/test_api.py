@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Integration tests for the Hive management API.
 Runs against DynamoDB Local (Docker) — set DYNAMODB_ENDPOINT env var.

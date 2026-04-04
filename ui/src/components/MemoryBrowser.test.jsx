@@ -1,3 +1,4 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import MemoryBrowser from "./MemoryBrowser.jsx";
