@@ -25,12 +25,15 @@ import os
 import aws_cdk as cdk
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
+from aws_cdk import aws_cloudwatch as cw
+from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
+from aws_cdk import aws_sns as sns
 from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
@@ -417,6 +420,405 @@ class HiveStack(cdk.Stack):
         )
 
         # ----------------------------------------------------------------
+        # CloudWatch dashboard + alarms
+        # ----------------------------------------------------------------
+        dashboard_name = "Hive" if is_prod else f"Hive-{env_name}"
+
+        # SNS topic for alarm notifications — prod only gets an email subscription
+        # (subscription address can be set via the console after first deploy).
+        alarm_topic = sns.Topic(
+            self,
+            "AlarmTopic",
+            display_name=f"Hive alarms ({env_name})",
+        )
+
+        def _error_rate_alarm(
+            construct_id: str,
+            fn: lambda_.Function,
+            label: str,
+        ) -> cw.Alarm:
+            """Lambda error rate alarm: > 5% over two consecutive 5-min periods."""
+            errors = fn.metric_errors(period=cdk.Duration.minutes(5), statistic="Sum")
+            invocations = fn.metric_invocations(
+                period=cdk.Duration.minutes(5), statistic="Sum"
+            )
+            error_rate = cw.MathExpression(
+                expression="100 * errors / MAX([errors, invocations])",
+                using_metrics={"errors": errors, "invocations": invocations},
+                label=f"{label} error rate %",
+                period=cdk.Duration.minutes(5),
+            )
+            alarm = cw.Alarm(
+                self,
+                construct_id,
+                metric=error_rate,
+                threshold=5,
+                evaluation_periods=2,
+                datapoints_to_alarm=2,
+                comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+                treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+                alarm_description=f"Hive {label} error rate > 5% ({env_name})",
+            )
+            if is_prod:
+                alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+            return alarm
+
+        mcp_error_alarm = _error_rate_alarm("McpErrorRateAlarm", mcp_fn, "MCP")
+        api_error_alarm = _error_rate_alarm("ApiErrorRateAlarm", api_fn, "API")
+
+        # MCP P99 duration alarm: > 25s (out of 30s timeout)
+        mcp_p99_alarm = cw.Alarm(
+            self,
+            "McpP99DurationAlarm",
+            metric=mcp_fn.metric_duration(
+                period=cdk.Duration.minutes(5), statistic="p99"
+            ),
+            threshold=25_000,  # milliseconds
+            evaluation_periods=2,
+            datapoints_to_alarm=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive MCP P99 duration > 25s ({env_name})",
+        )
+        if is_prod:
+            mcp_p99_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # DynamoDB throttle alarm: any throttled requests over 5 min
+        ddb_throttle_alarm = cw.Alarm(
+            self,
+            "DdbThrottleAlarm",
+            metric=cw.Metric(
+                namespace="AWS/DynamoDB",
+                metric_name="ThrottledRequests",
+                dimensions_map={"TableName": table.table_name},
+                period=cdk.Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive DynamoDB throttled requests > 0 ({env_name})",
+        )
+        if is_prod:
+            ddb_throttle_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # CloudFront 5xx error rate alarm: > 1% over 5 min
+        cf_5xx_alarm = cw.Alarm(
+            self,
+            "CloudFront5xxAlarm",
+            metric=cw.Metric(
+                namespace="AWS/CloudFront",
+                metric_name="5xxErrorRate",
+                dimensions_map={
+                    "DistributionId": distribution.distribution_id,
+                    "Region": "Global",
+                },
+                period=cdk.Duration.minutes(5),
+                statistic="Average",
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive CloudFront 5xx rate > 1% ({env_name})",
+        )
+        if is_prod:
+            cf_5xx_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # Dashboard
+        dashboard = cw.Dashboard(
+            self,
+            "HiveDashboard",
+            dashboard_name=dashboard_name,
+        )
+
+        dashboard.add_widgets(
+            cw.Row(
+                cw.TextWidget(
+                    markdown=f"# Hive — {env_name}  \nLambda · DynamoDB · CloudFront",
+                    width=24,
+                    height=1,
+                ),
+            ),
+            # MCP Lambda row
+            cw.Row(
+                cw.TextWidget(markdown="## MCP Lambda", width=24, height=1),
+            ),
+            cw.Row(
+                cw.GraphWidget(
+                    title="MCP Invocations & Errors",
+                    left=[
+                        mcp_fn.metric_invocations(
+                            period=cdk.Duration.minutes(5), statistic="Sum"
+                        )
+                    ],
+                    right=[
+                        mcp_fn.metric_errors(
+                            period=cdk.Duration.minutes(5), statistic="Sum"
+                        )
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="MCP Duration (ms)",
+                    left=[
+                        mcp_fn.metric_duration(
+                            period=cdk.Duration.minutes(5), statistic="p50"
+                        ),
+                        mcp_fn.metric_duration(
+                            period=cdk.Duration.minutes(5), statistic="p95"
+                        ),
+                        mcp_fn.metric_duration(
+                            period=cdk.Duration.minutes(5), statistic="p99"
+                        ),
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="MCP Throttles",
+                    left=[
+                        mcp_fn.metric_throttles(
+                            period=cdk.Duration.minutes(5), statistic="Sum"
+                        )
+                    ],
+                    width=8,
+                ),
+            ),
+            # API Lambda row
+            cw.Row(
+                cw.TextWidget(markdown="## API Lambda", width=24, height=1),
+            ),
+            cw.Row(
+                cw.GraphWidget(
+                    title="API Invocations & Errors",
+                    left=[
+                        api_fn.metric_invocations(
+                            period=cdk.Duration.minutes(5), statistic="Sum"
+                        )
+                    ],
+                    right=[
+                        api_fn.metric_errors(
+                            period=cdk.Duration.minutes(5), statistic="Sum"
+                        )
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="API Duration (ms)",
+                    left=[
+                        api_fn.metric_duration(
+                            period=cdk.Duration.minutes(5), statistic="p50"
+                        ),
+                        api_fn.metric_duration(
+                            period=cdk.Duration.minutes(5), statistic="p95"
+                        ),
+                        api_fn.metric_duration(
+                            period=cdk.Duration.minutes(5), statistic="p99"
+                        ),
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="API Throttles",
+                    left=[
+                        api_fn.metric_throttles(
+                            period=cdk.Duration.minutes(5), statistic="Sum"
+                        )
+                    ],
+                    width=8,
+                ),
+            ),
+            # DynamoDB row
+            cw.Row(
+                cw.TextWidget(markdown="## DynamoDB", width=24, height=1),
+            ),
+            cw.Row(
+                cw.GraphWidget(
+                    title="DDB Read/Write Capacity",
+                    left=[
+                        cw.Metric(
+                            namespace="AWS/DynamoDB",
+                            metric_name="ConsumedReadCapacityUnits",
+                            dimensions_map={"TableName": table.table_name},
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        ),
+                        cw.Metric(
+                            namespace="AWS/DynamoDB",
+                            metric_name="ConsumedWriteCapacityUnits",
+                            dimensions_map={"TableName": table.table_name},
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        ),
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="DDB Throttled Requests",
+                    left=[
+                        cw.Metric(
+                            namespace="AWS/DynamoDB",
+                            metric_name="ThrottledRequests",
+                            dimensions_map={"TableName": table.table_name},
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        )
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="DDB System Errors",
+                    left=[
+                        cw.Metric(
+                            namespace="AWS/DynamoDB",
+                            metric_name="SystemErrors",
+                            dimensions_map={"TableName": table.table_name},
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        )
+                    ],
+                    width=8,
+                ),
+            ),
+            # CloudFront row
+            cw.Row(
+                cw.TextWidget(markdown="## CloudFront", width=24, height=1),
+            ),
+            cw.Row(
+                cw.GraphWidget(
+                    title="CF Requests",
+                    left=[
+                        cw.Metric(
+                            namespace="AWS/CloudFront",
+                            metric_name="Requests",
+                            dimensions_map={
+                                "DistributionId": distribution.distribution_id,
+                                "Region": "Global",
+                            },
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        )
+                    ],
+                    width=6,
+                ),
+                cw.GraphWidget(
+                    title="CF Cache Hit Rate %",
+                    left=[
+                        cw.Metric(
+                            namespace="AWS/CloudFront",
+                            metric_name="CacheHitRate",
+                            dimensions_map={
+                                "DistributionId": distribution.distribution_id,
+                                "Region": "Global",
+                            },
+                            period=cdk.Duration.minutes(5),
+                            statistic="Average",
+                        )
+                    ],
+                    width=6,
+                ),
+                cw.GraphWidget(
+                    title="CF 4xx / 5xx Error Rate %",
+                    left=[
+                        cw.Metric(
+                            namespace="AWS/CloudFront",
+                            metric_name="4xxErrorRate",
+                            dimensions_map={
+                                "DistributionId": distribution.distribution_id,
+                                "Region": "Global",
+                            },
+                            period=cdk.Duration.minutes(5),
+                            statistic="Average",
+                        ),
+                        cw.Metric(
+                            namespace="AWS/CloudFront",
+                            metric_name="5xxErrorRate",
+                            dimensions_map={
+                                "DistributionId": distribution.distribution_id,
+                                "Region": "Global",
+                            },
+                            period=cdk.Duration.minutes(5),
+                            statistic="Average",
+                        ),
+                    ],
+                    width=6,
+                ),
+                cw.GraphWidget(
+                    title="CF Origin Latency (ms)",
+                    left=[
+                        cw.Metric(
+                            namespace="AWS/CloudFront",
+                            metric_name="OriginLatency",
+                            dimensions_map={
+                                "DistributionId": distribution.distribution_id,
+                                "Region": "Global",
+                            },
+                            period=cdk.Duration.minutes(5),
+                            statistic="p99",
+                        )
+                    ],
+                    width=6,
+                ),
+            ),
+            # EMF custom metrics row
+            cw.Row(
+                cw.TextWidget(markdown="## Hive Custom Metrics", width=24, height=1),
+            ),
+            cw.Row(
+                cw.GraphWidget(
+                    title="Tool Invocations",
+                    left=[
+                        cw.Metric(
+                            namespace="Hive",
+                            metric_name="ToolInvocations",
+                            dimensions_map={"Environment": env_name},
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        )
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="Tool Errors",
+                    left=[
+                        cw.Metric(
+                            namespace="Hive",
+                            metric_name="ToolErrors",
+                            dimensions_map={"Environment": env_name},
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        )
+                    ],
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="Token Validation Failures",
+                    left=[
+                        cw.Metric(
+                            namespace="Hive",
+                            metric_name="TokenValidationFailures",
+                            dimensions_map={"Environment": env_name},
+                            period=cdk.Duration.minutes(5),
+                            statistic="Sum",
+                        )
+                    ],
+                    width=8,
+                ),
+            ),
+            # Alarms row
+            cw.Row(
+                cw.TextWidget(markdown="## Alarms", width=24, height=1),
+            ),
+            cw.Row(
+                cw.AlarmWidget(alarm=mcp_error_alarm, title="MCP Error Rate", width=6),
+                cw.AlarmWidget(alarm=api_error_alarm, title="API Error Rate", width=6),
+                cw.AlarmWidget(alarm=mcp_p99_alarm, title="MCP P99 Duration", width=6),
+                cw.AlarmWidget(alarm=ddb_throttle_alarm, title="DDB Throttles", width=6),
+            ),
+        )
+
+        # ----------------------------------------------------------------
         # Outputs
         # ----------------------------------------------------------------
         cdk.CfnOutput(self, "McpFunctionUrl", value=mcp_url.url, description="MCP server URL")
@@ -439,4 +841,10 @@ class HiveStack(cdk.Stack):
             "AppVersion",
             value=app_version,
             description="Deployed application version",
+        )
+        cdk.CfnOutput(
+            self,
+            "DashboardUrl",
+            value=f"https://{self.region}.console.aws.amazon.com/cloudwatch/home#dashboards:name={dashboard_name}",
+            description="CloudWatch dashboard URL",
         )
