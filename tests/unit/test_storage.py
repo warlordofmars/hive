@@ -369,6 +369,56 @@ class TestPagination:
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
             storage.list_all_memories(cursor="not-valid-base64!!!")
 
+    def test_list_all_memories_follows_scan_pages(self, storage):
+        """Covers the scan-loop continuation path when DynamoDB returns LastEvaluatedKey."""
+        from unittest.mock import patch
+
+        mems = [Memory(key=f"paged-{i}", value="v", owner_client_id="c1") for i in range(3)]
+        for m in mems:
+            storage.put_memory(m)
+
+        fake_lek = {"PK": f"MEMORY#{mems[0].memory_id}", "SK": "META"}
+        page1_items = [mems[0].to_dynamo_meta()]
+        page2_items = [mems[1].to_dynamo_meta(), mems[2].to_dynamo_meta()]
+        responses = iter(
+            [
+                {"Items": page1_items, "LastEvaluatedKey": fake_lek},
+                {"Items": page2_items},
+            ]
+        )
+
+        with patch.object(storage.table, "scan", side_effect=lambda **_kw: next(responses)):
+            result, cursor = storage.list_all_memories(limit=5)
+
+        assert len(result) == 3
+        assert cursor is None
+
+    def test_list_clients_follows_scan_pages(self, storage):
+        """Covers the scan-loop continuation path in list_clients."""
+        from unittest.mock import patch
+
+        from hive.models import OAuthClient
+
+        clients = [OAuthClient(client_name=f"C{i}") for i in range(3)]
+        for c in clients:
+            storage.put_client(c)
+
+        fake_lek = {"PK": f"CLIENT#{clients[0].client_id}", "SK": "META"}
+        page1_items = [clients[0].to_dynamo()]
+        page2_items = [clients[1].to_dynamo(), clients[2].to_dynamo()]
+        responses = iter(
+            [
+                {"Items": page1_items, "LastEvaluatedKey": fake_lek},
+                {"Items": page2_items},
+            ]
+        )
+
+        with patch.object(storage.table, "scan", side_effect=lambda **_kw: next(responses)):
+            result, cursor = storage.list_clients(limit=5)
+
+        assert len(result) == 3
+        assert cursor is None
+
     def test_activity_limit_respected(self, storage):
         from datetime import date
 
