@@ -39,6 +39,9 @@ jobs:
       - name: mypy
         run: uv run mypy src/hive
 
+      - name: Copyright headers
+        run: uv run python scripts/check_copyright.py
+
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
