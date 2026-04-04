@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from hive.api._auth import require_token
+from hive.api._auth import require_clients_read, require_clients_write
 from hive.auth.dcr import register_client
 from hive.models import (
     ActivityEvent,
@@ -28,7 +28,7 @@ _LIMIT_MAX = 200
 async def list_clients(
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
     cursor: str | None = Query(None),
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_clients_read),
 ) -> PagedResponse:
     storage, _ = auth
     clients, next_cursor = storage.list_clients(limit=limit, cursor=cursor)
@@ -43,7 +43,7 @@ async def list_clients(
 @router.post("/clients", response_model=ClientRegistrationResponse, status_code=201)
 async def create_client(
     body: ClientRegistrationRequest,
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_clients_write),
 ) -> ClientRegistrationResponse:
     storage, _ = auth
     try:
@@ -63,7 +63,7 @@ async def create_client(
 @router.get("/clients/{client_id}", response_model=ClientRegistrationResponse)
 async def get_client(
     client_id: str,
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_clients_read),
 ) -> ClientRegistrationResponse:
     storage, _ = auth
     client = storage.get_client(client_id)
@@ -75,7 +75,7 @@ async def get_client(
 @router.delete("/clients/{client_id}", status_code=204)
 async def delete_client(
     client_id: str,
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_clients_write),
 ) -> None:
     storage, caller_client_id = auth
     deleted = storage.delete_client(client_id)

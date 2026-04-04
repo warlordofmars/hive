@@ -126,10 +126,20 @@ async def authorize(
     if code_challenge_method != "S256":
         raise HTTPException(status_code=400, detail="Only code_challenge_method=S256 is supported")
 
+    # Restrict requested scope to what the client is authorised for
+    client_scopes = set(client.scope.split())
+    requested_scopes = set(scope.split())
+    effective_scope = " ".join(sorted(client_scopes & requested_scopes))
+    if not effective_scope:
+        raise HTTPException(
+            status_code=400,
+            detail="Requested scope has no overlap with client's registered scope",
+        )
+
     auth_code = storage.create_auth_code(
         client_id=client_id,
         redirect_uri=redirect_uri,
-        scope=scope,
+        scope=effective_scope,
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
     )
@@ -235,9 +245,13 @@ async def token(
             raise HTTPException(status_code=400, detail="refresh_token not issued to this client")
 
         # Rotate: revoke old refresh token, issue new pair
+        # Re-intersect scope in case client's registered scope was narrowed since issuance
+        effective_scope = (
+            " ".join(sorted(set(stored.scope.split()) & set(client.scope.split()))) or stored.scope
+        )
         assert jti is not None
         storage.revoke_token(jti)
-        access, refresh = storage.create_token_pair(client_id, stored.scope)
+        access, refresh = storage.create_token_pair(client_id, effective_scope)
 
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported grant_type: {grant_type}")

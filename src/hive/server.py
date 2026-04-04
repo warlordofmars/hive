@@ -58,13 +58,15 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _auth(ctx: Context | None) -> tuple[HiveStorage, str]:
+def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveStorage, str]:
     """Validate Bearer token; return (storage, client_id).
 
     Reads the Authorization header from the HTTP request when running under
     FastMCP's HTTP transport, falling back to ctx.request_context.meta for
     direct invocation (integration tests).  Also sets per-request logging
     context (request_id, client_id).
+
+    If required_scope is given, raises ToolError if the token lacks that scope.
     """
     storage = HiveStorage()
     auth_header: str | None = None
@@ -93,6 +95,9 @@ def _auth(ctx: Context | None) -> tuple[HiveStorage, str]:
     except ValueError as exc:
         raise ToolError(f"Unauthorized: {exc}") from exc
 
+    if required_scope and required_scope not in set(token.scope.split()):
+        raise ToolError(f"Insufficient scope: '{required_scope}' required")
+
     set_request_context(request_id, token.client_id)
     return storage, token.client_id
 
@@ -111,7 +116,7 @@ async def remember(
 ) -> str:
     """Store or update a memory with optional tags."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:write")
     tags = tags or []
 
     # Check if a memory with this key already exists (upsert path)
@@ -181,7 +186,7 @@ async def recall(
 ) -> str:
     """Retrieve a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:read")
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -228,7 +233,7 @@ async def forget(
 ) -> str:
     """Delete a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:write")
 
     existing = storage.get_memory_by_key(key)
     if existing is None:
@@ -278,7 +283,7 @@ async def list_memories(
 ) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:read")
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
@@ -326,7 +331,7 @@ async def summarize_context(
     memory and then provides a combined overview paragraph.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx)
+    storage, client_id = _auth(ctx, required_scope="memories:read")
 
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
 

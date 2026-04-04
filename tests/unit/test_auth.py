@@ -898,3 +898,223 @@ class TestValidateBearerMissingJti:
         storage = MagicMock()
         with pytest.raises(ValueError, match="missing jti"):
             validate_bearer_token(f"Bearer {token_str}", storage)
+
+
+# ---------------------------------------------------------------------------
+# DCR scope validation — covers dcr.py ALLOWED_SCOPES check
+# ---------------------------------------------------------------------------
+
+
+class TestDCRScopeValidation:
+    def test_unknown_scope_raises(self):
+        storage = MagicMock()
+        req = ClientRegistrationRequest(
+            client_name="Bad Scope App",
+            scope="memories:read unknown:scope",
+        )
+        with pytest.raises(ValueError, match="Unknown scope"):
+            register_client(req, storage)
+
+    def test_known_scopes_accepted(self):
+        storage = MagicMock()
+        req = ClientRegistrationRequest(
+            client_name="Read Only Agent",
+            redirect_uris=["http://localhost/cb"],
+            scope="memories:read",
+        )
+        resp = register_client(req, storage)
+        assert resp.scope == "memories:read"
+
+    def test_all_scopes_accepted(self):
+        storage = MagicMock()
+        req = ClientRegistrationRequest(
+            client_name="Admin App",
+            redirect_uris=["http://localhost/cb"],
+            scope="memories:read memories:write clients:read clients:write",
+        )
+        resp = register_client(req, storage)
+        assert "clients:write" in resp.scope
+
+
+# ---------------------------------------------------------------------------
+# Authorize scope restriction — covers oauth.py scope intersection
+# ---------------------------------------------------------------------------
+
+
+class TestAuthorizeScopeRestriction:
+    def test_requested_scope_restricted_to_client_scope(self, oauth_client):
+        """Authorize restricts requested scope to client's registered scope."""
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        # Register a read-only client
+        readonly_client = OAuthClient(
+            client_name="Read Only",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read",
+        )
+        storage.put_client(readonly_client)
+
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": readonly_client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                # Request write scope — should be restricted to read-only
+                "scope": "memories:read memories:write",
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        # Code was issued — verify stored scope is restricted to client's scope
+        location = resp.headers["location"]
+        code = location.split("code=")[1].split("&")[0]
+        auth_code = storage.get_auth_code(code)
+        assert auth_code is not None
+        assert "memories:write" not in auth_code.scope
+        assert "memories:read" in auth_code.scope
+
+    def test_scope_no_overlap_returns_400(self, oauth_client):
+        """Authorize returns 400 when requested scope has no overlap with client scope."""
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        readonly_client = OAuthClient(
+            client_name="Read Only 2",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read",
+        )
+        storage.put_client(readonly_client)
+
+        _, challenge = _pkce_pair()
+        resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": readonly_client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "scope": "clients:read clients:write",
+            },
+        )
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Token scope — scope in issued access token matches auth code scope
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshTokenScopeNarrowing:
+    def test_refresh_intersects_scope_with_current_client_scope(self, oauth_client):
+        """Covers oauth.py scope re-intersection — refresh token scope narrows to client scope."""
+        from hive.auth.tokens import decode_jwt
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        # Register a client with write+read scope
+        wide_client = OAuthClient(
+            client_name="Wide Scope Client",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read memories:write",
+        )
+        storage.put_client(wide_client)
+
+        verifier, challenge = _pkce_pair()
+        code_resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": wide_client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "scope": "memories:read memories:write",
+            },
+            follow_redirects=False,
+        )
+        code = code_resp.headers["location"].split("code=")[1].split("&")[0]
+        token_resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": wide_client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        refresh_token = token_resp.json()["refresh_token"]
+
+        # Narrow the client's scope in storage
+        wide_client.scope = "memories:read"
+        storage.put_client(wide_client)
+
+        # Refresh should issue new tokens with narrowed scope
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": wide_client.client_id,
+                "refresh_token": refresh_token,
+            },
+        )
+        assert resp.status_code == 200
+        claims = decode_jwt(resp.json()["access_token"])
+        assert "memories:write" not in claims["scope"]
+        assert "memories:read" in claims["scope"]
+
+
+class TestTokenScopeIntersection:
+    def test_access_token_carries_restricted_scope(self, oauth_client):
+        """Access token scope matches the effective scope from the auth code."""
+        from hive.auth.tokens import decode_jwt
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        readonly_client = OAuthClient(
+            client_name="Scope Test Client",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read",
+        )
+        storage.put_client(readonly_client)
+
+        verifier, challenge = _pkce_pair()
+        code_resp = tc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": readonly_client.client_id,
+                "redirect_uri": "https://app.example.com/cb",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "scope": "memories:read memories:write",  # request more than allowed
+            },
+            follow_redirects=False,
+        )
+        code = code_resp.headers["location"].split("code=")[1].split("&")[0]
+
+        token_resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": readonly_client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+        assert token_resp.status_code == 200
+        data = token_resp.json()
+        claims = decode_jwt(data["access_token"])
+        assert claims["scope"] == "memories:read"
+        assert "memories:write" not in claims["scope"]

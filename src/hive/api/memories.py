@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from hive.api._auth import require_token
+from hive.api._auth import require_memories_read, require_memories_write
 from hive.models import (
     ActivityEvent,
     EventType,
@@ -34,7 +34,7 @@ async def list_memories(
     tag: str | None = Query(None, description="Filter by tag"),
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX, description="Max items to return"),
     cursor: str | None = Query(None, description="Pagination cursor from previous response"),
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_memories_read),
 ) -> PagedResponse:
     storage, _ = auth
     if tag:
@@ -53,7 +53,7 @@ async def list_memories(
 async def create_memory(
     body: MemoryCreate,
     response: Response,
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_memories_write),
 ) -> MemoryResponse:
     storage, client_id = auth
 
@@ -96,7 +96,7 @@ async def create_memory(
 @router.get("/memories/{memory_id}", response_model=MemoryResponse)
 async def get_memory(
     memory_id: str,
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_memories_read),
 ) -> MemoryResponse:
     storage, _ = auth
     memory = storage.get_memory_by_id(memory_id)
@@ -109,7 +109,7 @@ async def get_memory(
 async def update_memory(
     memory_id: str,
     body: MemoryUpdate,
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_memories_write),
 ) -> MemoryResponse:
     storage, client_id = auth
     memory = storage.get_memory_by_id(memory_id)
@@ -139,7 +139,7 @@ async def update_memory(
 @router.delete("/memories/{memory_id}", status_code=204)
 async def delete_memory(
     memory_id: str,
-    auth: tuple[HiveStorage, str] = Depends(require_token),
+    auth: tuple[HiveStorage, str] = Depends(require_memories_write),
 ) -> None:
     storage, client_id = auth
     deleted = storage.delete_memory(memory_id)

@@ -374,3 +374,83 @@ class TestListMemoriesPagination:
         result = await list_memories("pagtest", limit=1, ctx=ctx)
         assert result["has_more"] is True
         assert "next_cursor" in result
+
+
+# ---------------------------------------------------------------------------
+# MCP tool scope enforcement — covers server.py _auth() required_scope check
+# ---------------------------------------------------------------------------
+
+
+def _make_limited_scope_jwt(storage, scope: str) -> str:
+    """Issue a JWT with a restricted scope and store it in `storage`."""
+    from hive.auth.tokens import issue_jwt
+    from hive.models import OAuthClient, Token
+
+    client = OAuthClient(client_name=f"Scope Test {scope}")
+    storage.put_client(client)
+    now = datetime.now(timezone.utc)
+    token = Token(
+        client_id=client.client_id,
+        scope=scope,
+        issued_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    storage.put_token(token)
+    return issue_jwt(token)
+
+
+class TestMcpToolScopeEnforcement:
+    async def test_remember_requires_write_scope(self, server_env):
+        """remember() raises ToolError when token only has memories:read."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await remember("scope-k", "v", [], ctx=_make_ctx(read_only_jwt))
+
+    async def test_recall_requires_read_scope(self, server_env):
+        """recall() raises ToolError when token only has memories:write."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import recall
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await recall("any-key", ctx=_make_ctx(write_only_jwt))
+
+    async def test_forget_requires_write_scope(self, server_env):
+        """forget() raises ToolError when token only has memories:read."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import forget
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await forget("any-key", ctx=_make_ctx(read_only_jwt))
+
+    async def test_list_memories_requires_read_scope(self, server_env):
+        """list_memories() raises ToolError when token only has memories:write."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import list_memories
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await list_memories("any-tag", ctx=_make_ctx(write_only_jwt))
+
+    async def test_summarize_context_requires_read_scope(self, server_env):
+        """summarize_context() raises ToolError when token only has memories:write."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import summarize_context
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await summarize_context("any-topic", ctx=_make_ctx(write_only_jwt))
