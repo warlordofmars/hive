@@ -381,3 +381,41 @@ class TestPagination:
             )
         events = storage.get_events_for_dates([today], limit=5)
         assert len(events) <= 5
+
+
+# ---------------------------------------------------------------------------
+# Pending auth tests
+# ---------------------------------------------------------------------------
+
+
+class TestPendingAuthStorage:
+    def test_create_and_get(self, storage):
+        pending = storage.create_pending_auth(
+            client_id="c1",
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read",
+            code_challenge="abc123",
+            code_challenge_method="S256",
+            original_state="xyz",
+        )
+        assert pending.state
+        fetched = storage.get_pending_auth(pending.state)
+        assert fetched is not None
+        assert fetched.client_id == "c1"
+        assert fetched.scope == "memories:read"
+        assert fetched.original_state == "xyz"
+
+    def test_get_nonexistent_returns_none(self, storage):
+        assert storage.get_pending_auth("no-such-state") is None
+
+    def test_delete_pending_auth(self, storage):
+        pending = storage.create_pending_auth(
+            client_id="c1",
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read",
+            code_challenge="abc",
+            code_challenge_method="S256",
+            original_state="",
+        )
+        storage.delete_pending_auth(pending.state)
+        assert storage.get_pending_auth(pending.state) is None

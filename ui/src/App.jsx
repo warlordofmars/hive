@@ -1,9 +1,10 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
-import MemoryBrowser from "./components/MemoryBrowser.jsx";
-import ClientManager from "./components/ClientManager.jsx";
 import ActivityLog from "./components/ActivityLog.jsx";
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+import AuthCallback from "./components/AuthCallback.jsx";
+import ClientManager from "./components/ClientManager.jsx";
+import LoginPage from "./components/LoginPage.jsx";
+import MemoryBrowser from "./components/MemoryBrowser.jsx";
 
 const TABS = [
   { id: "memories", label: "Memories" },
@@ -11,22 +12,43 @@ const TABS = [
   { id: "activity", label: "Activity Log" },
 ];
 
+function isTokenValid(token) {
+  if (!token) return false;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return payload.exp * 1000 > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function signOut() {
+  localStorage.removeItem("hive_token");
+  window.location.replace("/");
+}
+
 export default function App() {
   const [tab, setTab] = useState("memories");
-  const [token, setToken] = useState(localStorage.getItem("hive_token") ?? "");
   const [version, setVersion] = useState(null);
 
+  // Handle OAuth callback route
+  if (window.location.pathname === "/oauth/callback") {
+    return <AuthCallback />;
+  }
+
+  const token = localStorage.getItem("hive_token") ?? "";
+
+  // Show login if no valid token
+  if (!isTokenValid(token)) {
+    return <LoginPage />;
+  }
+
   useEffect(() => {
-    fetch(`${API_BASE}/health`)
+    fetch("/health")
       .then((r) => r.json())
       .then((data) => setVersion(data.version ?? null))
       .catch(() => {});
   }, []);
-
-  function saveToken(t) {
-    setToken(t);
-    localStorage.setItem("hive_token", t);
-  }
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -61,15 +83,20 @@ export default function App() {
           ))}
         </nav>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <input
-            style={{ width: 260, background: "rgba(255,255,255,.1)", color: "#fff", border: "1px solid rgba(255,255,255,.3)" }}
-            type="password"
-            placeholder="Bearer token"
-            value={token}
-            onChange={(e) => saveToken(e.target.value)}
-          />
-        </div>
+        <button
+          onClick={signOut}
+          style={{
+            background: "transparent",
+            color: "rgba(255,255,255,.7)",
+            border: "1px solid rgba(255,255,255,.3)",
+            borderRadius: 6,
+            padding: "5px 12px",
+            fontSize: 13,
+            cursor: "pointer",
+          }}
+        >
+          Sign out
+        </button>
       </header>
 
       <main style={{ flex: 1, padding: 24, maxWidth: 1100, margin: "0 auto", width: "100%" }}>

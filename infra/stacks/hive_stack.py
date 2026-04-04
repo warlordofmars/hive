@@ -112,11 +112,14 @@ class HiveStack(cdk.Stack):
         )
 
         # ----------------------------------------------------------------
-        # SSM Parameter — JWT secret
+        # SSM Parameters
         # ----------------------------------------------------------------
-        # Parameter path is per-environment to prevent secret sharing.
-        # Prod keeps the existing path for backward compatibility.
-        ssm_param_name = "/hive/jwt-secret" if is_prod else f"/hive/{env_name}/jwt-secret"
+        # All parameters use per-environment paths to prevent secret sharing.
+        # Prod keeps legacy paths (no env suffix) for backward compatibility.
+        def _ssm_path(name: str) -> str:
+            return f"/hive/{name}" if is_prod else f"/hive/{env_name}/{name}"
+
+        ssm_param_name = _ssm_path("jwt-secret")
 
         jwt_secret_param = ssm.StringParameter(
             self,
@@ -128,6 +131,36 @@ class HiveStack(cdk.Stack):
         )
         # Always retain the JWT secret — losing it invalidates all issued tokens.
         jwt_secret_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
+
+        google_client_id_param = ssm.StringParameter(
+            self,
+            "GoogleClientId",
+            parameter_name=_ssm_path("google-client-id"),
+            string_value="CHANGE_ME_ON_FIRST_DEPLOY",
+            description=f"Google OAuth 2.0 client ID ({env_name})",
+            tier=ssm.ParameterTier.STANDARD,
+        )
+        google_client_id_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
+
+        google_client_secret_param = ssm.StringParameter(
+            self,
+            "GoogleClientSecret",
+            parameter_name=_ssm_path("google-client-secret"),
+            string_value="CHANGE_ME_ON_FIRST_DEPLOY",
+            description=f"Google OAuth 2.0 client secret ({env_name})",
+            tier=ssm.ParameterTier.STANDARD,
+        )
+        google_client_secret_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
+
+        allowed_emails_param = ssm.StringParameter(
+            self,
+            "AllowedEmails",
+            parameter_name=_ssm_path("allowed-emails"),
+            string_value="[]",
+            description=f"JSON array of Google email addresses allowed to access Hive ({env_name}); empty = allow all",
+            tier=ssm.ParameterTier.STANDARD,
+        )
+        allowed_emails_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
 
         # ----------------------------------------------------------------
         # Shared Lambda code (Docker-bundled at cdk deploy time)
@@ -160,6 +193,10 @@ class HiveStack(cdk.Stack):
             "HIVE_ISSUER": f"https://{issuer_host}.{self.account}.{self.region}.on.aws",
             # Tell both Lambdas which SSM parameter holds the JWT secret.
             "HIVE_JWT_SECRET_PARAM": ssm_param_name,
+            # Google OAuth 2.0 SSM parameter paths
+            "GOOGLE_CLIENT_ID_PARAM": google_client_id_param.parameter_name,
+            "GOOGLE_CLIENT_SECRET_PARAM": google_client_secret_param.parameter_name,
+            "ALLOWED_EMAILS_PARAM": allowed_emails_param.parameter_name,
             # APP_VERSION is injected at deploy time via the APP_VERSION env var.
             # Falls back to "dev" for local synth/deploy without a version set.
             "APP_VERSION": app_version,
@@ -185,6 +222,9 @@ class HiveStack(cdk.Stack):
         )
         table.grant_read_write_data(mcp_role)
         jwt_secret_param.grant_read(mcp_role)
+        google_client_id_param.grant_read(mcp_role)
+        google_client_secret_param.grant_read(mcp_role)
+        allowed_emails_param.grant_read(mcp_role)
 
         mcp_fn = lambda_.Function(
             self,
@@ -223,6 +263,9 @@ class HiveStack(cdk.Stack):
         )
         table.grant_read_write_data(api_role)
         jwt_secret_param.grant_read(api_role)
+        google_client_id_param.grant_read(api_role)
+        google_client_secret_param.grant_read(api_role)
+        allowed_emails_param.grant_read(api_role)
 
         api_fn = lambda_.Function(
             self,
