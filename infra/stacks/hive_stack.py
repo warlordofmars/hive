@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 
 import aws_cdk as cdk
+from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cloudwatch as cw
@@ -31,6 +32,8 @@ from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_route53 as route53
+from aws_cdk import aws_route53_targets as route53_targets
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_sns as sns
@@ -40,12 +43,16 @@ from constructs import Construct
 GITHUB_REPO = "warlordofmars/hive"
 
 
+HOSTED_ZONE_NAME = "warlordofmars.net"
+
+
 class HiveStack(cdk.Stack):
     def __init__(
         self,
         scope: Construct,
         construct_id: str,
         env_name: str = "prod",
+        hosted_zone_id: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -154,10 +161,34 @@ class HiveStack(cdk.Stack):
 
         # JWT issuer URL embedded in tokens — must be unique per environment.
         issuer_host = "hive" if is_prod else f"hive-{env_name}"
+        custom_domain = f"{issuer_host}.{HOSTED_ZONE_NAME}"
+
+        # ----------------------------------------------------------------
+        # Route53 hosted zone + ACM certificate
+        # ----------------------------------------------------------------
+        # hosted_zone_id is passed as CDK context (-c hosted_zone_id=...) so that
+        # the synth step in CI works without live AWS credentials.
+        hosted_zone = route53.HostedZone.from_hosted_zone_attributes(
+            self,
+            "HostedZone",
+            hosted_zone_id=hosted_zone_id,
+            zone_name=HOSTED_ZONE_NAME,
+        )
+
+        # ACM certificate must be in us-east-1 for CloudFront — this stack
+        # deploys to us-east-1 by default, so no cross-region cert needed.
+        certificate = acm.Certificate(
+            self,
+            "Certificate",
+            domain_name=custom_domain,
+            validation=acm.CertificateValidation.from_dns(hosted_zone),
+        )
+
         app_version = os.environ.get("APP_VERSION", "dev")
         common_env = {
             "HIVE_TABLE_NAME": table.table_name,
-            "HIVE_ISSUER": f"https://{issuer_host}.{self.account}.{self.region}.on.aws",
+            # Custom domain is the canonical issuer URL for all environments.
+            "HIVE_ISSUER": f"https://{custom_domain}",
             # Tell both Lambdas which SSM parameter holds the JWT secret.
             "HIVE_JWT_SECRET_PARAM": ssm_param_name,
             # APP_VERSION is injected at deploy time via the APP_VERSION env var.
@@ -259,15 +290,28 @@ class HiveStack(cdk.Stack):
 
         # API origin — strip "https://" prefix and trailing "/" from the function URL
         api_origin_domain = cdk.Fn.select(2, cdk.Fn.split("/", api_url.url))
+        mcp_origin_domain = cdk.Fn.select(2, cdk.Fn.split("/", mcp_url.url))
 
         api_cf_origin = origins.HttpOrigin(
             api_origin_domain,
             protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
             origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
         )
+        mcp_cf_origin = origins.HttpOrigin(
+            mcp_origin_domain,
+            protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+            origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
+        )
 
         api_behavior = cloudfront.BehaviorOptions(
             origin=api_cf_origin,
+            viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+            cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+            origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+            allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+        )
+        mcp_behavior = cloudfront.BehaviorOptions(
+            origin=mcp_cf_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
@@ -297,7 +341,10 @@ class HiveStack(cdk.Stack):
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
                 ),
+                "/mcp*": mcp_behavior,
             },
+            domain_names=[custom_domain],
+            certificate=certificate,
             default_root_object="index.html",
             error_responses=[
                 cloudfront.ErrorResponse(
@@ -319,6 +366,27 @@ class HiveStack(cdk.Stack):
                 distribution=distribution,
                 distribution_paths=["/*"],
             )
+
+        # ----------------------------------------------------------------
+        # Route53 alias records — A + AAAA → CloudFront distribution
+        # ----------------------------------------------------------------
+        cf_alias_target = route53.RecordTarget.from_alias(
+            route53_targets.CloudFrontTarget(distribution)
+        )
+        route53.ARecord(
+            self,
+            "AliasRecord",
+            zone=hosted_zone,
+            record_name=issuer_host,
+            target=cf_alias_target,
+        )
+        route53.AaaaRecord(
+            self,
+            "AliasRecordAAAA",
+            zone=hosted_zone,
+            record_name=issuer_host,
+            target=cf_alias_target,
+        )
 
         # ----------------------------------------------------------------
         # GitHub Actions OIDC deploy role
@@ -821,14 +889,26 @@ class HiveStack(cdk.Stack):
         # ----------------------------------------------------------------
         # Outputs
         # ----------------------------------------------------------------
-        cdk.CfnOutput(self, "McpFunctionUrl", value=mcp_url.url, description="MCP server URL")
-        cdk.CfnOutput(self, "ApiFunctionUrl", value=api_url.url, description="Management API URL")
+        cdk.CfnOutput(self, "McpFunctionUrl", value=mcp_url.url, description="MCP Lambda URL (direct)")
+        cdk.CfnOutput(self, "ApiFunctionUrl", value=api_url.url, description="API Lambda URL (direct)")
         cdk.CfnOutput(self, "TableName", value=table.table_name, description="DynamoDB table name")
         cdk.CfnOutput(
             self,
+            "HiveUrl",
+            value=f"https://{custom_domain}",
+            description="Hive base URL (custom domain)",
+        )
+        cdk.CfnOutput(
+            self,
+            "McpUrl",
+            value=f"https://{custom_domain}/mcp",
+            description="MCP server URL — use this in MCP client config",
+        )
+        cdk.CfnOutput(
+            self,
             "UiUrl",
-            value=f"https://{distribution.domain_name}",
-            description="Management UI URL (CloudFront)",
+            value=f"https://{custom_domain}",
+            description="Management UI URL",
         )
         cdk.CfnOutput(
             self,
