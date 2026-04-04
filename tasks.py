@@ -114,8 +114,9 @@ def _wait_for_http(url: str, label: str, timeout: int = 30) -> bool:
 
 @task
 def lint_backend(ctx):
-    """Lint backend Python with ruff"""
+    """Lint backend Python with ruff (check + format)"""
     ctx.run("uv run ruff check src tests", pty=True)
+    ctx.run("uv run ruff format --check src tests", pty=True)
 
 
 @task
