@@ -35,6 +35,7 @@ REGION = "us-east-1"
 DYNAMO_CONTAINER = "hive-dynamo-local"
 DYNAMO_PORT = 8000
 API_PORT = 8001
+MCP_PORT = 8002
 UI_PORT = 5173
 
 
@@ -249,10 +250,11 @@ def dynamo_stop(ctx):
 
 @task
 def dev(ctx):
-    """Start DynamoDB Local + management API + UI dev server (Ctrl-C to stop all)"""
+    """Start DynamoDB Local + MCP server + management API + UI dev server (Ctrl-C to stop all)"""
+    jwt_secret = os.environ.get("HIVE_JWT_SECRET", "dev-secret")
     dev_env = {
         **os.environ,
-        "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
+        "HIVE_JWT_SECRET": jwt_secret,
         "HIVE_TABLE_NAME": "hive",
         "DYNAMODB_ENDPOINT": f"http://localhost:{DYNAMO_PORT}",
         "AWS_ACCESS_KEY_ID": "local",
@@ -283,6 +285,20 @@ def dev(ctx):
         stderr=subprocess.DEVNULL,
     )
 
+    # Start MCP server (HTTP transport, matches production)
+    mcp_proc = subprocess.Popen(
+        [
+            "uv",
+            "run",
+            "uvicorn",
+            "hive.server:asgi_app",
+            f"--port={MCP_PORT}",
+            "--reload",
+        ],
+        cwd=ROOT,
+        env=dev_env,
+    )
+
     # Start management API
     api_proc = subprocess.Popen(
         ["uv", "run", "uvicorn", "hive.api.main:app", f"--port={API_PORT}", "--reload"],
@@ -297,7 +313,7 @@ def dev(ctx):
         env=ui_env,
     )
 
-    procs = [dynamo_proc, api_proc, ui_proc]
+    procs = [dynamo_proc, mcp_proc, api_proc, ui_proc]
 
     def _shutdown(sig, frame):
         print("\nShutting down...")
@@ -311,8 +327,27 @@ def dev(ctx):
 
     print("\nServices starting:")
     print(f"  DynamoDB Local → http://localhost:{DYNAMO_PORT}")
+    print(f"  MCP server      → http://localhost:{MCP_PORT}/mcp")
     print(f"  Management API  → http://localhost:{API_PORT}")
     print(f"  UI dev server   → http://localhost:{UI_PORT}")
+    print()
+    print("Claude Desktop stdio config (add to claude_desktop_config.json):")
+    print("  {")
+    print('    "mcpServers": {')
+    print('      "hive-local": {')
+    print('        "command": "uv",')
+    print('        "args": ["run", "python", "-m", "hive.server"],')
+    print('        "env": {')
+    print(f'          "HIVE_JWT_SECRET": "{jwt_secret}",')
+    print('          "HIVE_TABLE_NAME": "hive",')
+    print(f'          "DYNAMODB_ENDPOINT": "http://localhost:{DYNAMO_PORT}",')
+    print('          "AWS_ACCESS_KEY_ID": "local",')
+    print('          "AWS_SECRET_ACCESS_KEY": "local",')
+    print('          "AWS_DEFAULT_REGION": "us-east-1"')
+    print("        }")
+    print("      }")
+    print("    }")
+    print("  }")
     print("\nPress Ctrl-C to stop all services.\n")
 
     for p in procs:
