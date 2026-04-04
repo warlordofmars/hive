@@ -229,7 +229,8 @@ class TestListMemories:
         await remember("lst-a", "v1", ["alpha"], ctx=_make_ctx(jwt))
         await remember("lst-b", "v2", ["beta"], ctx=_make_ctx(jwt))
         result = await list_memories("alpha", ctx=_make_ctx(jwt))
-        keys = [m["key"] for m in result]
+        assert "items" in result and "has_more" in result
+        keys = [m["key"] for m in result["items"]]
         assert "lst-a" in keys
         assert "lst-b" not in keys
 
@@ -238,7 +239,8 @@ class TestListMemories:
         from hive.server import list_memories
 
         result = await list_memories("nonexistent-tag", ctx=_make_ctx(jwt))
-        assert result == []
+        assert result["items"] == []
+        assert result["has_more"] is False
 
 
 # ---------------------------------------------------------------------------

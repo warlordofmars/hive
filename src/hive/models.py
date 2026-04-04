@@ -416,3 +416,12 @@ class StatsResponse(BaseModel):
     total_clients: int
     events_today: int
     events_last_7_days: int
+
+
+class PagedResponse(BaseModel):
+    """Generic paginated response envelope."""
+
+    items: list
+    count: int
+    has_more: bool
+    next_cursor: str | None = None
