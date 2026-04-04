@@ -86,10 +86,13 @@ async def remember(
     storage, client_id = _auth(ctx)
     tags = tags or []
 
-    # Check if a memory with this key already exists (update path)
+    # Check if a memory with this key already exists (upsert path)
     existing = storage.get_memory_by_key(key)
 
     if existing:
+        # Idempotent: skip write and log if nothing changed
+        if existing.value == value and set(existing.tags) == set(tags):
+            return f"Memory '{key}' unchanged."
         existing.value = value
         existing.tags = tags
         existing.updated_at = datetime.now(timezone.utc)

@@ -167,3 +167,14 @@ class TestMemoryEndpoints:
         assert "tagged-1" in keys
         assert "tagged-2" in keys
         assert "untagged" not in keys
+
+    def test_upsert_on_duplicate_key(self, client):
+        resp1 = client.post("/api/memories", json={"key": "upsert-key", "value": "v1", "tags": ["a"]})
+        assert resp1.status_code == 201
+        mid = resp1.json()["memory_id"]
+
+        resp2 = client.post("/api/memories", json={"key": "upsert-key", "value": "v2", "tags": ["b"]})
+        assert resp2.status_code == 200
+        assert resp2.json()["value"] == "v2"
+        assert resp2.json()["tags"] == ["b"]
+        assert resp2.json()["memory_id"] == mid  # same item updated, not a new one
