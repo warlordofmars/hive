@@ -288,6 +288,44 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Write JS coverage summary
+        if: always()
+        run: |
+          echo "## Frontend Test Coverage" >> $GITHUB_STEP_SUMMARY
+          node - << 'EOF'
+          const fs = require('fs');
+          const lcov = fs.readFileSync('coverage/lcov.info', 'utf8');
+          let totalFound = 0, totalHit = 0;
+          const rows = [];
+          let curFile = null, curFound = 0, curHit = 0;
+          for (const line of lcov.split('\n')) {
+            if (line.startsWith('SF:')) {
+              curFile = line.slice(3).replace(/^.*\/src\//, 'src/');
+              curFound = 0; curHit = 0;
+            } else if (line.startsWith('LF:')) {
+              curFound = parseInt(line.slice(3), 10);
+              totalFound += curFound;
+            } else if (line.startsWith('LH:')) {
+              curHit = parseInt(line.slice(3), 10);
+              totalHit += curHit;
+            } else if (line === 'end_of_record' && curFile) {
+              const pct = curFound > 0 ? (curHit / curFound * 100).toFixed(0) : 100;
+              const bar = pct >= 90 ? '🟢' : pct >= 80 ? '🟡' : '🔴';
+              rows.push(`| \`${curFile}\` | ${pct}% | ${bar} |`);
+              curFile = null;
+            }
+          }
+          const total = totalFound > 0 ? (totalHit / totalFound * 100).toFixed(1) : 100;
+          const summary = [
+            `| File | Lines | |`,
+            `|:---|---:|:---|`,
+            ...rows,
+            ``,
+            `**Total: ${total}%**`,
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+          EOF
+
       - name: Upload JS coverage artifact
         uses: actions/upload-artifact@v4
         with:
