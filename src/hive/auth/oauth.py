@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import secrets
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -31,6 +32,11 @@ from hive.models import (
     TokenResponse,
 )
 from hive.storage import HiveStorage
+
+# When set (non-prod environments only), /oauth/authorize issues auth codes
+# directly without redirecting to Google.  This keeps e2e tests functional
+# without needing a real Google account in the test environment.
+_BYPASS_GOOGLE_AUTH = bool(os.environ.get("HIVE_BYPASS_GOOGLE_AUTH"))
 
 router = APIRouter(tags=["oauth"])
 
@@ -137,7 +143,21 @@ async def authorize(
             detail="Requested scope has no overlap with client's registered scope",
         )
 
-    # Store PKCE state, then redirect the user to Google for identity verification
+    # In bypass mode (non-prod / e2e testing), skip Google and issue code directly.
+    if _BYPASS_GOOGLE_AUTH:
+        auth_code = storage.create_auth_code(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            scope=effective_scope,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+        )
+        params: dict[str, str] = {"code": auth_code.code}
+        if state:
+            params["state"] = state
+        return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+    # Production: store PKCE state, then redirect to Google for identity verification.
     from hive.auth.google import google_authorization_url
 
     pending = storage.create_pending_auth(

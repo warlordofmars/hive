@@ -362,6 +362,29 @@ class TestOAuthAuthorize:
         )
         assert resp.status_code == 400
 
+    def test_bypass_mode_issues_code_directly(self, oauth_client):
+        """When HIVE_BYPASS_GOOGLE_AUTH is set, authorize redirects directly with code."""
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        with patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True):
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "state": "bypass-state",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        assert "code=" in location
+        assert "state=bypass-state" in location
+        assert "accounts.google.com" not in location
+
 
 # ---------------------------------------------------------------------------
 # Google OAuth callback endpoint tests

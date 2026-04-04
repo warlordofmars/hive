@@ -235,6 +235,11 @@ class HiveStack(cdk.Stack):
             "HIVE_ENV": env_name,
         }
 
+        # In non-prod environments, bypass Google OAuth so automated e2e tests
+        # can complete the PKCE flow without a real Google account.
+        if not is_prod:
+            common_env["HIVE_BYPASS_GOOGLE_AUTH"] = "1"
+
         # Tag every resource with the deployed version for operational visibility.
         cdk.Tags.of(self).add("version", app_version)
 
