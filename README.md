@@ -1,5 +1,7 @@
 # Hive
 
+[![codecov](https://codecov.io/gh/warlordofmars/hive/branch/main/graph/badge.svg?token=CODECOV_TOKEN)](https://codecov.io/gh/warlordofmars/hive)
+
 Shared persistent memory for Claude agents and teams. Hive is a self-hosted MCP server that lets any number of Claude agents store, retrieve, and share memories across conversations — backed by DynamoDB and secured with OAuth 2.1.
 
 ## What it does
