@@ -209,3 +209,21 @@ class TestActivityLog:
         events = storage.get_events_for_date(date_str)
         assert len(events) == 1
         assert events[0].event_id == event.event_id
+
+    def test_hour_sharded_pk(self, storage):
+        """Events must be written to LOG#{date}#{hour} partitions."""
+        event = ActivityEvent(
+            event_type=EventType.memory_recalled,
+            client_id="c1",
+            metadata={},
+        )
+        storage.log_event(event)
+
+        item = storage.table.get_item(
+            Key={
+                "PK": f"LOG#{event.timestamp.strftime('%Y-%m-%d#%H')}",
+                "SK": f"{event.timestamp.isoformat()}#{event.event_id}",
+            }
+        ).get("Item")
+        assert item is not None
+        assert item["event_id"] == event.event_id
