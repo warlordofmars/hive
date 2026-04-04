@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Data models for Hive — shared persistent memory MCP server.
 
@@ -6,7 +7,7 @@ DynamoDB single-table design:
                  PK=MEMORY#{memory_id}   SK=META          (canonical item)
   OAuth clients: PK=CLIENT#{client_id}   SK=META
   Token items:   PK=TOKEN#{jti}          SK=META          (TTL enabled)
-  Activity log:  PK=LOG#{date}           SK={timestamp}#{event_id}
+  Activity log:  PK=LOG#{date}#{hour}     SK={timestamp}#{event_id}  (hour sharding)
 
 GSIs:
   TagIndex:      PK=tag, SK=memory_id    — for list_memories(tag)
@@ -300,10 +301,12 @@ class ActivityEvent(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_dynamo(self) -> dict[str, Any]:
-        date_str = self.timestamp.strftime("%Y-%m-%d")
+        # Hour-sharded PK: spreads writes across 24 partitions per day,
+        # avoiding DynamoDB hot-partition throttling under heavy write load.
+        date_hour_str = self.timestamp.strftime("%Y-%m-%d#%H")
         ts_str = self.timestamp.isoformat()
         return {
-            "PK": f"LOG#{date_str}",
+            "PK": f"LOG#{date_hour_str}",
             "SK": f"{ts_str}#{self.event_id}",
             "event_id": self.event_id,
             "event_type": self.event_type.value,

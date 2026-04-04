@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Hive CDK Stack — defines all AWS infrastructure.
 
@@ -44,6 +45,10 @@ class HiveStack(cdk.Stack):
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # Apply cost-allocation tags to every resource in the stack.
+        cdk.Tags.of(self).add("project", "hive")
+        cdk.Tags.of(self).add("env", env_name)
 
         is_prod = env_name == "prod"
 
@@ -145,6 +150,7 @@ class HiveStack(cdk.Stack):
 
         # JWT issuer URL embedded in tokens — must be unique per environment.
         issuer_host = "hive" if is_prod else f"hive-{env_name}"
+        app_version = os.environ.get("APP_VERSION", "dev")
         common_env = {
             "HIVE_TABLE_NAME": table.table_name,
             "HIVE_ISSUER": f"https://{issuer_host}.{self.account}.{self.region}.on.aws",
@@ -152,8 +158,11 @@ class HiveStack(cdk.Stack):
             "HIVE_JWT_SECRET_PARAM": ssm_param_name,
             # APP_VERSION is injected at deploy time via the APP_VERSION env var.
             # Falls back to "dev" for local synth/deploy without a version set.
-            "APP_VERSION": os.environ.get("APP_VERSION", "dev"),
+            "APP_VERSION": app_version,
         }
+
+        # Tag every resource with the deployed version for operational visibility.
+        cdk.Tags.of(self).add("version", app_version)
 
         # ----------------------------------------------------------------
         # MCP Lambda
@@ -354,4 +363,10 @@ class HiveStack(cdk.Stack):
             "DeployRoleArn",
             value=deploy_role.role_arn,
             description=f"GitHub Actions OIDC deploy role ARN ({env_name})",
+        )
+        cdk.CfnOutput(
+            self,
+            "AppVersion",
+            value=app_version,
+            description="Deployed application version",
         )

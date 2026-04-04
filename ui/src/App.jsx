@@ -1,7 +1,9 @@
-import React, { useState } from "react";
+// Copyright (c) 2026 John Carter. All rights reserved.
+import React, { useEffect, useState } from "react";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import ActivityLog from "./components/ActivityLog.jsx";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
 const TABS = [
   { id: "memories", label: "Memories" },
@@ -12,6 +14,14 @@ const TABS = [
 export default function App() {
   const [tab, setTab] = useState("memories");
   const [token, setToken] = useState(localStorage.getItem("hive_token") ?? "");
+  const [version, setVersion] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/health`)
+      .then((r) => r.json())
+      .then((data) => setVersion(data.version ?? null))
+      .catch(() => {});
+  }, []);
 
   function saveToken(t) {
     setToken(t);
@@ -67,6 +77,20 @@ export default function App() {
         {tab === "clients" && <ClientManager />}
         {tab === "activity" && <ActivityLog />}
       </main>
+
+      {version && (
+        <footer
+          style={{
+            textAlign: "center",
+            padding: "8px 0",
+            fontSize: 12,
+            color: "#888",
+            borderTop: "1px solid #eee",
+          }}
+        >
+          Hive {version}
+        </footer>
+      )}
     </div>
   );
 }

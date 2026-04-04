@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 John Carter. All rights reserved.
 """CDK app entry point for Hive infrastructure."""
 
 import aws_cdk as cdk

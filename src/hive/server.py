@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Hive MCP Server — FastMCP tool definitions.
 
@@ -14,6 +15,8 @@ Tools:
 
 from __future__ import annotations
 
+import importlib.metadata
+import os
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -25,10 +28,20 @@ from hive.auth.tokens import validate_bearer_token
 from hive.models import ActivityEvent, EventType, Memory
 from hive.storage import HiveStorage
 
+
+def _app_version() -> str:
+    if v := os.environ.get("APP_VERSION"):
+        return v
+    try:
+        return importlib.metadata.version("hive")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
 mcp = FastMCP(
     name="Hive",
     instructions=(
-        "Hive is a shared persistent memory server for Claude agents and teams. "
+        f"Hive {_app_version()} — shared persistent memory server for Claude agents and teams. "
         "Use the memory tools to store, retrieve, and organise information across "
         "conversations and agent runs."
     ),
@@ -85,10 +98,13 @@ async def remember(
     storage, client_id = _auth(ctx)
     tags = tags or []
 
-    # Check if a memory with this key already exists (update path)
+    # Check if a memory with this key already exists (upsert path)
     existing = storage.get_memory_by_key(key)
 
     if existing:
+        # Idempotent: skip write and log if nothing changed
+        if existing.value == value and set(existing.tags) == set(tags):
+            return f"Memory '{key}' unchanged."
         existing.value = value
         existing.tags = tags
         existing.updated_at = datetime.now(timezone.utc)

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Memory CRUD endpoints for the Hive management API.
 
@@ -8,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from hive.api._auth import require_token
 from hive.models import ActivityEvent, EventType, Memory, MemoryCreate, MemoryResponse, MemoryUpdate
@@ -31,17 +32,30 @@ async def list_memories(
     return [MemoryResponse.from_memory(m) for m in memories]
 
 
-@router.post("/memories", response_model=MemoryResponse, status_code=201)
+@router.post("/memories", response_model=MemoryResponse)
 async def create_memory(
     body: MemoryCreate,
+    response: Response,
     auth: tuple[HiveStorage, str] = Depends(require_token),
 ) -> MemoryResponse:
     storage, client_id = auth
 
-    # Reject duplicate keys
     existing = storage.get_memory_by_key(body.key)
     if existing:
-        raise HTTPException(status_code=409, detail=f"Memory with key '{body.key}' already exists")
+        # Upsert: update existing memory instead of rejecting
+        existing.value = body.value
+        existing.tags = body.tags
+        existing.updated_at = datetime.now(timezone.utc)
+        storage.put_memory(existing)
+        storage.log_event(
+            ActivityEvent(
+                event_type=EventType.memory_updated,
+                client_id=client_id,
+                metadata={"key": body.key, "tags": body.tags},
+            )
+        )
+        response.status_code = 200
+        return MemoryResponse.from_memory(existing)
 
     memory = Memory(key=body.key, value=body.value, tags=body.tags, owner_client_id=client_id)
     storage.put_memory(memory)
@@ -52,6 +66,7 @@ async def create_memory(
             metadata={"key": body.key, "tags": body.tags},
         )
     )
+    response.status_code = 201
     return MemoryResponse.from_memory(memory)
 
 

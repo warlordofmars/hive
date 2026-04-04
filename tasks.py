@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Invoke task definitions for Hive.
 
@@ -113,8 +114,9 @@ def _wait_for_http(url: str, label: str, timeout: int = 30) -> bool:
 
 @task
 def lint_backend(ctx):
-    """Lint backend Python with ruff"""
+    """Lint backend Python with ruff (check + format)"""
     ctx.run("uv run ruff check src tests", pty=True)
+    ctx.run("uv run ruff format --check src tests", pty=True)
 
 
 @task
@@ -352,6 +354,13 @@ def deploy(ctx, env="prod"):
     else:
         short_sha = ctx.run("git rev-parse --short HEAD", hide=True).stdout.strip()
         app_version = f"{_infer_next_version(ctx)}-{env}.{short_sha}"
+
+    # Build the React UI so assets are included in the S3 deployment.
+    # CI does this explicitly before cdk deploy; local deploys must do the same.
+    with ctx.cd(UI):
+        ctx.run("npm install --silent", hide=True)
+        ctx.run("npm run build", pty=True)
+
     with ctx.cd(INFRA):
         ctx.run(
             f"uv run cdk deploy {stack} --require-approval never"

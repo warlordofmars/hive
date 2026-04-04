@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 Unit tests for the storage layer using moto to mock DynamoDB.
 """
@@ -126,6 +127,22 @@ class TestMemoryStorage:
         new_tagged = storage.list_memories_by_tag("new")
         assert len(new_tagged) == 1
 
+    def test_upsert_by_key(self, storage):
+        m = Memory(key="upsert-key", value="v1", tags=["a"], owner_client_id="c1")
+        storage.put_memory(m)
+
+        m2 = storage.get_memory_by_key("upsert-key")
+        assert m2 is not None
+        m2.value = "v2"
+        m2.tags = ["b"]
+        storage.put_memory(m2)
+
+        result = storage.get_memory_by_key("upsert-key")
+        assert result is not None
+        assert result.value == "v2"
+        assert result.tags == ["b"]
+        assert result.memory_id == m.memory_id  # same item, not a new one
+
 
 # ---------------------------------------------------------------------------
 # Client tests
@@ -192,3 +209,21 @@ class TestActivityLog:
         events = storage.get_events_for_date(date_str)
         assert len(events) == 1
         assert events[0].event_id == event.event_id
+
+    def test_hour_sharded_pk(self, storage):
+        """Events must be written to LOG#{date}#{hour} partitions."""
+        event = ActivityEvent(
+            event_type=EventType.memory_recalled,
+            client_id="c1",
+            metadata={},
+        )
+        storage.log_event(event)
+
+        item = storage.table.get_item(
+            Key={
+                "PK": f"LOG#{event.timestamp.strftime('%Y-%m-%d#%H')}",
+                "SK": f"{event.timestamp.isoformat()}#{event.event_id}",
+            }
+        ).get("Item")
+        assert item is not None
+        assert item["event_id"] == event.event_id

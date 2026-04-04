@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """
 DynamoDB storage layer for Hive.
 
@@ -255,11 +256,29 @@ class HiveStorage:
         self.table.put_item(Item=event.to_dynamo())
 
     def get_events_for_date(self, date: str) -> list[ActivityEvent]:
-        """Query activity log for a specific date (YYYY-MM-DD)."""
-        resp = self.table.query(
-            KeyConditionExpression=Key("PK").eq(f"LOG#{date}"),
-        )
-        return [ActivityEvent.from_dynamo(i) for i in resp.get("Items", [])]
+        """Query activity log for a specific date (YYYY-MM-DD).
+
+        Queries all 24 hour-sharded partitions (LOG#{date}#{HH}) in parallel
+        and merges results. Also queries the legacy LOG#{date} partition for
+        backward compatibility with items written before the hour-sharding migration.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _query(pk: str) -> list[ActivityEvent]:
+            resp = self.table.query(KeyConditionExpression=Key("PK").eq(pk))
+            return [ActivityEvent.from_dynamo(i) for i in resp.get("Items", [])]
+
+        # Build all partition keys: 24 hour shards + legacy unsharded key
+        pks = [f"LOG#{date}#{hour:02d}" for hour in range(24)]
+        pks.append(f"LOG#{date}")  # backward compat
+
+        events: list[ActivityEvent] = []
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(_query, pk): pk for pk in pks}
+            for future in as_completed(futures):
+                events.extend(future.result())
+
+        return events
 
     def get_events_for_dates(self, dates: list[str]) -> list[ActivityEvent]:
         events: list[ActivityEvent] = []

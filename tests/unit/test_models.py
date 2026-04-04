@@ -1,3 +1,4 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
 """Unit tests for Hive data models — no AWS deps."""
 
 from __future__ import annotations
