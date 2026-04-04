@@ -107,6 +107,7 @@ async def authorize(
     response_type: str,
     client_id: str,
     redirect_uri: str,
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects this
     state: str = "",
     scope: str = "memories:read memories:write",
     code_challenge: str = "",
@@ -136,18 +137,92 @@ async def authorize(
             detail="Requested scope has no overlap with client's registered scope",
         )
 
-    auth_code = storage.create_auth_code(
+    # Store PKCE state, then redirect the user to Google for identity verification
+    from hive.auth.google import google_authorization_url
+
+    pending = storage.create_pending_auth(
         client_id=client_id,
         redirect_uri=redirect_uri,
         scope=effective_scope,
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
+        original_state=state,
+    )
+    base = str(request.base_url).rstrip("/")
+    google_callback_uri = f"{base}/oauth/google/callback"
+    return RedirectResponse(
+        google_authorization_url(pending.state, google_callback_uri), status_code=302
     )
 
-    params = {"code": auth_code.code}
-    if state:
-        params["state"] = state
-    return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+# ---------------------------------------------------------------------------
+# Google OAuth callback
+# ---------------------------------------------------------------------------
+
+
+@router.get("/oauth/google/callback")
+async def google_callback(
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects this
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    storage: HiveStorage = Depends(get_storage),
+) -> RedirectResponse:
+    """Handle the redirect from Google after user authentication."""
+    from hive.auth.google import exchange_google_code, is_email_allowed, verify_google_id_token
+
+    if error:
+        raise HTTPException(status_code=400, detail=f"Google auth error: {error}")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state parameter")
+
+    pending = storage.get_pending_auth(state)
+    if pending is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired state")
+    if datetime.now(timezone.utc) > pending.expires_at:
+        storage.delete_pending_auth(state)
+        raise HTTPException(status_code=400, detail="State has expired — please try again")
+
+    # Consume the pending auth (single use)
+    storage.delete_pending_auth(state)
+
+    base = str(request.base_url).rstrip("/")
+    google_callback_uri = f"{base}/oauth/google/callback"
+
+    try:
+        id_token = await exchange_google_code(code, google_callback_uri)
+        claims = await verify_google_id_token(id_token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Google token verification failed: {exc}"
+        ) from exc
+
+    email = claims.get("email", "")
+    if not email or not claims.get("email_verified"):
+        raise HTTPException(status_code=400, detail="Google account email not verified")
+    if not is_email_allowed(email):
+        raise HTTPException(status_code=403, detail=f"Email {email!r} is not authorised")
+
+    auth_code = storage.create_auth_code(
+        client_id=pending.client_id,
+        redirect_uri=pending.redirect_uri,
+        scope=pending.scope,
+        code_challenge=pending.code_challenge,
+        code_challenge_method=pending.code_challenge_method,
+    )
+
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.token_issued,
+            client_id=pending.client_id,
+            metadata={"email": email, "via": "google_oauth"},
+        )
+    )
+
+    params: dict[str, str] = {"code": auth_code.code}
+    if pending.original_state:
+        params["state"] = pending.original_state
+    return RedirectResponse(f"{pending.redirect_uri}?{urlencode(params)}", status_code=302)
 
 
 # ---------------------------------------------------------------------------

@@ -170,6 +170,52 @@ class OAuthClient(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Pending Auth (stores PKCE state while user authenticates with Google)
+# ---------------------------------------------------------------------------
+
+
+class PendingAuth(BaseModel):
+    """Temporary record that holds PKCE state while the user authenticates with Google."""
+
+    state: str = Field(default_factory=_new_id)  # random nonce, used as DynamoDB key
+    client_id: str
+    redirect_uri: str
+    scope: str
+    code_challenge: str
+    code_challenge_method: str = "S256"
+    original_state: str = ""  # the `state` param from the original /oauth/authorize request
+    expires_at: datetime
+
+    def to_dynamo(self) -> dict[str, Any]:
+        return {
+            "PK": f"PENDING#{self.state}",
+            "SK": "META",
+            "state": self.state,
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "scope": self.scope,
+            "code_challenge": self.code_challenge,
+            "code_challenge_method": self.code_challenge_method,
+            "original_state": self.original_state,
+            "expires_at": self.expires_at.isoformat(),
+            "ttl": int(self.expires_at.timestamp()),
+        }
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> PendingAuth:
+        return cls(
+            state=item["state"],
+            client_id=item["client_id"],
+            redirect_uri=item["redirect_uri"],
+            scope=item["scope"],
+            code_challenge=item["code_challenge"],
+            code_challenge_method=item.get("code_challenge_method", "S256"),
+            original_state=item.get("original_state", ""),
+            expires_at=datetime.fromisoformat(item["expires_at"]),
+        )
+
+
+# ---------------------------------------------------------------------------
 # OAuth Authorization Code (PKCE)
 # ---------------------------------------------------------------------------
 

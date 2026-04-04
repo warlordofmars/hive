@@ -12,6 +12,19 @@ vi.mock("./components/ClientManager.jsx", () => ({
 vi.mock("./components/ActivityLog.jsx", () => ({
   default: () => <div data-testid="activity-log" />,
 }));
+vi.mock("./components/LoginPage.jsx", () => ({
+  default: () => <div data-testid="login-page" />,
+}));
+vi.mock("./components/AuthCallback.jsx", () => ({
+  default: () => <div data-testid="auth-callback" />,
+}));
+
+/** Build a syntactically-valid JWT with the given exp (seconds from epoch). */
+function makeToken(expOffsetSeconds = 3600) {
+  const exp = Math.floor(Date.now() / 1000) + expOffsetSeconds;
+  const payload = btoa(JSON.stringify({ exp, sub: "test-client" }));
+  return `eyJhbGciOiJIUzI1NiJ9.${payload}.sig`;
+}
 
 describe("App", () => {
   let _storage;
@@ -20,8 +33,12 @@ describe("App", () => {
     _storage = {};
     vi.stubGlobal("localStorage", {
       getItem: (k) => _storage[k] ?? null,
-      setItem: (k, v) => { _storage[k] = v; },
-      removeItem: (k) => { delete _storage[k]; },
+      setItem: (k, v) => {
+        _storage[k] = v;
+      },
+      removeItem: (k) => {
+        delete _storage[k];
+      },
     });
     vi.stubGlobal(
       "fetch",
@@ -31,6 +48,8 @@ describe("App", () => {
         json: () => Promise.resolve({ status: "ok", version: "1.2.3" }),
       }),
     );
+    // Most tests need a valid token — set it by default
+    _storage["hive_token"] = makeToken();
   });
 
   afterEach(() => {
@@ -70,18 +89,39 @@ describe("App", () => {
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
-  it("token input saves to localStorage and state", async () => {
+  it("shows LoginPage when no token is stored", async () => {
+    delete _storage["hive_token"];
     await act(async () => render(<App />));
-    const input = screen.getByPlaceholderText("Bearer token");
-    fireEvent.change(input, { target: { value: "mytoken" } });
-    expect(localStorage.getItem("hive_token")).toBe("mytoken");
-    expect(input.value).toBe("mytoken");
+    expect(screen.getByTestId("login-page")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
-  it("pre-fills token from localStorage", async () => {
-    localStorage.setItem("hive_token", "stored-tok");
+  it("shows LoginPage when token is expired", async () => {
+    _storage["hive_token"] = makeToken(-3600); // expired 1h ago
     await act(async () => render(<App />));
-    expect(screen.getByPlaceholderText("Bearer token").value).toBe("stored-tok");
+    expect(screen.getByTestId("login-page")).toBeTruthy();
+  });
+
+  it("shows LoginPage when token is malformed", async () => {
+    _storage["hive_token"] = "not.a.jwt"; // base64 decodes but no exp field
+    await act(async () => render(<App />));
+    // isTokenValid catches the exception and returns false
+    expect(screen.getByTestId("login-page")).toBeTruthy();
+  });
+
+  it("sign out button clears token and reloads", async () => {
+    const replaceMock = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace: replaceMock });
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Sign out"));
+    expect(_storage["hive_token"]).toBeUndefined();
+    expect(replaceMock).toHaveBeenCalledWith("/");
+  });
+
+  it("shows AuthCallback on /oauth/callback route", async () => {
+    vi.stubGlobal("location", { ...window.location, pathname: "/oauth/callback" });
+    await act(async () => render(<App />));
+    expect(screen.getByTestId("auth-callback")).toBeTruthy();
   });
 
   it("shows version in footer after health check", async () => {
@@ -106,7 +146,6 @@ describe("App", () => {
   it("does not crash when health check fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network error")));
     await act(async () => render(<App />));
-    // Should still render tabs without crashing
     expect(screen.getByText("Memories")).toBeTruthy();
     expect(screen.queryByText(/Hive \d/)).toBeNull();
   });
