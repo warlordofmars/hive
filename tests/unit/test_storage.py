@@ -143,6 +143,41 @@ class TestMemoryStorage:
         assert result.tags == ["b"]
         assert result.memory_id == m.memory_id  # same item, not a new one
 
+    def test_put_memory_too_large_raises_value_error(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        oversized = Memory(key="big", value="x" * 1000, tags=[], owner_client_id="c1")
+        error_response = {
+            "Error": {
+                "Code": "ValidationException",
+                "Message": "Item size has exceeded the maximum allowed size",
+            }
+        }
+        with patch.object(storage.table, "batch_writer") as mock_bw:
+            mock_bw.return_value.__enter__.return_value.put_item.side_effect = ClientError(
+                error_response, "PutItem"
+            )
+            with pytest.raises(ValueError, match="too large"):
+                storage.put_memory(oversized)
+
+    def test_put_memory_other_client_error_reraises(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        m = Memory(key="err", value="v", tags=[], owner_client_id="c1")
+        error_response = {
+            "Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}
+        }
+        with patch.object(storage.table, "batch_writer") as mock_bw:
+            mock_bw.return_value.__enter__.return_value.put_item.side_effect = ClientError(
+                error_response, "PutItem"
+            )
+            with pytest.raises(ClientError):
+                storage.put_memory(m)
+
 
 # ---------------------------------------------------------------------------
 # Client tests
