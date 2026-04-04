@@ -265,3 +265,112 @@ class TestSummarizeContext:
 
         result = await summarize_context("nonexistent-topic", ctx=_make_ctx(jwt))
         assert "No memories found" in result
+
+
+# ---------------------------------------------------------------------------
+# _app_version() branches — covers server.py:39 and 42-43
+# ---------------------------------------------------------------------------
+
+
+class TestServerAppVersion:
+    def test_returns_env_var_when_set(self):
+        """Covers server.py line where APP_VERSION env var is returned."""
+        from unittest.mock import patch
+
+        from hive.server import _app_version
+
+        with patch.dict(os.environ, {"APP_VERSION": "1.2.3"}):
+            assert _app_version() == "1.2.3"
+
+    def test_returns_dev_when_package_not_found(self):
+        """Covers server.py PackageNotFoundError fallback to 'dev'."""
+        import importlib.metadata
+        from unittest.mock import patch
+
+        from hive.server import _app_version
+
+        env = {k: v for k, v in os.environ.items() if k != "APP_VERSION"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "hive.server.importlib.metadata.version",
+                side_effect=importlib.metadata.PackageNotFoundError,
+            ),
+        ):
+            assert _app_version() == "dev"
+
+
+# ---------------------------------------------------------------------------
+# HTTP request path in _auth() — covers server.py:75-77
+# ---------------------------------------------------------------------------
+
+
+class TestAuthHttpPath:
+    async def test_auth_reads_token_from_http_request(self, server_env):
+        """When get_http_request() succeeds, auth header is read from it."""
+        from unittest.mock import patch
+
+        from hive.server import remember
+
+        storage, client_id, jwt = server_env
+
+        mock_request = MagicMock()
+        mock_request.headers.get.side_effect = lambda key, *args: {
+            "authorization": f"bearer {jwt}",
+            "x-amzn-requestid": "test-req-123",
+            "x-request-id": None,
+        }.get(key.lower())
+
+        # ctx has no meta so the HTTP path must succeed
+        ctx = MagicMock()
+        ctx.request_context = None
+
+        with patch("hive.server.get_http_request", return_value=mock_request):
+            result = await remember("http-path-key", "value", [], ctx=ctx)
+        assert "http-path-key" in result
+
+
+# ---------------------------------------------------------------------------
+# update existing memory raises ValueError → ToolError — covers server.py:136-137
+# ---------------------------------------------------------------------------
+
+
+class TestRememberUpdateError:
+    async def test_update_existing_oversized_raises_tool_error(self, server_env):
+        """Covers the ValueError → ToolError path when updating an existing memory."""
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        storage, client_id, jwt = server_env
+        # Store memory first
+        await remember("upd-err-key", "original", [], ctx=_make_ctx(jwt))
+
+        with (
+            patch.object(storage.__class__, "put_memory", side_effect=ValueError("too large")),
+            pytest.raises(ToolError, match="too large"),
+        ):
+            await remember("upd-err-key", "updated-value", [], ctx=_make_ctx(jwt))
+
+
+# ---------------------------------------------------------------------------
+# list_memories with pagination cursor — covers server.py:288
+# ---------------------------------------------------------------------------
+
+
+class TestListMemoriesPagination:
+    async def test_list_returns_next_cursor(self, server_env):
+        """Covers server.py line that adds next_cursor to result dict."""
+        from hive.server import list_memories, remember
+
+        storage, client_id, jwt = server_env
+        ctx = _make_ctx(jwt)
+        # Store 3 memories with the same tag
+        for i in range(3):
+            await remember(f"pg-key-{i}", f"val-{i}", ["pagtest"], ctx=ctx)
+
+        result = await list_memories("pagtest", limit=1, ctx=ctx)
+        assert result["has_more"] is True
+        assert "next_cursor" in result

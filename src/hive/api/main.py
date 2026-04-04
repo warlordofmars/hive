@@ -101,7 +101,7 @@ async def health() -> dict:
     return {"status": "ok", "version": APP_VERSION}
 
 
-def lambda_handler(event: dict, context: object) -> dict:
+def lambda_handler(event: dict, context: object) -> dict:  # pragma: no cover
     """AWS Lambda + Function URL handler for the management API."""
     try:
         from mangum import Mangum

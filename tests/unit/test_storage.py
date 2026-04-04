@@ -204,6 +204,16 @@ class TestClientStorage:
         clients, _ = storage.list_clients()
         assert len(clients) == 3
 
+    def test_list_clients_with_cursor(self, storage):
+        """Covers storage.py:220 — list_clients pagination cursor."""
+        for i in range(4):
+            storage.put_client(OAuthClient(client_name=f"PagApp {i}"))
+        page1, cursor1 = storage.list_clients(limit=2)
+        assert len(page1) == 2
+        assert cursor1 is not None
+        page2, cursor2 = storage.list_clients(limit=2, cursor=cursor1)
+        assert len(page2) == 2
+
 
 # ---------------------------------------------------------------------------
 # Token tests
