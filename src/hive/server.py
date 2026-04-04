@@ -230,21 +230,30 @@ async def summarize_context(
 
 
 # ---------------------------------------------------------------------------
-# Entry point — run as a Lambda handler or local stdio server
+# Entry points
 # ---------------------------------------------------------------------------
+
+# Module-level ASGI app — used by uvicorn for local dev:
+#   uvicorn hive.server:asgi_app --port 8002
+# Uvicorn manages lifespan correctly (startup once, shutdown once).
+asgi_app = mcp.http_app(stateless_http=True, json_response=True)
 
 
 def lambda_handler(event: dict, context: object) -> dict:
-    """AWS Lambda + Function URL handler (HTTP mode)."""
+    """AWS Lambda + Function URL handler (HTTP mode).
 
-    # Re-use FastAPI ASGI app via Mangum
+    Creates a fresh ASGI app per Lambda container initialisation.
+    FastMCP's StreamableHTTPSessionManager can only be started once per
+    instance, so we cannot reuse the module-level asgi_app across warm
+    Lambda invocations where Mangum re-runs the lifespan on each call.
+    """
     try:
         from mangum import Mangum
     except ImportError as exc:
         raise RuntimeError("mangum is required for Lambda deployment") from exc
 
-    asgi_app = mcp.http_app(stateless_http=True, json_response=True)
-    handler = Mangum(asgi_app, lifespan="on")
+    _app = mcp.http_app(stateless_http=True, json_response=True)
+    handler = Mangum(_app, lifespan="on")
     return handler(event, context)  # type: ignore[arg-type]
 
 
