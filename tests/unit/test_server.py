@@ -157,9 +157,13 @@ class TestRemember:
         from hive.server import remember
 
         storage, client_id, jwt = server_env
-        with patch.object(storage.__class__, "get_memory_by_key", return_value=None), patch.object(
-            storage.__class__, "put_memory", side_effect=ValueError("Memory value is too large")
-        ), pytest.raises(ToolError, match="too large"):
+        with (
+            patch.object(storage.__class__, "get_memory_by_key", return_value=None),
+            patch.object(
+                storage.__class__, "put_memory", side_effect=ValueError("Memory value is too large")
+            ),
+            pytest.raises(ToolError, match="too large"),
+        ):
             await remember("big-key", "x" * 1000, [], ctx=_make_ctx(jwt))
 
 

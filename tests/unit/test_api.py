@@ -153,7 +153,9 @@ class TestMemories:
         from unittest.mock import patch
 
         tc, storage, _ = client
-        with patch.object(storage, "put_memory", side_effect=ValueError("Memory value is too large")):
+        with patch.object(
+            storage, "put_memory", side_effect=ValueError("Memory value is too large")
+        ):
             resp = tc.post("/api/memories", json={"key": "big", "value": "x" * 1000})
         assert resp.status_code == 413
         assert "too large" in resp.json()["detail"]
@@ -162,8 +164,12 @@ class TestMemories:
         from unittest.mock import patch
 
         tc, storage, _ = client
-        mid = tc.post("/api/memories", json={"key": "upd-big", "value": "small"}).json()["memory_id"]
-        with patch.object(storage, "put_memory", side_effect=ValueError("Memory value is too large")):
+        mid = tc.post("/api/memories", json={"key": "upd-big", "value": "small"}).json()[
+            "memory_id"
+        ]
+        with patch.object(
+            storage, "put_memory", side_effect=ValueError("Memory value is too large")
+        ):
             resp = tc.patch(f"/api/memories/{mid}", json={"value": "x" * 1000})
         assert resp.status_code == 413
 

@@ -168,7 +168,9 @@ class TestMemoryStorage:
         from botocore.exceptions import ClientError
 
         m = Memory(key="err", value="v", tags=[], owner_client_id="c1")
-        error_response = {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}}
+        error_response = {
+            "Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow"}
+        }
         with patch.object(storage.table, "batch_writer") as mock_bw:
             mock_bw.return_value.__enter__.return_value.put_item.side_effect = ClientError(
                 error_response, "PutItem"
