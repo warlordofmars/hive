@@ -548,6 +548,7 @@ class HiveStack(cdk.Stack):
             ),
             additional_behaviors={
                 "/api/*": api_behavior,
+                "/auth/*": api_behavior,
                 "/oauth/*": api_behavior,
                 "/.well-known/*": cloudfront.BehaviorOptions(
                     origin=api_cf_origin,
