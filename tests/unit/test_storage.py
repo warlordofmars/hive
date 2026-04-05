@@ -18,7 +18,7 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 from moto import mock_aws
 
-from hive.models import ActivityEvent, EventType, Memory, OAuthClient, TokenType
+from hive.models import ActivityEvent, EventType, Memory, OAuthClient, TokenType, User
 from hive.storage import HiveStorage
 
 
@@ -45,6 +45,7 @@ def _create_table():
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI4PK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -60,6 +61,13 @@ def _create_table():
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "UserEmailIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI4PK", "KeyType": "HASH"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -469,3 +477,106 @@ class TestPendingAuthStorage:
         )
         storage.delete_pending_auth(pending.state)
         assert storage.get_pending_auth(pending.state) is None
+
+
+# ---------------------------------------------------------------------------
+# User storage
+# ---------------------------------------------------------------------------
+
+
+class TestUserStorage:
+    def _user(self, email: str = "alice@example.com", role: str = "user") -> User:
+        return User(email=email, display_name="Alice", role=role)
+
+    def test_put_and_get_by_id(self, storage):
+        u = self._user()
+        storage.put_user(u)
+        fetched = storage.get_user_by_id(u.user_id)
+        assert fetched is not None
+        assert fetched.email == u.email
+        assert fetched.role == u.role
+
+    def test_get_nonexistent_by_id_returns_none(self, storage):
+        assert storage.get_user_by_id("no-such-id") is None
+
+    def test_get_by_email(self, storage):
+        u = self._user(email="bob@example.com")
+        storage.put_user(u)
+        fetched = storage.get_user_by_email("bob@example.com")
+        assert fetched is not None
+        assert fetched.user_id == u.user_id
+
+    def test_get_nonexistent_by_email_returns_none(self, storage):
+        assert storage.get_user_by_email("nobody@example.com") is None
+
+    def test_delete(self, storage):
+        u = self._user()
+        storage.put_user(u)
+        assert storage.delete_user(u.user_id) is True
+        assert storage.get_user_by_id(u.user_id) is None
+
+    def test_delete_nonexistent_returns_false(self, storage):
+        assert storage.delete_user("no-such-id") is False
+
+    def test_list_users(self, storage):
+        storage.put_user(self._user("a@example.com"))
+        storage.put_user(self._user("b@example.com"))
+        users, cursor = storage.list_users()
+        emails = {u.email for u in users}
+        assert {"a@example.com", "b@example.com"}.issubset(emails)
+        assert cursor is None
+
+
+# ---------------------------------------------------------------------------
+# MgmtPendingState storage
+# ---------------------------------------------------------------------------
+
+
+class TestMgmtPendingStateStorage:
+    def test_create_and_get(self, storage):
+        pending = storage.create_mgmt_pending_state()
+        assert pending.state
+        fetched = storage.get_mgmt_pending_state(pending.state)
+        assert fetched is not None
+        assert fetched.state == pending.state
+
+    def test_get_nonexistent_returns_none(self, storage):
+        assert storage.get_mgmt_pending_state("no-such-state") is None
+
+    def test_delete(self, storage):
+        pending = storage.create_mgmt_pending_state()
+        storage.delete_mgmt_pending_state(pending.state)
+        assert storage.get_mgmt_pending_state(pending.state) is None
+
+
+# ---------------------------------------------------------------------------
+# owner_user_id filtering
+# ---------------------------------------------------------------------------
+
+
+class TestOwnerUserIdFiltering:
+    def test_list_all_memories_filtered_by_user(self, storage):
+        storage.put_memory(Memory(key="a", value="1", owner_client_id="c1", owner_user_id="user-1"))
+        storage.put_memory(Memory(key="b", value="2", owner_client_id="c2", owner_user_id="user-2"))
+        mems, _ = storage.list_all_memories(owner_user_id="user-1")
+        assert len(mems) == 1
+        assert mems[0].key == "a"
+
+    def test_list_clients_filtered_by_user(self, storage):
+        storage.put_client(OAuthClient(client_name="A", owner_user_id="user-1"))
+        storage.put_client(OAuthClient(client_name="B", owner_user_id="user-2"))
+        clients, _ = storage.list_clients(owner_user_id="user-1")
+        assert len(clients) == 1
+        assert clients[0].client_name == "A"
+
+    def test_count_memories_filtered_by_user(self, storage):
+        storage.put_memory(Memory(key="x", value="v", owner_client_id="c1", owner_user_id="user-1"))
+        storage.put_memory(Memory(key="y", value="v", owner_client_id="c1", owner_user_id="user-2"))
+        assert storage.count_memories(owner_user_id="user-1") == 1
+        assert storage.count_memories() == 2
+
+    def test_count_clients_filtered_by_user(self, storage):
+        storage.put_client(OAuthClient(client_name="C1", owner_user_id="user-1"))
+        storage.put_client(OAuthClient(client_name="C2", owner_user_id="user-2"))
+        assert storage.count_clients(owner_user_id="user-1") == 1
+        assert storage.count_clients() == 2

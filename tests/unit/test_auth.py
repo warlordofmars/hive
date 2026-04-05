@@ -188,6 +188,7 @@ def _create_table(table_name: str = "hive-unit-auth") -> None:
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI4PK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -203,6 +204,13 @@ def _create_table(table_name: str = "hive-unit-auth") -> None:
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "UserEmailIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI4PK", "KeyType": "HASH"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
