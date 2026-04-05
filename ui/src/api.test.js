@@ -44,7 +44,7 @@ describe("api", () => {
   // ---------------------------------------------------------------------------
 
   it("adds Authorization header when token is in localStorage", async () => {
-    localStorage.setItem("hive_token", "tok123");
+    localStorage.setItem("hive_mgmt_token", "tok123");
     mockOk({ items: [] });
     await api.listMemories();
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer tok123");
@@ -219,16 +219,47 @@ describe("api", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Users
+  // ---------------------------------------------------------------------------
+
+  it("getMe calls /api/users/me", async () => {
+    mockOk({ user_id: "u1", email: "u@example.com", role: "user" });
+    await api.getMe();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/me");
+    expect(fetchMock.mock.calls[0][1].method).toBe("GET");
+  });
+
+  it("listUsers calls /api/users", async () => {
+    mockOk({ items: [] });
+    await api.listUsers();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users");
+    expect(fetchMock.mock.calls[0][0]).not.toContain("/me");
+  });
+
+  it("listUsers passes cursor when provided", async () => {
+    mockOk({ items: [] });
+    await api.listUsers({ cursor: "c123" });
+    expect(fetchMock.mock.calls[0][0]).toContain("cursor=c123");
+  });
+
+  it("deleteUser calls DELETE /api/users/{id}", async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 204 });
+    await api.deleteUser("u99");
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/u99");
+  });
+
+  // ---------------------------------------------------------------------------
   // 401 handling — clears token and redirects
   // ---------------------------------------------------------------------------
 
-  it("401 response clears token and redirects to /", async () => {
-    storage["hive_token"] = "old-token";
+  it("401 response clears mgmt token and redirects to /", async () => {
+    storage["hive_mgmt_token"] = "old-token";
     vi.stubGlobal("location", { replace: vi.fn() });
     fetchMock.mockResolvedValue({ ok: false, status: 401, json: () => Promise.resolve({}) });
     const result = await api.getStats();
     expect(result).toBeNull();
-    expect(storage["hive_token"]).toBeUndefined();
+    expect(storage["hive_mgmt_token"]).toBeUndefined();
     expect(window.location.replace).toHaveBeenCalledWith("/");
   });
 });

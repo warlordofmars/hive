@@ -5,25 +5,31 @@ import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
+import UsersPanel from "./components/UsersPanel.jsx";
 
-const TABS = [
+const BASE_TABS = [
   { id: "memories", label: "Memories" },
   { id: "clients", label: "OAuth Clients" },
   { id: "activity", label: "Activity Log" },
 ];
+const ADMIN_TABS = [...BASE_TABS, { id: "users", label: "Users" }];
 
-function isTokenValid(token) {
-  if (!token) return false;
+function parseToken(token) {
+  if (!token) return null;
   try {
-    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-    return payload.exp * 1000 > Date.now();
+    return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
   } catch {
-    return false;
+    return null;
   }
 }
 
+function isTokenValid(token) {
+  const payload = parseToken(token);
+  return payload ? payload.exp * 1000 > Date.now() : false;
+}
+
 function signOut() {
-  localStorage.removeItem("hive_token");
+  localStorage.removeItem("hive_mgmt_token");
   window.location.replace("/");
 }
 
@@ -31,17 +37,22 @@ export default function App() {
   const [tab, setTab] = useState("memories");
   const [version, setVersion] = useState(null);
 
-  // Handle OAuth callback route
+  // Handle OAuth callback route (legacy MCP client flow)
   if (window.location.pathname === "/oauth/callback") {
     return <AuthCallback />;
   }
 
-  const token = localStorage.getItem("hive_token") ?? "";
+  const token = localStorage.getItem("hive_mgmt_token") ?? "";
 
   // Show login if no valid token
   if (!isTokenValid(token)) {
     return <LoginPage />;
   }
+
+  const claims = parseToken(token);
+  const isAdmin = claims?.role === "admin";
+  const userEmail = claims?.email ?? "";
+  const tabs = isAdmin ? ADMIN_TABS : BASE_TABS;
 
   useEffect(() => {
     fetch("/health")
@@ -66,7 +77,7 @@ export default function App() {
         <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
 
         <nav style={{ display: "flex", gap: 4, flex: 1 }}>
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
@@ -82,6 +93,10 @@ export default function App() {
             </button>
           ))}
         </nav>
+
+        {userEmail && (
+          <span style={{ fontSize: 13, color: "rgba(255,255,255,.7)" }}>{userEmail}</span>
+        )}
 
         <button
           onClick={signOut}
@@ -103,6 +118,7 @@ export default function App() {
         {tab === "memories" && <MemoryBrowser />}
         {tab === "clients" && <ClientManager />}
         {tab === "activity" && <ActivityLog />}
+        {tab === "users" && isAdmin && <UsersPanel />}
       </main>
 
       {version && (

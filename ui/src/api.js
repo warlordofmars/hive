@@ -7,7 +7,7 @@
 const BASE = import.meta.env.VITE_API_BASE ?? "";
 
 function getToken() {
-  return localStorage.getItem("hive_token") ?? "";
+  return localStorage.getItem("hive_mgmt_token") ?? "";
 }
 
 async function request(method, path, body) {
@@ -22,7 +22,7 @@ async function request(method, path, body) {
   });
 
   if (res.status === 401) {
-    localStorage.removeItem("hive_token");
+    localStorage.removeItem("hive_mgmt_token");
     window.location.replace("/");
     return null;
   }
@@ -64,4 +64,13 @@ export const api = {
   getStats: () => request("GET", "/api/stats"),
   getActivity: (days = 7, { limit = 100 } = {}) =>
     request("GET", `/api/activity?days=${days}&limit=${limit}`),
+
+  // Users
+  getMe: () => request("GET", "/api/users/me"),
+  listUsers: ({ limit = 50, cursor } = {}) => {
+    const params = new URLSearchParams({ limit });
+    if (cursor) params.set("cursor", cursor);
+    return request("GET", `/api/users?${params}`);
+  },
+  deleteUser: (id) => request("DELETE", `/api/users/${id}`),
 };
