@@ -38,6 +38,7 @@ from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_ssm as ssm
+from aws_cdk import aws_wafv2 as wafv2
 from constructs import Construct
 
 GITHUB_REPO = "warlordofmars/hive"
@@ -169,6 +170,16 @@ class HiveStack(cdk.Stack):
         )
         allowed_emails_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
 
+        origin_verify_param = ssm.StringParameter(
+            self,
+            "OriginVerifySecret",
+            parameter_name=_ssm_path("origin-verify-secret"),
+            string_value="CHANGE_ME_ON_FIRST_DEPLOY",
+            description=f"CloudFront → Lambda shared secret for X-Origin-Verify header ({env_name})",
+            tier=ssm.ParameterTier.STANDARD,
+        )
+        origin_verify_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
+
         # ----------------------------------------------------------------
         # Shared Lambda code (Docker-bundled at cdk deploy time)
         # ----------------------------------------------------------------
@@ -228,6 +239,7 @@ class HiveStack(cdk.Stack):
             "GOOGLE_CLIENT_ID_PARAM": google_client_id_param.parameter_name,
             "GOOGLE_CLIENT_SECRET_PARAM": google_client_secret_param.parameter_name,
             "ALLOWED_EMAILS_PARAM": allowed_emails_param.parameter_name,
+            "HIVE_ORIGIN_VERIFY_PARAM": origin_verify_param.parameter_name,
             # APP_VERSION is injected at deploy time via the APP_VERSION env var.
             # Falls back to "dev" for local synth/deploy without a version set.
             "APP_VERSION": app_version,
@@ -261,6 +273,7 @@ class HiveStack(cdk.Stack):
         google_client_id_param.grant_read(mcp_role)
         google_client_secret_param.grant_read(mcp_role)
         allowed_emails_param.grant_read(mcp_role)
+        origin_verify_param.grant_read(mcp_role)
 
         mcp_fn = lambda_.Function(
             self,
@@ -302,6 +315,7 @@ class HiveStack(cdk.Stack):
         google_client_id_param.grant_read(api_role)
         google_client_secret_param.grant_read(api_role)
         allowed_emails_param.grant_read(api_role)
+        origin_verify_param.grant_read(api_role)
 
         api_fn = lambda_.Function(
             self,
@@ -340,15 +354,33 @@ class HiveStack(cdk.Stack):
         api_origin_domain = cdk.Fn.select(2, cdk.Fn.split("/", api_url.url))
         mcp_origin_domain = cdk.Fn.select(2, cdk.Fn.split("/", mcp_url.url))
 
+        # CloudFront injects X-Origin-Verify on prod so Lambda can reject direct
+        # Function URL access. The header value is resolved from SSM at deploy
+        # time via a CloudFormation dynamic reference.
+        origin_verify_header: dict[str, str] = (
+            {
+                "X-Origin-Verify": cdk.Token.as_string(
+                    cdk.CfnDynamicReference(
+                        cdk.CfnDynamicReferenceService.SSM,
+                        origin_verify_param.parameter_name,
+                    )
+                )
+            }
+            if is_prod
+            else {}
+        )
+
         api_cf_origin = origins.HttpOrigin(
             api_origin_domain,
             protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
             origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
+            custom_headers=origin_verify_header,
         )
         mcp_cf_origin = origins.HttpOrigin(
             mcp_origin_domain,
             protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
             origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
+            custom_headers=origin_verify_header,
         )
 
         api_behavior = cloudfront.BehaviorOptions(
@@ -365,6 +397,139 @@ class HiveStack(cdk.Stack):
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
         )
+
+        # ----------------------------------------------------------------
+        # WAF WebACL (prod only — see issue #86 for dev)
+        # ----------------------------------------------------------------
+        web_acl_arn: str | None = None
+        if is_prod:
+            waf_log_group = logs.LogGroup(
+                self,
+                "WafLogGroup",
+                log_group_name=f"aws-waf-logs-hive-{env_name}",
+                retention=logs.RetentionDays.ONE_MONTH,
+                removal_policy=cdk.RemovalPolicy.DESTROY,
+            )
+            # WAFv2 needs permission to write to the CloudWatch log group
+            waf_log_group.add_to_resource_policy(
+                iam.PolicyStatement(
+                    principals=[iam.ServicePrincipal("delivery.logs.amazonaws.com")],
+                    actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                    resources=[f"{waf_log_group.log_group_arn}:*"],
+                    conditions={
+                        "StringEquals": {"aws:SourceAccount": self.account},
+                        "ArnLike": {
+                            "aws:SourceArn": f"arn:aws:logs:{self.region}:{self.account}:*"
+                        },
+                    },
+                )
+            )
+
+            web_acl = wafv2.CfnWebACL(
+                self,
+                "WebAcl",
+                name=f"hive-{env_name}",
+                scope="CLOUDFRONT",
+                default_action=wafv2.CfnWebACL.DefaultActionProperty(allow={}),
+                visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                    cloud_watch_metrics_enabled=True,
+                    metric_name=f"hive-{env_name}-waf",
+                    sampled_requests_enabled=True,
+                ),
+                rules=[
+                    # Managed: OWASP Top 10 protections
+                    wafv2.CfnWebACL.RuleProperty(
+                        name="AWSManagedRulesCommonRuleSet",
+                        priority=0,
+                        override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
+                        statement=wafv2.CfnWebACL.StatementProperty(
+                            managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
+                                vendor_name="AWS",
+                                name="AWSManagedRulesCommonRuleSet",
+                            ),
+                        ),
+                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                            cloud_watch_metrics_enabled=True,
+                            metric_name="AWSManagedRulesCommonRuleSet",
+                            sampled_requests_enabled=True,
+                        ),
+                    ),
+                    # Managed: known malicious input patterns
+                    wafv2.CfnWebACL.RuleProperty(
+                        name="AWSManagedRulesKnownBadInputsRuleSet",
+                        priority=1,
+                        override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
+                        statement=wafv2.CfnWebACL.StatementProperty(
+                            managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
+                                vendor_name="AWS",
+                                name="AWSManagedRulesKnownBadInputsRuleSet",
+                            ),
+                        ),
+                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                            cloud_watch_metrics_enabled=True,
+                            metric_name="AWSManagedRulesKnownBadInputsRuleSet",
+                            sampled_requests_enabled=True,
+                        ),
+                    ),
+                    # Rate limit: 100 req/5min per IP on /oauth/* (auth endpoints)
+                    wafv2.CfnWebACL.RuleProperty(
+                        name="OAuthRateLimit",
+                        priority=2,
+                        action=wafv2.CfnWebACL.RuleActionProperty(block={}),
+                        statement=wafv2.CfnWebACL.StatementProperty(
+                            rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
+                                limit=100,
+                                aggregate_key_type="IP",
+                                scope_down_statement=wafv2.CfnWebACL.StatementProperty(
+                                    byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
+                                        search_string="/oauth/",
+                                        field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
+                                            uri_path={}
+                                        ),
+                                        text_transformations=[
+                                            wafv2.CfnWebACL.TextTransformationProperty(
+                                                priority=0, type="NONE"
+                                            )
+                                        ],
+                                        positional_constraint="STARTS_WITH",
+                                    )
+                                ),
+                            )
+                        ),
+                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                            cloud_watch_metrics_enabled=True,
+                            metric_name="OAuthRateLimit",
+                            sampled_requests_enabled=True,
+                        ),
+                    ),
+                    # Rate limit: 1000 req/5min per IP globally
+                    wafv2.CfnWebACL.RuleProperty(
+                        name="GlobalRateLimit",
+                        priority=3,
+                        action=wafv2.CfnWebACL.RuleActionProperty(block={}),
+                        statement=wafv2.CfnWebACL.StatementProperty(
+                            rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
+                                limit=1000,
+                                aggregate_key_type="IP",
+                            )
+                        ),
+                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                            cloud_watch_metrics_enabled=True,
+                            metric_name="GlobalRateLimit",
+                            sampled_requests_enabled=True,
+                        ),
+                    ),
+                ],
+            )
+
+            wafv2.CfnLoggingConfiguration(
+                self,
+                "WafLogging",
+                log_destination_configs=[waf_log_group.log_group_arn],
+                resource_arn=web_acl.attr_arn,
+            )
+
+            web_acl_arn = web_acl.attr_arn
 
         distribution = cloudfront.Distribution(
             self,
@@ -402,6 +567,13 @@ class HiveStack(cdk.Stack):
                 ),
             ],
         )
+
+        # Associate WAF WebACL with distribution (prod only)
+        if web_acl_arn:
+            cfn_distribution = distribution.node.default_child
+            cfn_distribution.add_property_override(  # type: ignore[union-attr]
+                "DistributionConfig.WebACLId", web_acl_arn
+            )
 
         # Deploy built UI assets — only if ui/dist exists (built in CI before cdk deploy)
         ui_dist_path = os.path.join(os.path.dirname(__file__), "../../ui/dist")
@@ -964,6 +1136,13 @@ class HiveStack(cdk.Stack):
             value=deploy_role.role_arn,
             description=f"GitHub Actions OIDC deploy role ARN ({env_name})",
         )
+        if web_acl_arn:
+            cdk.CfnOutput(
+                self,
+                "WebAclArn",
+                value=web_acl_arn,
+                description=f"WAFv2 WebACL ARN ({env_name})",
+            )
         cdk.CfnOutput(
             self,
             "AppVersion",

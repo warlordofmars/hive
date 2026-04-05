@@ -24,8 +24,11 @@ from typing import Annotated, Any
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse as StarletteJSONResponse
 
-from hive.auth.tokens import validate_bearer_token
+from hive.auth.tokens import _origin_verify_secret, validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory
@@ -33,6 +36,23 @@ from hive.storage import HiveStorage
 
 configure_logging("mcp")
 logger = get_logger("hive.server")
+
+
+class _OriginVerifyMiddleware(BaseHTTPMiddleware):
+    """Reject requests missing the CloudFront X-Origin-Verify secret.
+
+    Disabled when HIVE_ORIGIN_VERIFY_PARAM is not set (local dev / non-prod).
+    """
+
+    async def dispatch(self, request: StarletteRequest, call_next):  # type: ignore[override]
+        expected = _origin_verify_secret()
+        if (
+            expected
+            and expected != "CHANGE_ME_ON_FIRST_DEPLOY"
+            and request.headers.get("x-origin-verify") != expected
+        ):
+            return StarletteJSONResponse(status_code=403, content={"detail": "Forbidden"})
+        return await call_next(request)
 
 
 def _app_version() -> str:
@@ -409,6 +429,7 @@ def lambda_handler(event: dict[str, Any], context: object) -> dict[str, Any]:  #
         raise RuntimeError("mangum is required for Lambda deployment") from exc
 
     _app = mcp.http_app(stateless_http=True, json_response=True)
+    _app.add_middleware(_OriginVerifyMiddleware)
     handler = Mangum(_app, lifespan="on")
     return handler(event, context)  # type: ignore[arg-type]  # mangum stubs incomplete
 
