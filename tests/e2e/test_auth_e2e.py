@@ -43,7 +43,9 @@ class TestOAuthE2E:
     async def test_dcr_and_token_flow(self):
         import httpx
 
-        async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False, timeout=30.0) as http:
+        async with httpx.AsyncClient(
+            base_url=API_URL, follow_redirects=False, timeout=30.0
+        ) as http:
             # Register
             reg = await http.post(
                 "/oauth/register",
