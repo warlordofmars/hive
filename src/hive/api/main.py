@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from hive.api.clients import router as clients_router
 from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
+from hive.auth.mgmt_auth import router as mgmt_auth_router
 from hive.auth.oauth import router as oauth_router
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 
@@ -112,6 +113,9 @@ async def _verify_origin_secret(request: Request, call_next):
 
 # OAuth 2.1 endpoints (unauthenticated)
 app.include_router(oauth_router)
+
+# Management UI auth endpoints (unauthenticated — issues mgmt JWTs)
+app.include_router(mgmt_auth_router)
 
 # Management API endpoints (Bearer token required)
 app.include_router(memories_router, prefix="/api")

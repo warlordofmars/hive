@@ -85,6 +85,43 @@ def _origin_verify_secret() -> str | None:
         return None
 
 
+MGMT_JWT_TTL_SECONDS = 28800  # 8 hours
+
+
+def issue_mgmt_jwt(user: Any) -> str:
+    """Issue a short-lived management session JWT for a human user.
+
+    Uses typ=mgmt to distinguish from MCP access tokens so neither can be
+    replayed as the other.
+    """
+    import time
+
+    now = int(time.time())
+    payload = {
+        "iss": ISSUER,
+        "sub": user.user_id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "role": user.role,
+        "typ": "mgmt",
+        "iat": now,
+        "exp": now + MGMT_JWT_TTL_SECONDS,
+    }
+    return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_mgmt_jwt(token_str: str) -> dict[str, Any]:
+    """Decode a management JWT and enforce typ=mgmt.
+
+    Raises JWTError if the token is invalid, expired, or not a management token
+    (prevents MCP access tokens from being replayed on management endpoints).
+    """
+    claims = jwt.decode(token_str, _jwt_secret(), algorithms=[JWT_ALGORITHM], issuer=ISSUER)
+    if claims.get("typ") != "mgmt":
+        raise JWTError("Not a management token")
+    return claims
+
+
 def validate_bearer_token(authorization_header: str | None, storage: HiveStorage) -> Token:
     """
     Validate a Bearer token from an Authorization header.
