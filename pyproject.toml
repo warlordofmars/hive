@@ -31,6 +31,7 @@ dev = [
 ]
 infra = [
     "aws-cdk-lib>=2.245.0",
+    "cdk-nag>=2.28.0",
     "constructs>=10.6.0",
 ]
 

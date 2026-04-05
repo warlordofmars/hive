@@ -3,6 +3,7 @@
 """CDK app entry point for Hive infrastructure."""
 
 import aws_cdk as cdk
+from cdk_nag import AwsSolutionsChecks
 from stacks.hive_stack import HiveStack
 
 app = cdk.App()
@@ -24,6 +25,8 @@ env = cdk.Environment(
 # In CI this is injected from the HOSTED_ZONE_ID Actions variable.
 hosted_zone_id = app.node.try_get_context("hosted_zone_id") or ""
 
-HiveStack(app, stack_id, env_name=env_name, hosted_zone_id=hosted_zone_id, env=env)
+stack = HiveStack(app, stack_id, env_name=env_name, hosted_zone_id=hosted_zone_id, env=env)
+
+cdk.Aspects.of(stack).add(AwsSolutionsChecks(verbose=True))
 
 app.synth()

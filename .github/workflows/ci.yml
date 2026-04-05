@@ -45,6 +45,9 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -71,6 +74,24 @@ jobs:
       - name: npm audit
         working-directory: ui
         run: npm audit --audit-level=high
+
+      - name: Trivy — dependency scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-deps.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload Trivy dependency results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@f94817b9f0deeb3871261446912ae8f854d1b675 # codeql-bundle-v2.25.1
+        with:
+          sarif_file: trivy-deps.sarif
+          category: trivy-deps
 
   unit-tests:
     name: Unit Tests
@@ -338,6 +359,9 @@ jobs:
   infra-synth:
     name: Infra Synth
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -362,6 +386,23 @@ jobs:
       - name: Synth dev stack
         working-directory: infra
         run: cdk synth HiveStack-dev --no-staging -c env=dev -c hosted_zone_id=${{ vars.HOSTED_ZONE_ID }}
+
+      - name: Trivy — IaC scan (CloudFormation templates)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: config
+          scan-ref: infra/cdk.out/
+          format: sarif
+          output: trivy-iac.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Upload Trivy IaC results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@f94817b9f0deeb3871261446912ae8f854d1b675 # codeql-bundle-v2.25.1
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac
 
 # ── Deploy to dev (push to development) ───────────────────────────────────────
 
