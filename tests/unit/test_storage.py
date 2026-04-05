@@ -206,6 +206,10 @@ class TestClientStorage:
         assert storage.delete_client(c.client_id)
         assert storage.get_client(c.client_id) is None
 
+    def test_delete_nonexistent_returns_false(self, storage):
+        """Covers storage.py delete_client early-return False when item not found."""
+        assert storage.delete_client("no-such-client") is False
+
     def test_list(self, storage):
         for i in range(3):
             storage.put_client(OAuthClient(client_name=f"App {i}"))
