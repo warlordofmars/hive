@@ -294,6 +294,7 @@ class HiveStack(cdk.Stack):
             memory_size=512,
             timeout=cdk.Duration.seconds(30),
             description=f"Hive MCP server (FastMCP) [{env_name}]",
+            tracing=lambda_.Tracing.ACTIVE,
         )
 
         mcp_url = mcp_fn.add_function_url(
@@ -348,6 +349,7 @@ class HiveStack(cdk.Stack):
             memory_size=512,
             timeout=cdk.Duration.seconds(30),
             description=f"Hive management API (FastAPI) [{env_name}]",
+            tracing=lambda_.Tracing.ACTIVE,
         )
 
         api_url = api_fn.add_function_url(
