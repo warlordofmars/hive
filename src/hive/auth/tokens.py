@@ -64,6 +64,27 @@ def decode_jwt(token_str: str) -> dict[str, Any]:
     return jwt.decode(token_str, _jwt_secret(), algorithms=[JWT_ALGORITHM], issuer=ISSUER)
 
 
+@functools.lru_cache(maxsize=1)
+def _origin_verify_secret() -> str | None:
+    """Return the expected X-Origin-Verify header value, or None if not configured.
+
+    None disables the check (local dev / non-prod without WAF).
+    """
+    if secret := os.environ.get("HIVE_ORIGIN_VERIFY_SECRET"):
+        return secret
+    param_name = os.environ.get("HIVE_ORIGIN_VERIFY_PARAM")
+    if not param_name:
+        return None
+    try:
+        import boto3
+
+        ssm = boto3.client("ssm")
+        resp = ssm.get_parameter(Name=param_name, WithDecryption=False)
+        return resp["Parameter"]["Value"]
+    except Exception:
+        return None
+
+
 def validate_bearer_token(authorization_header: str | None, storage: HiveStorage) -> Token:
     """
     Validate a Bearer token from an Authorization header.

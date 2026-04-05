@@ -615,3 +615,51 @@ class TestScopeEnforcement:
                 from hive.api.main import app
 
                 app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# X-Origin-Verify middleware
+# ---------------------------------------------------------------------------
+
+
+class TestOriginVerifyMiddleware:
+    def test_returns_403_when_secret_set_and_header_missing(self):
+        """_verify_origin_secret returns 403 when expected secret is active and header absent."""
+        from unittest.mock import patch
+
+        from fastapi.testclient import TestClient
+
+        from hive.api.main import app
+
+        with patch("hive.auth.tokens._origin_verify_secret", return_value="real-secret"):
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get("/health")
+        assert resp.status_code == 403
+
+    def test_passes_through_when_header_correct(self):
+        """_verify_origin_secret allows request when X-Origin-Verify matches."""
+        from unittest.mock import patch
+
+        from fastapi.testclient import TestClient
+
+        from hive.api.main import app
+
+        with patch("hive.auth.tokens._origin_verify_secret", return_value="real-secret"):
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get("/health", headers={"x-origin-verify": "real-secret"})
+        assert resp.status_code == 200
+
+    def test_passes_through_when_placeholder_secret(self):
+        """Check is disabled when secret is the placeholder value."""
+        from unittest.mock import patch
+
+        from fastapi.testclient import TestClient
+
+        from hive.api.main import app
+
+        with patch(
+            "hive.auth.tokens._origin_verify_secret", return_value="CHANGE_ME_ON_FIRST_DEPLOY"
+        ):
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get("/health")
+        assert resp.status_code == 200

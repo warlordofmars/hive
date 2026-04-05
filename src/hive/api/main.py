@@ -88,6 +88,28 @@ async def _log_requests(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def _verify_origin_secret(request: Request, call_next):
+    """Reject requests missing the CloudFront X-Origin-Verify secret.
+
+    Disabled when HIVE_ORIGIN_VERIFY_PARAM is not set (local dev / non-prod).
+    The placeholder value also disables the check so a fresh deploy without
+    a rotated secret does not lock out traffic.
+    """
+    from hive.auth.tokens import _origin_verify_secret
+
+    expected = _origin_verify_secret()
+    if (
+        expected
+        and expected != "CHANGE_ME_ON_FIRST_DEPLOY"
+        and request.headers.get("x-origin-verify") != expected
+    ):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+    return await call_next(request)
+
+
 # OAuth 2.1 endpoints (unauthenticated)
 app.include_router(oauth_router)
 
