@@ -104,4 +104,10 @@ describe("UsersPanel", () => {
     await act(async () => render(<UsersPanel />));
     expect(screen.getByText("Users")).toBeTruthy();
   });
+
+  it("shows empty state when listUsers returns null", async () => {
+    api.listUsers.mockResolvedValue(null);
+    await act(async () => render(<UsersPanel />));
+    expect(screen.getByText("No users found.")).toBeTruthy();
+  });
 });

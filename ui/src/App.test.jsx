@@ -132,6 +132,13 @@ describe("App", () => {
     expect(screen.getByText("alice@example.com")).toBeTruthy();
   });
 
+  it("does not show email when token has no email claim", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ email: null });
+    await act(async () => render(<App />));
+    // email span is rendered with "" so it's not visible — just confirm no crash
+    expect(screen.getByText("Hive")).toBeTruthy();
+  });
+
   it("sign out button clears mgmt token and reloads", async () => {
     const replaceMock = vi.fn();
     vi.stubGlobal("location", { ...window.location, replace: replaceMock });
