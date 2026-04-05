@@ -131,3 +131,12 @@ def is_email_allowed(email: str) -> bool:
     if not allowed:
         return True
     return email in allowed
+
+
+def is_admin_email(email: str) -> bool:
+    """Return True if this email gets the admin role.
+
+    Only emails explicitly listed in ALLOWED_EMAILS / ALLOWED_EMAILS_PARAM
+    receive admin.  An empty allowlist means no admins (not 'everyone is admin').
+    """
+    return email in _allowed_emails()
