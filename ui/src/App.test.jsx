@@ -27,6 +27,9 @@ vi.mock("./components/SetupPanel.jsx", () => ({
 vi.mock("./components/HomePage.jsx", () => ({
   default: () => <div data-testid="home-page" />,
 }));
+vi.mock("./components/Dashboard.jsx", () => ({
+  default: () => <div data-testid="dashboard" />,
+}));
 
 /** Build a syntactically-valid mgmt JWT with given claims. */
 function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
@@ -131,10 +134,11 @@ describe("AppShell", () => {
     expect(screen.queryByText("Users")).toBeNull();
   });
 
-  it("renders Users tab for admin", async () => {
+  it("renders Users and Dashboard tabs for admin", async () => {
     _storage["hive_mgmt_token"] = makeToken({ role: "admin" });
     await act(async () => render(<App />));
     expect(screen.getByText("Users")).toBeTruthy();
+    expect(screen.getByText("Dashboard")).toBeTruthy();
   });
 
   it("shows MemoryBrowser on initial render when clients exist", async () => {
@@ -212,6 +216,14 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     fireEvent.click(screen.getByText("Users"));
     expect(screen.getByTestId("users-panel")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("switches to Dashboard when Dashboard tab is clicked (admin only)", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ role: "admin" });
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Dashboard"));
+    expect(screen.getByTestId("dashboard")).toBeTruthy();
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 

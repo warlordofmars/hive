@@ -323,6 +323,18 @@ class HiveStack(cdk.Stack):
         google_client_secret_param.grant_read(api_role)
         allowed_emails_param.grant_read(api_role)
         origin_verify_param.grant_read(api_role)
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:GetMetricData"],
+                resources=["*"],
+            )
+        )
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ce:GetCostAndUsage"],
+                resources=["*"],
+            )
+        )
 
         api_fn = lambda_.Function(
             self,
