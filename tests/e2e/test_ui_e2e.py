@@ -49,23 +49,30 @@ class TestUIE2E:
         assert page.locator("nav button:has-text('Memories')").is_visible()
 
     def test_create_and_see_memory(self, browser_page):
+        import time
+
         page = browser_page
+        # Use a unique key so stale data from previous runs never causes a
+        # ownership conflict (404) in the multi-tenant API.
+        memory_key = f"ui-e2e-{int(time.time())}"
+
         page.goto(UI_URL)
         page.wait_for_load_state("networkidle")  # wait for initial memories load
 
         page.locator("button:has-text('+ New')").click()
-        page.locator("input[placeholder='unique-key']").fill("ui-e2e-key")
+        page.locator("input[placeholder='unique-key']").fill(memory_key)
         page.locator("textarea").fill("UI e2e test value")
         page.locator("input[placeholder='tag1, tag2']").fill("e2e")
 
         with page.expect_response(
             lambda r: "/api/memories" in r.url and r.request.method == "POST",
             timeout=30_000,
-        ):
+        ) as resp_info:
             page.locator("button:has-text('Save')").click()
+        assert resp_info.value.ok, f"POST /api/memories failed: {resp_info.value.status}"
 
-        page.wait_for_selector("text=ui-e2e-key", timeout=30_000)
-        assert page.locator("text=ui-e2e-key").first.is_visible()
+        page.wait_for_selector(f"text={memory_key}", timeout=30_000)
+        assert page.locator(f"text={memory_key}").first.is_visible()
 
     def test_clients_tab(self, browser_page):
         page = browser_page
