@@ -250,6 +250,28 @@ describe("api", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Admin
+  // ---------------------------------------------------------------------------
+
+  it("getMetrics calls GET /api/admin/metrics with default period", async () => {
+    mockOk({ period: "24h", metrics: {} });
+    await api.getMetrics();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/admin/metrics?period=24h");
+  });
+
+  it("getMetrics passes custom period", async () => {
+    mockOk({ period: "7d", metrics: {} });
+    await api.getMetrics("7d");
+    expect(fetchMock.mock.calls[0][0]).toContain("period=7d");
+  });
+
+  it("getCosts calls GET /api/admin/costs", async () => {
+    mockOk({ monthly: [] });
+    await api.getCosts();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/admin/costs");
+  });
+
+  // ---------------------------------------------------------------------------
   // 401 handling — clears token and redirects
   // ---------------------------------------------------------------------------
 

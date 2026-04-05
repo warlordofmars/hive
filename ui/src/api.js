@@ -65,6 +65,10 @@ export const api = {
   getActivity: (days = 7, { limit = 100 } = {}) =>
     request("GET", `/api/activity?days=${days}&limit=${limit}`),
 
+  // Admin
+  getMetrics: (period = "24h") => request("GET", `/api/admin/metrics?period=${period}`),
+  getCosts: () => request("GET", "/api/admin/costs"),
+
   // Users
   getMe: () => request("GET", "/api/users/me"),
   listUsers: ({ limit = 50, cursor } = {}) => {
