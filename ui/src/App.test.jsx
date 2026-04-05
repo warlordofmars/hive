@@ -24,6 +24,9 @@ vi.mock("./components/UsersPanel.jsx", () => ({
 vi.mock("./components/SetupPanel.jsx", () => ({
   default: () => <div data-testid="setup-panel" />,
 }));
+vi.mock("./components/HomePage.jsx", () => ({
+  default: () => <div data-testid="home-page" />,
+}));
 
 /** Build a syntactically-valid mgmt JWT with given claims. */
 function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
@@ -32,7 +35,7 @@ function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.
   return `eyJhbGciOiJIUzI1NiJ9.${payload}.sig`;
 }
 
-/** URL-aware fetch mock: /api/clients returns items, everything else returns health. */
+/** URL-aware fetch mock: /api/clients returns items, /health returns version. */
 function makeFetch({ clients = [{ client_id: "c1" }] } = {}) {
   return vi.fn().mockImplementation((url) => {
     if (String(url).includes("/api/clients")) {
@@ -50,27 +53,68 @@ function makeFetch({ clients = [{ client_id: "c1" }] } = {}) {
   });
 }
 
-describe("App", () => {
+describe("App routing", () => {
   let _storage;
 
   beforeEach(() => {
     _storage = {};
     vi.stubGlobal("localStorage", {
       getItem: (k) => _storage[k] ?? null,
-      setItem: (k, v) => {
-        _storage[k] = v;
-      },
-      removeItem: (k) => {
-        delete _storage[k];
-      },
+      setItem: (k, v) => { _storage[k] = v; },
+      removeItem: (k) => { delete _storage[k]; },
     });
     vi.stubGlobal("fetch", makeFetch());
-    // Most tests need a valid token — set it by default
-    _storage["hive_mgmt_token"] = makeToken();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("shows HomePage at / when not authenticated", async () => {
+    await act(async () => render(<App />));
+    expect(screen.getByTestId("home-page")).toBeTruthy();
+  });
+
+  it("redirects / to /app when already authenticated", async () => {
+    _storage["hive_mgmt_token"] = makeToken();
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    expect(screen.queryByTestId("home-page")).toBeNull();
+  });
+
+  it("shows AuthCallback at /oauth/callback", async () => {
+    window.history.pushState({}, "", "/oauth/callback");
+    await act(async () => render(<App />));
+    expect(screen.getByTestId("auth-callback")).toBeTruthy();
+    window.history.pushState({}, "", "/");
+  });
+
+  it("redirects unknown routes to /", async () => {
+    window.history.pushState({}, "", "/unknown-path");
+    await act(async () => render(<App />));
+    expect(screen.getByTestId("home-page")).toBeTruthy();
+    window.history.pushState({}, "", "/");
+  });
+});
+
+describe("AppShell", () => {
+  let _storage;
+
+  beforeEach(() => {
+    _storage = {};
+    vi.stubGlobal("localStorage", {
+      getItem: (k) => _storage[k] ?? null,
+      setItem: (k, v) => { _storage[k] = v; },
+      removeItem: (k) => { delete _storage[k]; },
+    });
+    vi.stubGlobal("fetch", makeFetch());
+    _storage["hive_mgmt_token"] = makeToken();
+    window.history.pushState({}, "", "/app");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.pushState({}, "", "/");
   });
 
   it("renders header with Hive title", async () => {
@@ -116,8 +160,7 @@ describe("App", () => {
           return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve() });
         }
         return Promise.resolve({
-          ok: true,
-          status: 200,
+          ok: true, status: 200,
           json: () => Promise.resolve({ status: "ok", version: "1.2.3" }),
         });
       }),
@@ -134,8 +177,7 @@ describe("App", () => {
           return Promise.reject(new Error("Network error"));
         }
         return Promise.resolve({
-          ok: true,
-          status: 200,
+          ok: true, status: 200,
           json: () => Promise.resolve({ status: "ok", version: "1.2.3" }),
         });
       }),
@@ -201,7 +243,14 @@ describe("App", () => {
   it("does not show email when token has no email claim", async () => {
     _storage["hive_mgmt_token"] = makeToken({ email: null });
     await act(async () => render(<App />));
-    // email span is rendered with "" so it's not visible — just confirm no crash
+    expect(screen.getByText("Hive")).toBeTruthy();
+  });
+
+  it("clicking Hive logo navigates to /", async () => {
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Hive"));
+    // After clicking the logo we navigate to "/" — HomeRoute redirects back to /app
+    // since token is valid. Just assert no crash.
     expect(screen.getByText("Hive")).toBeTruthy();
   });
 
@@ -212,12 +261,6 @@ describe("App", () => {
     fireEvent.click(screen.getByText("Sign out"));
     expect(_storage["hive_mgmt_token"]).toBeUndefined();
     expect(replaceMock).toHaveBeenCalledWith("/");
-  });
-
-  it("shows AuthCallback on /oauth/callback route", async () => {
-    vi.stubGlobal("location", { ...window.location, pathname: "/oauth/callback" });
-    await act(async () => render(<App />));
-    expect(screen.getByTestId("auth-callback")).toBeTruthy();
   });
 
   it("shows version in footer after health check", async () => {
@@ -231,14 +274,12 @@ describe("App", () => {
       vi.fn().mockImplementation((url) => {
         if (String(url).includes("/api/clients")) {
           return Promise.resolve({
-            ok: true,
-            status: 200,
+            ok: true, status: 200,
             json: () => Promise.resolve({ items: [{ client_id: "c1" }] }),
           });
         }
         return Promise.resolve({
-          ok: true,
-          status: 200,
+          ok: true, status: 200,
           json: () => Promise.resolve({ status: "ok" }),
         });
       }),
@@ -254,8 +295,7 @@ describe("App", () => {
       vi.fn().mockImplementation((url) => {
         if (String(url).includes("/api/clients")) {
           return Promise.resolve({
-            ok: true,
-            status: 200,
+            ok: true, status: 200,
             json: () => Promise.resolve({ items: [{ client_id: "c1" }] }),
           });
         }

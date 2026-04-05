@@ -1,13 +1,15 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { api } from "./api.js";
 import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
+import HomePage from "./components/HomePage.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import SetupPanel from "./components/SetupPanel.jsx";
 import UsersPanel from "./components/UsersPanel.jsx";
-import { api } from "./api.js";
 
 const BASE_TABS = [
   { id: "memories", label: "Memories" },
@@ -36,18 +38,13 @@ function signOut() {
   window.location.replace("/");
 }
 
-export default function App() {
+function AppShell() {
   const [tab, setTab] = useState("memories");
   const [version, setVersion] = useState(null);
-
-  // Handle OAuth callback route (legacy MCP client flow)
-  if (window.location.pathname === "/oauth/callback") {
-    return <AuthCallback />;
-  }
+  const navigate = useNavigate();
 
   const token = localStorage.getItem("hive_mgmt_token") ?? "";
 
-  // Show login if no valid token
   if (!isTokenValid(token)) {
     return <LoginPage />;
   }
@@ -85,7 +82,12 @@ export default function App() {
           height: 56,
         }}
       >
-        <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
+        <span
+          onClick={() => navigate("/")}
+          style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1, cursor: "pointer" }}
+        >
+          Hive
+        </span>
 
         <nav style={{ display: "flex", gap: 4, flex: 1 }}>
           {tabs.map((t) => (
@@ -147,5 +149,26 @@ export default function App() {
         </footer>
       )}
     </div>
+  );
+}
+
+function HomeRoute() {
+  const token = localStorage.getItem("hive_mgmt_token") ?? "";
+  if (isTokenValid(token)) {
+    return <Navigate to="/app" replace />;
+  }
+  return <HomePage />;
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<HomeRoute />} />
+        <Route path="/app" element={<AppShell />} />
+        <Route path="/oauth/callback" element={<AuthCallback />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
