@@ -35,8 +35,10 @@ def browser_page():
         # write it to localStorage as hive_mgmt_token, and redirect to /.
         page.goto(f"{UI_URL}/auth/login", timeout=30_000, wait_until="networkidle")
 
-        # Should now be at UI_URL root with hive_mgmt_token in localStorage.
-        page.wait_for_url(f"{UI_URL}**", timeout=10_000)
+        # Token is now in localStorage. Navigate directly to /app — the
+        # HomeRoute would also redirect there, but client-side redirects can
+        # race with wait_for_url so we go straight to the destination.
+        page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
 
         yield page
         browser.close()
