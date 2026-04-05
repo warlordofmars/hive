@@ -451,6 +451,22 @@ wheels = [
 ]
 
 [[package]]
+name = "cdk-nag"
+version = "2.37.55"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aws-cdk-lib" },
+    { name = "constructs" },
+    { name = "jsii" },
+    { name = "publication" },
+    { name = "typeguard" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/19/e0/b0e6b23a8efccb0970006a0e9bfa2953b6faa280598a1d1fd4ded7bf354a/cdk_nag-2.37.55.tar.gz", hash = "sha256:e9dc517070ef5a19deef95e79731e5624bd86cd07b56d210380408ea1314e47b", size = 761495, upload-time = "2025-10-17T00:18:46.424Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/ad/7cf42fe81acf6f40016bc8359fe28efad002a7accb7cb535186a449c4c3a/cdk_nag-2.37.55-py3-none-any.whl", hash = "sha256:bf83bcdeb98ac20bb813cac291af121d91c5a296fa815e01f93886b4f8b38845", size = 755391, upload-time = "2025-10-17T00:18:45.135Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.2.25"
 source = { registry = "https://pypi.org/simple" }
@@ -1243,6 +1259,7 @@ dev = [
 ]
 infra = [
     { name = "aws-cdk-lib" },
+    { name = "cdk-nag" },
     { name = "constructs" },
 ]
 
@@ -1275,6 +1292,7 @@ dev = [
 ]
 infra = [
     { name = "aws-cdk-lib", specifier = ">=2.245.0" },
+    { name = "cdk-nag", specifier = ">=2.28.0" },
     { name = "constructs", specifier = ">=10.6.0" },
 ]
 

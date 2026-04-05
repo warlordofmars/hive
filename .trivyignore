@@ -1,0 +1,9 @@
+# Trivy ignore file — accepted-risk findings
+# Format: CVE-YYYY-NNNNN  # reason
+#
+# Add entries here for findings that have been reviewed and accepted,
+# e.g. because a fix is not yet available or the finding is not exploitable
+# in our deployment context.
+#
+# Example:
+# CVE-2023-12345  # Not exploitable: we don't use the affected code path

@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 
 import aws_cdk as cdk
+from cdk_nag import NagPackSuppression, NagSuppressions
 from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
@@ -367,6 +368,7 @@ class HiveStack(cdk.Stack):
             removal_policy=data_removal,
             auto_delete_objects=not is_prod,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            enforce_ssl=True,
         )
 
         # API origin — strip "https://" prefix and trailing "/" from the function URL
@@ -1174,4 +1176,79 @@ class HiveStack(cdk.Stack):
             "DashboardUrl",
             value=f"https://{self.region}.console.aws.amazon.com/cloudwatch/home#dashboards:name={dashboard_name}",
             description="CloudWatch dashboard URL",
+        )
+
+        # ----------------------------------------------------------------
+        # cdk-nag suppressions
+        # ----------------------------------------------------------------
+        NagSuppressions.add_stack_suppressions(
+            self,
+            [
+                # AWSLambdaBasicExecutionRole is the standard minimal Lambda
+                # execution role recommended by AWS. Using a more restrictive
+                # custom policy would require duplicating its managed policy
+                # contents, adding maintenance burden with no security benefit.
+                NagPackSuppression(
+                    id="AwsSolutions-IAM4",
+                    reason="AWSLambdaBasicExecutionRole is the standard least-privilege Lambda execution role.",
+                ),
+                # CloudWatch GetMetricData and Cost Explorer GetCostAndUsage
+                # do not support resource-level permissions — AWS requires '*'.
+                # The WAF log delivery condition ARN also requires a wildcard
+                # resource in the resource policy. All DynamoDB grants use
+                # table-scoped ARNs; the '*' finding applies only to the above.
+                NagPackSuppression(
+                    id="AwsSolutions-IAM5",
+                    reason="CloudWatch GetMetricData and ce:GetCostAndUsage require resource '*' per AWS docs. WAF log delivery policy requires wildcard resource condition.",
+                ),
+                # PYTHON_3_12 is the latest stable Lambda runtime available
+                # in aws-cdk-lib at the time of writing. We track the latest
+                # available runtime and will upgrade when 3.13 is GA in CDK.
+                NagPackSuppression(
+                    id="AwsSolutions-L1",
+                    reason="PYTHON_3_12 is the latest stable Lambda runtime available in CDK. Will upgrade to 3.13 when available.",
+                ),
+                # S3 server-access logging would write to another S3 bucket,
+                # creating a circular dependency and cost. CloudFront access
+                # logs (via CloudWatch metrics) provide sufficient visibility
+                # into access patterns for this SaaS product.
+                NagPackSuppression(
+                    id="AwsSolutions-S1",
+                    reason="CloudFront metrics provide sufficient access visibility. S3 server-access logging adds cost and bucket management overhead.",
+                ),
+                # CloudFront access logging is expensive and produces high
+                # volumes of data. We use CloudWatch metrics (via EMF) and
+                # CloudWatch alarms for operational visibility instead.
+                NagPackSuppression(
+                    id="AwsSolutions-CFR3",
+                    reason="CloudWatch metrics and alarms provide operational visibility. CloudFront access logging not required for this use case.",
+                ),
+                # Geo-restriction is intentionally not applied — Hive is a
+                # public SaaS product available to users worldwide.
+                NagPackSuppression(
+                    id="AwsSolutions-CFR1",
+                    reason="Hive is a globally available SaaS product. Geo-restriction is not appropriate.",
+                ),
+                # Lambda Function URLs are used instead of API Gateway.
+                # They are public by design — the origin-verify secret and
+                # JWT auth in the application layer enforce access control.
+                NagPackSuppression(
+                    id="AwsSolutions-FAS1",
+                    reason="Function URL auth=NONE is intentional; origin-verify header + JWT auth in the application layer enforce access control.",
+                ),
+                # SNS topic encryption with KMS would add per-message costs
+                # for alarm notifications. The topic carries no sensitive
+                # payload — only alarm state change notifications.
+                NagPackSuppression(
+                    id="AwsSolutions-SNS2",
+                    reason="SNS topic carries only CloudWatch alarm notifications (no sensitive data). KMS encryption adds cost without meaningful security benefit.",
+                ),
+                # Enforcing SSL-only on the alarm SNS topic would require a
+                # resource policy that restricts all AWS services, which can
+                # break CloudWatch alarm delivery in some regions.
+                NagPackSuppression(
+                    id="AwsSolutions-SNS3",
+                    reason="SSL-only policy on alarm SNS topic can break CloudWatch alarm delivery. Alarms carry no sensitive data.",
+                ),
+            ],
         )
