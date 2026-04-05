@@ -21,12 +21,33 @@ vi.mock("./components/AuthCallback.jsx", () => ({
 vi.mock("./components/UsersPanel.jsx", () => ({
   default: () => <div data-testid="users-panel" />,
 }));
+vi.mock("./components/SetupPanel.jsx", () => ({
+  default: () => <div data-testid="setup-panel" />,
+}));
 
 /** Build a syntactically-valid mgmt JWT with given claims. */
 function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
   const exp = Math.floor(Date.now() / 1000) + expOffsetSeconds;
   const payload = btoa(JSON.stringify({ exp, sub: "test-user", role, email }));
   return `eyJhbGciOiJIUzI1NiJ9.${payload}.sig`;
+}
+
+/** URL-aware fetch mock: /api/clients returns items, everything else returns health. */
+function makeFetch({ clients = [{ client_id: "c1" }] } = {}) {
+  return vi.fn().mockImplementation((url) => {
+    if (String(url).includes("/api/clients")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ items: clients }),
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ status: "ok", version: "1.2.3" }),
+    });
+  });
 }
 
 describe("App", () => {
@@ -43,14 +64,7 @@ describe("App", () => {
         delete _storage[k];
       },
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ status: "ok", version: "1.2.3" }),
-      }),
-    );
+    vi.stubGlobal("fetch", makeFetch());
     // Most tests need a valid token — set it by default
     _storage["hive_mgmt_token"] = makeToken();
   });
@@ -64,11 +78,12 @@ describe("App", () => {
     expect(screen.getByText("Hive")).toBeTruthy();
   });
 
-  it("renders the three base tab buttons for non-admin", async () => {
+  it("renders the base tab buttons for non-admin (including Setup)", async () => {
     await act(async () => render(<App />));
     expect(screen.getByText("Memories")).toBeTruthy();
     expect(screen.getByText("OAuth Clients")).toBeTruthy();
     expect(screen.getByText("Activity Log")).toBeTruthy();
+    expect(screen.getByText("Setup")).toBeTruthy();
     expect(screen.queryByText("Users")).toBeNull();
   });
 
@@ -78,11 +93,55 @@ describe("App", () => {
     expect(screen.getByText("Users")).toBeTruthy();
   });
 
-  it("shows MemoryBrowser on initial render", async () => {
+  it("shows MemoryBrowser on initial render when clients exist", async () => {
     await act(async () => render(<App />));
-    expect(screen.getByTestId("memory-browser")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
     expect(screen.queryByTestId("client-manager")).toBeNull();
     expect(screen.queryByTestId("activity-log")).toBeNull();
+    expect(screen.queryByTestId("setup-panel")).toBeNull();
+  });
+
+  it("defaults to Setup tab on first load when no clients registered", async () => {
+    vi.stubGlobal("fetch", makeFetch({ clients: [] }));
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("setup-panel")).toBeTruthy());
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("does not switch to Setup when listClients returns null", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url) => {
+        if (String(url).includes("/api/clients")) {
+          return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve() });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ status: "ok", version: "1.2.3" }),
+        });
+      }),
+    );
+    await act(async () => render(<App />));
+    expect(screen.getByText("Memories")).toBeTruthy();
+  });
+
+  it("does not crash when listClients fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url) => {
+        if (String(url).includes("/api/clients")) {
+          return Promise.reject(new Error("Network error"));
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ status: "ok", version: "1.2.3" }),
+        });
+      }),
+    );
+    await act(async () => render(<App />));
+    expect(screen.getByText("Memories")).toBeTruthy();
   });
 
   it("switches to ClientManager when OAuth Clients tab is clicked", async () => {
@@ -96,6 +155,13 @@ describe("App", () => {
     await act(async () => render(<App />));
     fireEvent.click(screen.getByText("Activity Log"));
     expect(screen.getByTestId("activity-log")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("switches to SetupPanel when Setup tab is clicked", async () => {
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Setup"));
+    expect(screen.getByTestId("setup-panel")).toBeTruthy();
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
@@ -162,10 +228,19 @@ describe("App", () => {
   it("hides footer when health check returns no version", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ status: "ok" }),
+      vi.fn().mockImplementation((url) => {
+        if (String(url).includes("/api/clients")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ items: [{ client_id: "c1" }] }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ status: "ok" }),
+        });
       }),
     );
     await act(async () => render(<App />));
@@ -174,7 +249,19 @@ describe("App", () => {
   });
 
   it("does not crash when health check fails", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network error")));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url) => {
+        if (String(url).includes("/api/clients")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ items: [{ client_id: "c1" }] }),
+          });
+        }
+        return Promise.reject(new Error("Network error"));
+      }),
+    );
     await act(async () => render(<App />));
     expect(screen.getByText("Memories")).toBeTruthy();
     expect(screen.queryByText(/Hive \d/)).toBeNull();
