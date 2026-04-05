@@ -12,7 +12,7 @@ export default function UsersPanel() {
     setError(null);
     try {
       const data = await api.listUsers();
-      setUsers(data?.items ?? []);
+      setUsers(data ? data.items : []);
     } catch (e) {
       setError(e.message);
     } finally {

@@ -50,8 +50,8 @@ export default function App() {
   }
 
   const claims = parseToken(token);
-  const isAdmin = claims?.role === "admin";
-  const userEmail = claims?.email ?? "";
+  const isAdmin = claims.role === "admin";
+  const userEmail = claims.email ?? "";
   const tabs = isAdmin ? ADMIN_TABS : BASE_TABS;
 
   useEffect(() => {
