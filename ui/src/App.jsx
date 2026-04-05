@@ -5,6 +5,7 @@ import { api } from "./api.js";
 import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
+import Dashboard from "./components/Dashboard.jsx";
 import HomePage from "./components/HomePage.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
@@ -17,7 +18,11 @@ const BASE_TABS = [
   { id: "activity", label: "Activity Log" },
   { id: "setup", label: "Setup" },
 ];
-const ADMIN_TABS = [...BASE_TABS, { id: "users", label: "Users" }];
+const ADMIN_TABS = [
+  ...BASE_TABS,
+  { id: "users", label: "Users" },
+  { id: "dashboard", label: "Dashboard" },
+];
 
 function parseToken(token) {
   if (!token) return null;
@@ -133,6 +138,7 @@ function AppShell() {
         {tab === "activity" && <ActivityLog />}
         {tab === "users" && isAdmin && <UsersPanel />}
         {tab === "setup" && <SetupPanel />}
+        {tab === "dashboard" && isAdmin && <Dashboard />}
       </main>
 
       {version && (
