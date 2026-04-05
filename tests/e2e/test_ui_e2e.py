@@ -58,6 +58,9 @@ class TestUIE2E:
 
         page.goto(UI_URL)
         page.wait_for_load_state("networkidle")  # wait for initial memories load
+        # Ensure we're on Memories tab regardless of first-run redirect
+        page.locator("nav button:has-text('Memories')").click()
+        page.wait_for_load_state("networkidle")
 
         page.locator("button:has-text('+ New')").click()
         page.locator("input[placeholder='unique-key']").fill(memory_key)
