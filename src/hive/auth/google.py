@@ -117,6 +117,7 @@ async def verify_google_id_token(id_token: str) -> dict[str, Any]:
         algorithms=["RS256"],
         audience=_google_client_id(),
         issuer=GOOGLE_ISSUER,
+        options={"verify_at_hash": False},
     )
     return claims
 
