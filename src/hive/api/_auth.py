@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from hive.auth.tokens import validate_bearer_token
+from hive.auth.tokens import decode_mgmt_jwt, validate_bearer_token
 from hive.metrics import emit_metric
 from hive.storage import HiveStorage
 
@@ -60,3 +62,33 @@ require_memories_read = require_scope("memories:read")
 require_memories_write = require_scope("memories:write")
 require_clients_read = require_scope("clients:read")
 require_clients_write = require_scope("clients:write")
+
+
+# ---------------------------------------------------------------------------
+# Management JWT dependencies (human users of the management UI)
+# ---------------------------------------------------------------------------
+
+
+async def require_mgmt_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> dict[str, Any]:
+    """Validate a management JWT and return its claims.
+
+    Does not hit DynamoDB — the JWT is self-contained.
+    Raises HTTP 401 on invalid/expired token.
+    """
+    from jose import JWTError
+
+    try:
+        return decode_mgmt_jwt(credentials.credentials)
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+async def require_admin(
+    claims: dict[str, Any] = Depends(require_mgmt_user),
+) -> dict[str, Any]:
+    """Require admin role on top of a valid management JWT."""
+    if claims.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return claims

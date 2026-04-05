@@ -1,0 +1,65 @@
+# Copyright (c) 2026 John Carter. All rights reserved.
+"""
+User management endpoints for the Hive management API.
+
+GET /users/me — any authenticated management user.
+GET /users — admin only, lists all users.
+DELETE /users/{user_id} — admin only.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from hive.api._auth import require_admin, require_mgmt_user
+from hive.models import PagedResponse, UserResponse
+from hive.storage import HiveStorage
+
+router = APIRouter(tags=["users"])
+
+_LIMIT_DEFAULT = 50
+_LIMIT_MAX = 200
+
+
+def _storage() -> HiveStorage:
+    return HiveStorage()
+
+
+@router.get("/users/me", response_model=UserResponse)
+async def get_me(
+    claims: dict[str, Any] = Depends(require_mgmt_user),
+    storage: HiveStorage = Depends(_storage),
+) -> UserResponse:
+    user = storage.get_user_by_id(claims["sub"])
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserResponse.from_user(user)
+
+
+@router.get("/users", response_model=PagedResponse)
+async def list_users(
+    limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
+    cursor: str | None = Query(None),
+    claims: dict[str, Any] = Depends(require_admin),
+    storage: HiveStorage = Depends(_storage),
+) -> PagedResponse:
+    users, next_cursor = storage.list_users(limit=limit, cursor=cursor)
+    return PagedResponse(
+        items=[UserResponse.from_user(u).model_dump() for u in users],
+        count=len(users),
+        has_more=next_cursor is not None,
+        next_cursor=next_cursor,
+    )
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str,
+    claims: dict[str, Any] = Depends(require_admin),
+    storage: HiveStorage = Depends(_storage),
+) -> None:
+    deleted = storage.delete_user(user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User not found")

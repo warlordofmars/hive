@@ -2,9 +2,9 @@
 """
 Unit tests for the Hive management API (FastAPI).
 
-Uses moto to mock DynamoDB and overrides the require_token dependency
-so tests don't need a live JWT — auth failure cases use a separate fixture
-that leaves the override cleared.
+Uses moto to mock DynamoDB and overrides require_mgmt_user so tests don't
+need a live Google OAuth flow.  Auth failure cases use the unauthed_client
+fixture which leaves the override cleared.
 """
 
 from __future__ import annotations
@@ -71,38 +71,84 @@ def _create_table(table_name: str = "hive-unit-api") -> None:
     )
 
 
+_TEST_USER_ID = "test-user-123"
+_TEST_ADMIN_ID = "test-admin-456"
+_USER_CLAIMS = {
+    "sub": _TEST_USER_ID,
+    "role": "user",
+    "email": "user@example.com",
+    "display_name": "Test User",
+}
+_ADMIN_CLAIMS = {
+    "sub": _TEST_ADMIN_ID,
+    "role": "admin",
+    "email": "admin@example.com",
+    "display_name": "Admin User",
+}
+
+
+def _setup_app_overrides(app, storage, claims):
+    """Override require_mgmt_user and all _storage deps to use the fixture's objects."""
+    from hive.api import _auth as auth_mod
+    from hive.api import clients as clients_mod
+    from hive.api import memories as memories_mod
+    from hive.api import stats as stats_mod
+    from hive.api import users as users_mod
+
+    def _override_mgmt_user():
+        return claims
+
+    def _override_storage():
+        return storage
+
+    app.dependency_overrides[auth_mod.require_mgmt_user] = _override_mgmt_user
+    for mod in (memories_mod, clients_mod, stats_mod, users_mod):
+        app.dependency_overrides[mod._storage] = _override_storage
+
+
 @pytest.fixture()
 def client():
-    """TestClient with all auth dependencies overridden — no JWT needed."""
+    """TestClient authenticated as a regular (non-admin) management user."""
     with mock_aws():
         _create_table()
-        from hive.api._auth import (
-            require_clients_read,
-            require_clients_write,
-            require_memories_read,
-            require_memories_write,
-            require_token,
-        )
         from hive.api.main import app
-        from hive.models import OAuthClient
+        from hive.models import User
         from hive.storage import HiveStorage
 
         storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
-        oauth_client = OAuthClient(client_name="Unit Test Client")
-        storage.put_client(oauth_client)
+        user = User(
+            user_id=_TEST_USER_ID,
+            email="user@example.com",
+            display_name="Test User",
+            role="user",
+        )
+        storage.put_user(user)
 
-        def _override():
-            return (storage, oauth_client.client_id)
+        _setup_app_overrides(app, storage, _USER_CLAIMS)
+        yield TestClient(app), storage, _TEST_USER_ID
+        app.dependency_overrides.clear()
 
-        for dep in (
-            require_token,
-            require_memories_read,
-            require_memories_write,
-            require_clients_read,
-            require_clients_write,
-        ):
-            app.dependency_overrides[dep] = _override
-        yield TestClient(app), storage, oauth_client.client_id
+
+@pytest.fixture()
+def admin_client():
+    """TestClient authenticated as an admin management user."""
+    with mock_aws():
+        _create_table()
+        from hive.api.main import app
+        from hive.models import User
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+        admin = User(
+            user_id=_TEST_ADMIN_ID,
+            email="admin@example.com",
+            display_name="Admin User",
+            role="admin",
+        )
+        storage.put_user(admin)
+
+        _setup_app_overrides(app, storage, _ADMIN_CLAIMS)
+        yield TestClient(app), storage, _TEST_ADMIN_ID
         app.dependency_overrides.clear()
 
 
@@ -321,6 +367,13 @@ class TestStats:
         assert "events_today" in data
         assert "events_last_7_days" in data
 
+    def test_get_stats_admin_sees_all(self, admin_client):
+        """Admin role passes owner_user_id=None so all items are counted."""
+        tc, *_ = admin_client
+        resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        assert "total_memories" in resp.json()
+
     def test_get_activity_default(self, client):
         tc, *_ = client
         resp = tc.get("/api/activity")
@@ -338,6 +391,67 @@ class TestStats:
         tc, *_ = client
         resp = tc.get("/api/activity", params={"days": 0})
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# User endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestUsers:
+    def test_get_me_returns_current_user(self, client):
+        tc, storage, user_id = client
+        resp = tc.get("/api/users/me")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == user_id
+        assert data["email"] == "user@example.com"
+        assert data["role"] == "user"
+
+    def test_get_me_user_not_in_storage_returns_404(self, client):
+        tc, storage, user_id = client
+        storage.delete_user(user_id)
+        resp = tc.get("/api/users/me")
+        assert resp.status_code == 404
+
+    def test_list_users_admin_only(self, admin_client):
+        tc, storage, admin_id = admin_client
+        # seed a second user
+        from hive.models import User
+
+        u2 = User(email="other@example.com", display_name="Other")
+        storage.put_user(u2)
+
+        resp = tc.get("/api/users")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] >= 2
+        assert "items" in data
+
+    def test_list_users_non_admin_returns_403(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/users")
+        assert resp.status_code == 403
+
+    def test_delete_user_admin(self, admin_client):
+        tc, storage, _ = admin_client
+        from hive.models import User
+
+        u = User(email="todelete@example.com", display_name="Gone")
+        storage.put_user(u)
+        resp = tc.delete(f"/api/users/{u.user_id}")
+        assert resp.status_code == 204
+        assert storage.get_user_by_id(u.user_id) is None
+
+    def test_delete_user_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.delete("/api/users/no-such-user")
+        assert resp.status_code == 404
+
+    def test_delete_user_non_admin_returns_403(self, client):
+        tc, *_ = client
+        resp = tc.delete(f"/api/users/{_TEST_USER_ID}")
+        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -389,59 +503,31 @@ class TestClientCreateErrors:
 
 
 # ---------------------------------------------------------------------------
-# Memory upsert oversized → 413 (covers memories.py:68-69)
+# Memory upsert oversized → 413 (covers memories.py upsert path)
 # ---------------------------------------------------------------------------
 
 
+class TestMemoryUpsertOversized:
+    def test_upsert_existing_oversized_returns_413(self, client):
+        """POST with existing key hits upsert path; oversized raises 413."""
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        # Create the memory first so upsert path is taken
+        tc.post("/api/memories", json={"key": "upsert-big", "value": "small"})
+        with patch.object(
+            storage, "put_memory", side_effect=ValueError("Memory value is too large")
+        ):
+            resp = tc.post("/api/memories", json={"key": "upsert-big", "value": "x" * 1000})
+        assert resp.status_code == 413
+
+
 # ---------------------------------------------------------------------------
-# require_token success path — covers api/_auth.py:31
+# require_token / require_mgmt_user direct function tests
 # ---------------------------------------------------------------------------
 
 
-class TestRequireTokenSuccessPath:
-    def test_valid_jwt_reaches_endpoint(self):
-        """Covers _auth.py require_scope — valid token reaches endpoint."""
-        from datetime import datetime, timedelta, timezone
-
-        from hive.auth.tokens import issue_jwt
-        from hive.models import OAuthClient, Token
-        from hive.storage import HiveStorage
-
-        # Ensure the table name env var matches what we create, regardless of
-        # what the combined test run has set (e.g. hive-integration in CI).
-        old_table = os.environ.get("HIVE_TABLE_NAME")
-        os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
-        try:
-            with mock_aws():
-                _create_table()
-                storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
-                oauth_client = OAuthClient(client_name="Real Auth Client")
-                storage.put_client(oauth_client)
-
-                now = datetime.now(timezone.utc)
-                token = Token(
-                    client_id=oauth_client.client_id,
-                    scope="memories:read memories:write clients:read clients:write",
-                    issued_at=now,
-                    expires_at=now + timedelta(hours=1),
-                )
-                storage.put_token(token)
-                jwt = issue_jwt(token)
-
-                from hive.api.main import app
-
-                app.dependency_overrides.clear()
-                from fastapi.testclient import TestClient
-
-                tc = TestClient(app, raise_server_exceptions=False)
-                resp = tc.get("/api/memories", headers={"Authorization": f"Bearer {jwt}"})
-                assert resp.status_code == 200
-        finally:
-            if old_table is not None:
-                os.environ["HIVE_TABLE_NAME"] = old_table
-            else:
-                os.environ.pop("HIVE_TABLE_NAME", None)
-
+class TestRequireTokenPath:
     async def test_require_token_valid_token(self):
         """Covers _auth.py:28-33 — require_token returns (storage, client_id) on valid token."""
         from datetime import datetime, timedelta, timezone
@@ -498,131 +584,407 @@ class TestRequireTokenSuccessPath:
             await require_token(credentials=creds, storage=storage)
         assert exc_info.value.status_code == 401
 
+    def test_valid_mgmt_jwt_reaches_endpoint(self):
+        """Covers _auth.py require_mgmt_user — valid mgmt JWT reaches endpoint."""
+        from hive.auth.tokens import issue_mgmt_jwt
+        from hive.models import User
+        from hive.storage import HiveStorage
 
-class TestMemoryUpsertOversized:
-    def test_upsert_existing_oversized_returns_413(self, client):
-        """POST with existing key hits upsert path; oversized raises 413."""
-        from unittest.mock import patch
+        old_table = os.environ.get("HIVE_TABLE_NAME")
+        os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+        try:
+            with mock_aws():
+                _create_table()
+                storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+                user = User(email="mgmt@example.com", display_name="Mgmt User")
+                storage.put_user(user)
+                mgmt_jwt = issue_mgmt_jwt(user)
 
-        tc, storage, _ = client
-        # Create the memory first so upsert path is taken
-        tc.post("/api/memories", json={"key": "upsert-big", "value": "small"})
-        with patch.object(
-            storage, "put_memory", side_effect=ValueError("Memory value is too large")
-        ):
-            resp = tc.post("/api/memories", json={"key": "upsert-big", "value": "x" * 1000})
-        assert resp.status_code == 413
-
-
-# ---------------------------------------------------------------------------
-# Scope enforcement — covers api/_auth.py require_scope
-# ---------------------------------------------------------------------------
-
-
-def _scoped_client_fixture(scope: str):
-    """Build a TestClient with a real token limited to the given scope."""
-    from datetime import datetime, timedelta, timezone
-
-    from hive.api.main import app
-    from hive.auth.tokens import issue_jwt
-    from hive.models import OAuthClient, Token
-    from hive.storage import HiveStorage
-
-    storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
-    oauth_client = OAuthClient(client_name="Scope Test Client", scope=scope)
-    storage.put_client(oauth_client)
-
-    now = datetime.now(timezone.utc)
-    token = Token(
-        client_id=oauth_client.client_id,
-        scope=scope,
-        issued_at=now,
-        expires_at=now + timedelta(hours=1),
-    )
-    storage.put_token(token)
-    jwt = issue_jwt(token)
-
-    # Clear all dependency overrides so actual scope checks run
-    app.dependency_overrides.clear()
-    return TestClient(app, raise_server_exceptions=False), jwt
-
-
-class TestScopeEnforcement:
-    def test_read_scope_allows_get_memories(self):
-        with mock_aws():
-            _create_table()
-            old = os.environ.get("HIVE_TABLE_NAME")
-            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
-            try:
-                tc, jwt = _scoped_client_fixture("memories:read")
-                resp = tc.get("/api/memories", headers={"Authorization": f"Bearer {jwt}"})
-                assert resp.status_code == 200
-            finally:
-                if old is not None:
-                    os.environ["HIVE_TABLE_NAME"] = old
-                else:
-                    os.environ.pop("HIVE_TABLE_NAME", None)
                 from hive.api.main import app
 
                 app.dependency_overrides.clear()
+                tc = TestClient(app, raise_server_exceptions=False)
+                resp = tc.get("/api/memories", headers={"Authorization": f"Bearer {mgmt_jwt}"})
+                assert resp.status_code == 200
+        finally:
+            if old_table is not None:
+                os.environ["HIVE_TABLE_NAME"] = old_table
+            else:
+                os.environ.pop("HIVE_TABLE_NAME", None)
 
-    def test_read_scope_blocks_post_memories(self):
+    async def test_require_admin_non_admin_raises_403(self):
+        """Covers _auth.py require_admin — non-admin role raises 403."""
+        from fastapi import HTTPException
+
+        from hive.api._auth import require_admin
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_admin(claims={"sub": "u1", "role": "user"})
+        assert exc_info.value.status_code == 403
+
+    async def test_require_admin_admin_role_passes(self):
+        """Covers _auth.py require_admin — admin role returns claims."""
+        from hive.api._auth import require_admin
+
+        claims = {"sub": "u1", "role": "admin"}
+        result = await require_admin(claims=claims)
+        assert result == claims
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant access: ownership enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestMultiTenantAccess:
+    def test_non_admin_cannot_read_other_users_memory(self):
+        """Non-admin user gets 404 trying to read another user's memory."""
         with mock_aws():
             _create_table()
-            old = os.environ.get("HIVE_TABLE_NAME")
-            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
-            try:
-                tc, jwt = _scoped_client_fixture("memories:read")
-                resp = tc.post(
-                    "/api/memories",
-                    json={"key": "k", "value": "v"},
-                    headers={"Authorization": f"Bearer {jwt}"},
+            from hive.api import _auth as auth_mod
+            from hive.api import memories as memories_mod
+            from hive.api.main import app
+            from hive.models import Memory, User
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+            # Create two users
+            owner = User(email="owner@example.com", display_name="Owner")
+            caller = User(email="caller@example.com", display_name="Caller")
+            storage.put_user(owner)
+            storage.put_user(caller)
+
+            # Owner's memory
+            mem = Memory(
+                key="secret",
+                value="private",
+                owner_user_id=owner.user_id,
+                owner_client_id=owner.user_id,
+            )
+            storage.put_memory(mem)
+
+            # Caller's claims
+            caller_claims = {
+                "sub": caller.user_id,
+                "role": "user",
+                "email": "caller@example.com",
+            }
+            app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: caller_claims
+            app.dependency_overrides[memories_mod._storage] = lambda: storage
+
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get(f"/api/memories/{mem.memory_id}")
+            app.dependency_overrides.clear()
+            assert resp.status_code == 404
+
+    def test_admin_can_read_any_users_memory(self):
+        """Admin user can read another user's memory."""
+        with mock_aws():
+            _create_table()
+            from hive.api import _auth as auth_mod
+            from hive.api import memories as memories_mod
+            from hive.api.main import app
+            from hive.models import Memory, User
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+            owner = User(email="owner2@example.com", display_name="Owner2")
+            admin = User(email="admin2@example.com", display_name="Admin2", role="admin")
+            storage.put_user(owner)
+            storage.put_user(admin)
+
+            mem = Memory(
+                key="admin-test",
+                value="data",
+                owner_user_id=owner.user_id,
+                owner_client_id=owner.user_id,
+            )
+            storage.put_memory(mem)
+
+            admin_claims = {
+                "sub": admin.user_id,
+                "role": "admin",
+                "email": "admin2@example.com",
+            }
+            app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: admin_claims
+            app.dependency_overrides[memories_mod._storage] = lambda: storage
+
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get(f"/api/memories/{mem.memory_id}")
+            app.dependency_overrides.clear()
+            assert resp.status_code == 200
+
+    def test_non_admin_cannot_overwrite_other_users_memory(self):
+        """Non-admin POST with existing key owned by another user returns 404."""
+        with mock_aws():
+            _create_table()
+            from hive.api import _auth as auth_mod
+            from hive.api import memories as memories_mod
+            from hive.api.main import app
+            from hive.models import Memory, User
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+            owner = User(email="owner3@example.com", display_name="Owner3")
+            caller = User(email="caller3@example.com", display_name="Caller3")
+            storage.put_user(owner)
+            storage.put_user(caller)
+
+            mem = Memory(
+                key="owned-key",
+                value="original",
+                owner_user_id=owner.user_id,
+                owner_client_id=owner.user_id,
+            )
+            storage.put_memory(mem)
+
+            caller_claims = {
+                "sub": caller.user_id,
+                "role": "user",
+                "email": "caller3@example.com",
+            }
+            app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: caller_claims
+            app.dependency_overrides[memories_mod._storage] = lambda: storage
+
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.post("/api/memories", json={"key": "owned-key", "value": "steal"})
+            app.dependency_overrides.clear()
+            assert resp.status_code == 404
+
+    def _make_owned_memory(self, storage, owner_user_id):
+        from hive.models import Memory
+
+        mem = Memory(
+            key=f"mem-{owner_user_id[:8]}",
+            value="data",
+            owner_user_id=owner_user_id,
+            owner_client_id=owner_user_id,
+        )
+        storage.put_memory(mem)
+        return mem
+
+    def _make_owned_client(self, storage, owner_user_id):
+        from hive.models import OAuthClient
+
+        c = OAuthClient(client_name="Owned Client", owner_user_id=owner_user_id)
+        storage.put_client(c)
+        return c
+
+    def _caller_setup(self, storage):
+        from hive.models import User
+
+        owner = User(email="own@example.com", display_name="Owner")
+        caller = User(email="call@example.com", display_name="Caller")
+        storage.put_user(owner)
+        storage.put_user(caller)
+        caller_claims = {"sub": caller.user_id, "role": "user", "email": "call@example.com"}
+        return owner, caller_claims
+
+    def test_non_admin_cannot_update_other_users_memory(self):
+        """PATCH memory owned by another user returns 404 (covers memories.py:154)."""
+        with mock_aws():
+            _create_table()
+            from hive.api import _auth as auth_mod
+            from hive.api import memories as memories_mod
+            from hive.api.main import app
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+            owner, caller_claims = self._caller_setup(storage)
+            mem = self._make_owned_memory(storage, owner.user_id)
+
+            app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: caller_claims
+            app.dependency_overrides[memories_mod._storage] = lambda: storage
+
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.patch(f"/api/memories/{mem.memory_id}", json={"value": "new"})
+            app.dependency_overrides.clear()
+            assert resp.status_code == 404
+
+    def test_non_admin_cannot_delete_other_users_memory(self):
+        """DELETE memory owned by another user returns 404 (covers memories.py:187)."""
+        with mock_aws():
+            _create_table()
+            from hive.api import _auth as auth_mod
+            from hive.api import memories as memories_mod
+            from hive.api.main import app
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+            owner, caller_claims = self._caller_setup(storage)
+            mem = self._make_owned_memory(storage, owner.user_id)
+
+            app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: caller_claims
+            app.dependency_overrides[memories_mod._storage] = lambda: storage
+
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.delete(f"/api/memories/{mem.memory_id}")
+            app.dependency_overrides.clear()
+            assert resp.status_code == 404
+
+    def test_non_admin_cannot_read_other_users_client(self):
+        """GET client owned by another user returns 404 (covers clients.py:98)."""
+        with mock_aws():
+            _create_table()
+            from hive.api import _auth as auth_mod
+            from hive.api import clients as clients_mod
+            from hive.api.main import app
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+            owner, caller_claims = self._caller_setup(storage)
+            c = self._make_owned_client(storage, owner.user_id)
+
+            app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: caller_claims
+            app.dependency_overrides[clients_mod._storage] = lambda: storage
+
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get(f"/api/clients/{c.client_id}")
+            app.dependency_overrides.clear()
+            assert resp.status_code == 404
+
+    def test_non_admin_cannot_delete_other_users_client(self):
+        """DELETE client owned by another user returns 404 (covers clients.py:113)."""
+        with mock_aws():
+            _create_table()
+            from hive.api import _auth as auth_mod
+            from hive.api import clients as clients_mod
+            from hive.api.main import app
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+            owner, caller_claims = self._caller_setup(storage)
+            c = self._make_owned_client(storage, owner.user_id)
+
+            app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: caller_claims
+            app.dependency_overrides[clients_mod._storage] = lambda: storage
+
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.delete(f"/api/clients/{c.client_id}")
+            app.dependency_overrides.clear()
+            assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# require_scope direct tests and _storage() dep coverage
+# ---------------------------------------------------------------------------
+
+
+class TestRequireScope:
+    async def test_valid_token_with_correct_scope_passes(self):
+        """Covers _auth.py require_scope._dep success path (lines 50, 55)."""
+        from datetime import datetime, timedelta, timezone
+
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        from hive.api._auth import require_scope
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.storage import HiveStorage
+
+        old_table = os.environ.get("HIVE_TABLE_NAME")
+        os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+        try:
+            with mock_aws():
+                _create_table()
+                storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+                oauth_client = OAuthClient(client_name="Scope Test")
+                storage.put_client(oauth_client)
+                now = datetime.now(timezone.utc)
+                token = Token(
+                    client_id=oauth_client.client_id,
+                    scope="memories:read",
+                    issued_at=now,
+                    expires_at=now + timedelta(hours=1),
                 )
-                assert resp.status_code == 403
-            finally:
-                if old is not None:
-                    os.environ["HIVE_TABLE_NAME"] = old
-                else:
-                    os.environ.pop("HIVE_TABLE_NAME", None)
-                from hive.api.main import app
+                storage.put_token(token)
+                jwt_str = issue_jwt(token)
+                creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt_str)
+                dep = require_scope("memories:read")
+                result_storage, result_client_id = await dep(credentials=creds, storage=storage)
+                assert result_client_id == oauth_client.client_id
+        finally:
+            if old_table is not None:
+                os.environ["HIVE_TABLE_NAME"] = old_table
+            else:
+                os.environ.pop("HIVE_TABLE_NAME", None)
 
-                app.dependency_overrides.clear()
+    async def test_valid_token_insufficient_scope_raises_403(self):
+        """Covers _auth.py require_scope._dep scope-check failure path (lines 50-54)."""
+        from datetime import datetime, timedelta, timezone
 
-    def test_memories_scope_blocks_clients_endpoint(self):
+        from fastapi import HTTPException
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        from hive.api._auth import require_scope
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.storage import HiveStorage
+
+        old_table = os.environ.get("HIVE_TABLE_NAME")
+        os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
+        try:
+            with mock_aws():
+                _create_table()
+                storage = HiveStorage(table_name="hive-unit-api", region="us-east-1")
+                oauth_client = OAuthClient(client_name="Limited Scope")
+                storage.put_client(oauth_client)
+                now = datetime.now(timezone.utc)
+                token = Token(
+                    client_id=oauth_client.client_id,
+                    scope="memories:read",
+                    issued_at=now,
+                    expires_at=now + timedelta(hours=1),
+                )
+                storage.put_token(token)
+                jwt_str = issue_jwt(token)
+                creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt_str)
+                dep = require_scope("memories:write")
+                with pytest.raises(HTTPException) as exc_info:
+                    await dep(credentials=creds, storage=storage)
+                assert exc_info.value.status_code == 403
+        finally:
+            if old_table is not None:
+                os.environ["HIVE_TABLE_NAME"] = old_table
+            else:
+                os.environ.pop("HIVE_TABLE_NAME", None)
+
+    async def test_invalid_token_raises_401(self):
+        """Covers _auth.py require_scope._dep invalid-token path (lines 45-49)."""
+        from unittest.mock import MagicMock
+
+        from fastapi import HTTPException
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        from hive.api._auth import require_scope
+
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="bad-token")
+        storage = MagicMock()
+        dep = require_scope("memories:read")
+        with pytest.raises(HTTPException) as exc_info:
+            await dep(credentials=creds, storage=storage)
+        assert exc_info.value.status_code == 401
+
+    def test_get_storage_dep_returns_hive_storage(self):
+        """Covers _auth.py:19 — _get_storage() return statement."""
         with mock_aws():
             _create_table()
-            old = os.environ.get("HIVE_TABLE_NAME")
-            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
-            try:
-                tc, jwt = _scoped_client_fixture("memories:read memories:write")
-                resp = tc.get("/api/clients", headers={"Authorization": f"Bearer {jwt}"})
-                assert resp.status_code == 403
-            finally:
-                if old is not None:
-                    os.environ["HIVE_TABLE_NAME"] = old
-                else:
-                    os.environ.pop("HIVE_TABLE_NAME", None)
-                from hive.api.main import app
+            from hive.api._auth import _get_storage
 
-                app.dependency_overrides.clear()
+            result = _get_storage()
+            assert result is not None
 
-    def test_clients_read_scope_allows_list_clients(self):
+    def test_module_storage_deps_return_hive_storage(self):
+        """Covers _storage() in clients, stats, users modules."""
         with mock_aws():
             _create_table()
-            old = os.environ.get("HIVE_TABLE_NAME")
-            os.environ["HIVE_TABLE_NAME"] = "hive-unit-api"
-            try:
-                tc, jwt = _scoped_client_fixture("clients:read")
-                resp = tc.get("/api/clients", headers={"Authorization": f"Bearer {jwt}"})
-                assert resp.status_code == 200
-            finally:
-                if old is not None:
-                    os.environ["HIVE_TABLE_NAME"] = old
-                else:
-                    os.environ.pop("HIVE_TABLE_NAME", None)
-                from hive.api.main import app
+            from hive.api.clients import _storage as clients_storage
+            from hive.api.stats import _storage as stats_storage
+            from hive.api.users import _storage as users_storage
 
-                app.dependency_overrides.clear()
+            assert clients_storage() is not None
+            assert stats_storage() is not None
+            assert users_storage() is not None
 
 
 # ---------------------------------------------------------------------------

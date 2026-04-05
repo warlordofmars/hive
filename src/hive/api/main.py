@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from hive.api.clients import router as clients_router
 from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
+from hive.api.users import router as users_router
 from hive.auth.mgmt_auth import router as mgmt_auth_router
 from hive.auth.oauth import router as oauth_router
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
@@ -121,6 +122,7 @@ app.include_router(mgmt_auth_router)
 app.include_router(memories_router, prefix="/api")
 app.include_router(clients_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
+app.include_router(users_router, prefix="/api")
 
 
 @app.get("/health", include_in_schema=False)
