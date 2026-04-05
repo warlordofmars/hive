@@ -26,10 +26,12 @@ from hive.models import (
     ActivityEvent,
     AuthorizationCode,
     Memory,
+    MgmtPendingState,
     OAuthClient,
     PendingAuth,
     Token,
     TokenType,
+    User,
 )
 
 TABLE_NAME = os.environ.get("HIVE_TABLE_NAME", "hive")
@@ -41,6 +43,7 @@ ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
 REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
 AUTH_CODE_TTL_SECONDS = 300  # 5 minutes
 PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
+MGMT_PENDING_STATE_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
 
 
 def _now() -> datetime:
@@ -161,10 +164,11 @@ class HiveStorage:
     def list_all_memories(
         self,
         client_id: str | None = None,
+        owner_user_id: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[Memory], str | None]:
-        """Scan for all META memory items (optionally filtered by owner_client_id).
+        """Scan for all META memory items (optionally filtered by owner_client_id or owner_user_id).
 
         Returns (memories, next_cursor). Use sparingly — prefer tag-based queries.
 
@@ -177,6 +181,9 @@ class HiveStorage:
         if client_id:
             filter_expr += " AND owner_client_id = :cid"
             expr_vals[":cid"] = client_id
+        if owner_user_id:
+            filter_expr += " AND owner_user_id = :uid"
+            expr_vals[":uid"] = owner_user_id
 
         start_key = _decode_cursor(cursor) if cursor else None
         memories: list[Memory] = []
@@ -225,11 +232,15 @@ class HiveStorage:
 
     def list_clients(
         self,
+        owner_user_id: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[OAuthClient], str | None]:
         filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
         expr_vals: dict[str, Any] = {":prefix": "CLIENT#", ":sk": "META"}
+        if owner_user_id:
+            filter_expr += " AND owner_user_id = :uid"
+            expr_vals[":uid"] = owner_user_id
 
         start_key = _decode_cursor(cursor) if cursor else None
         clients: list[OAuthClient] = []
@@ -374,6 +385,93 @@ class HiveStorage:
         return code
 
     # ------------------------------------------------------------------
+    # Users (management UI identities)
+    # ------------------------------------------------------------------
+
+    def put_user(self, user: User) -> None:
+        self.table.put_item(Item=user.to_dynamo())
+
+    def get_user_by_id(self, user_id: str) -> User | None:
+        resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
+        item = resp.get("Item")
+        return User.from_dynamo(item) if item else None
+
+    def get_user_by_email(self, email: str) -> User | None:
+        """Look up a user by email using the UserEmailIndex GSI."""
+        resp = self.table.query(
+            IndexName="UserEmailIndex",
+            KeyConditionExpression=Key("GSI4PK").eq(f"EMAIL#{email}"),
+            Limit=1,
+        )
+        items = resp.get("Items", [])
+        if not items:
+            return None
+        return self.get_user_by_id(items[0]["user_id"])
+
+    def delete_user(self, user_id: str) -> bool:
+        resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+        self.table.delete_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
+        return True
+
+    def list_users(
+        self,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list[User], str | None]:
+        filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
+        expr_vals: dict[str, Any] = {":prefix": "USER#", ":sk": "META"}
+
+        start_key = _decode_cursor(cursor) if cursor else None
+        users: list[User] = []
+
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": filter_expr,
+                "ExpressionAttributeValues": expr_vals,
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                users.append(User.from_dynamo(item))
+                if len(users) >= limit:
+                    break
+
+            lek = resp.get("LastEvaluatedKey")
+            if len(users) >= limit:
+                last = users[limit - 1]
+                next_key = {"PK": f"USER#{last.user_id}", "SK": "META"}
+                return users[:limit], _encode_cursor(next_key)
+            if lek is None:
+                return users, None
+            start_key = lek
+
+    # ------------------------------------------------------------------
+    # Management pending state (nonce for management UI Google login)
+    # ------------------------------------------------------------------
+
+    def put_mgmt_pending_state(self, state: MgmtPendingState) -> None:
+        self.table.put_item(Item=state.to_dynamo())
+
+    def get_mgmt_pending_state(self, state: str) -> MgmtPendingState | None:
+        resp = self.table.get_item(Key={"PK": f"MGMT_STATE#{state}", "SK": "META"})
+        item = resp.get("Item")
+        return MgmtPendingState.from_dynamo(item) if item else None
+
+    def delete_mgmt_pending_state(self, state: str) -> None:
+        self.table.delete_item(Key={"PK": f"MGMT_STATE#{state}", "SK": "META"})
+
+    def create_mgmt_pending_state(self) -> MgmtPendingState:
+        pending = MgmtPendingState(
+            expires_at=_now() + timedelta(seconds=MGMT_PENDING_STATE_TTL_SECONDS),
+        )
+        self.put_mgmt_pending_state(pending)
+        return pending
+
+    # ------------------------------------------------------------------
     # Activity log
     # ------------------------------------------------------------------
 
@@ -421,19 +519,29 @@ class HiveStorage:
     # Stats
     # ------------------------------------------------------------------
 
-    def count_memories(self) -> int:
+    def count_memories(self, owner_user_id: str | None = None) -> int:
+        filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
+        expr_vals: dict[str, Any] = {":sk": "META", ":prefix": "MEMORY#"}
+        if owner_user_id:
+            filter_expr += " AND owner_user_id = :uid"
+            expr_vals[":uid"] = owner_user_id
         resp = self.table.scan(
             Select="COUNT",
-            FilterExpression="SK = :sk AND begins_with(PK, :prefix)",
-            ExpressionAttributeValues={":sk": "META", ":prefix": "MEMORY#"},
+            FilterExpression=filter_expr,
+            ExpressionAttributeValues=expr_vals,
         )
         return resp.get("Count", 0)
 
-    def count_clients(self) -> int:
+    def count_clients(self, owner_user_id: str | None = None) -> int:
+        filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
+        expr_vals: dict[str, Any] = {":sk": "META", ":prefix": "CLIENT#"}
+        if owner_user_id:
+            filter_expr += " AND owner_user_id = :uid"
+            expr_vals[":uid"] = owner_user_id
         resp = self.table.scan(
             Select="COUNT",
-            FilterExpression="SK = :sk AND begins_with(PK, :prefix)",
-            ExpressionAttributeValues={":sk": "META", ":prefix": "CLIENT#"},
+            FilterExpression=filter_expr,
+            ExpressionAttributeValues=expr_vals,
         )
         return resp.get("Count", 0)
 

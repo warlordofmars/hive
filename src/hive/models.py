@@ -8,10 +8,13 @@ DynamoDB single-table design:
   OAuth clients: PK=CLIENT#{client_id}   SK=META
   Token items:   PK=TOKEN#{jti}          SK=META          (TTL enabled)
   Activity log:  PK=LOG#{date}#{hour}     SK={timestamp}#{event_id}  (hour sharding)
+  User items:    PK=USER#{user_id}        SK=META
+  Mgmt state:    PK=MGMT_STATE#{state}    SK=META          (TTL enabled)
 
 GSIs:
-  TagIndex:      PK=tag, SK=memory_id    — for list_memories(tag)
-  ClientIdIndex: PK=client_id            — for client lookups by client_id
+  TagIndex:       PK=tag, SK=memory_id    — for list_memories(tag)
+  ClientIdIndex:  PK=client_id            — for client lookups by client_id
+  UserEmailIndex: PK=EMAIL#{email}        — for user lookups by email
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ class Memory(BaseModel):
     created_at: datetime = Field(default_factory=_now_utc)
     updated_at: datetime = Field(default_factory=_now_utc)
     owner_client_id: str  # which OAuth client owns this memory
+    owner_user_id: str | None = None  # which user owns this memory (None for pre-migration items)
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -58,7 +62,7 @@ class Memory(BaseModel):
 
     def to_dynamo_meta(self) -> dict[str, Any]:
         """Canonical META item (PK=MEMORY#{id}, SK=META)."""
-        return {
+        item: dict[str, Any] = {
             "PK": f"MEMORY#{self.memory_id}",
             "SK": "META",
             "memory_id": self.memory_id,
@@ -72,6 +76,9 @@ class Memory(BaseModel):
             "GSI1PK": f"KEY#{self.key}",
             "GSI1SK": self.memory_id,
         }
+        if self.owner_user_id is not None:
+            item["owner_user_id"] = self.owner_user_id
+        return item
 
     def to_dynamo_tag_items(self) -> list[dict[str, Any]]:
         """One TAG item per tag for the TagIndex GSI."""
@@ -101,6 +108,7 @@ class Memory(BaseModel):
             created_at=datetime.fromisoformat(item["created_at"]),
             updated_at=datetime.fromisoformat(item["updated_at"]),
             owner_client_id=item["owner_client_id"],
+            owner_user_id=item.get("owner_user_id"),
         )
 
 
@@ -129,13 +137,16 @@ class OAuthClient(BaseModel):
         "none"  # public clients: none; confidential: client_secret_post
     )
     created_at: datetime = Field(default_factory=_now_utc)
+    owner_user_id: str | None = (
+        None  # which user registered this client (None for pre-migration items)
+    )
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
     # ------------------------------------------------------------------
 
     def to_dynamo(self) -> dict[str, Any]:
-        return {
+        item: dict[str, Any] = {
             "PK": f"CLIENT#{self.client_id}",
             "SK": "META",
             "client_id": self.client_id,
@@ -152,6 +163,9 @@ class OAuthClient(BaseModel):
             # but GSI allows cross-entity queries if needed)
             "GSI3PK": f"CLIENT#{self.client_id}",
         }
+        if self.owner_user_id is not None:
+            item["owner_user_id"] = self.owner_user_id
+        return item
 
     @classmethod
     def from_dynamo(cls, item: dict[str, Any]) -> OAuthClient:
@@ -166,6 +180,7 @@ class OAuthClient(BaseModel):
             scope=item.get("scope", "memories:read memories:write"),
             token_endpoint_auth_method=item.get("token_endpoint_auth_method", "none"),
             created_at=datetime.fromisoformat(item["created_at"]),
+            owner_user_id=item.get("owner_user_id"),
         )
 
 
@@ -211,6 +226,75 @@ class PendingAuth(BaseModel):
             code_challenge=item["code_challenge"],
             code_challenge_method=item.get("code_challenge_method", "S256"),
             original_state=item.get("original_state", ""),
+            expires_at=datetime.fromisoformat(item["expires_at"]),
+        )
+
+
+# ---------------------------------------------------------------------------
+# User (management UI identity)
+# ---------------------------------------------------------------------------
+
+
+class User(BaseModel):
+    """A human user of the management UI, authenticated via Google OAuth."""
+
+    user_id: str = Field(default_factory=_new_id)
+    email: str
+    display_name: str
+    role: str = "user"  # "admin" or "user"
+    created_at: datetime = Field(default_factory=_now_utc)
+    last_login_at: datetime = Field(default_factory=_now_utc)
+
+    def to_dynamo(self) -> dict[str, Any]:
+        return {
+            "PK": f"USER#{self.user_id}",
+            "SK": "META",
+            "user_id": self.user_id,
+            "email": self.email,
+            "display_name": self.display_name,
+            "role": self.role,
+            "created_at": self.created_at.isoformat(),
+            "last_login_at": self.last_login_at.isoformat(),
+            # GSI: look up user by email
+            "GSI4PK": f"EMAIL#{self.email}",
+        }
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> User:
+        return cls(
+            user_id=item["user_id"],
+            email=item["email"],
+            display_name=item["display_name"],
+            role=item.get("role", "user"),
+            created_at=datetime.fromisoformat(item["created_at"]),
+            last_login_at=datetime.fromisoformat(item["last_login_at"]),
+        )
+
+
+# ---------------------------------------------------------------------------
+# MgmtPendingState (nonce stored during management UI Google login)
+# ---------------------------------------------------------------------------
+
+
+class MgmtPendingState(BaseModel):
+    """Temporary nonce stored while the management UI user authenticates with Google."""
+
+    state: str = Field(default_factory=_new_id)
+    expires_at: datetime
+
+    def to_dynamo(self) -> dict[str, Any]:
+        return {
+            "PK": f"MGMT_STATE#{self.state}",
+            "SK": "META",
+            "state": self.state,
+            "expires_at": self.expires_at.isoformat(),
+            "ttl": int(self.expires_at.timestamp()),
+        }
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> MgmtPendingState:
+        return cls(
+            state=item["state"],
             expires_at=datetime.fromisoformat(item["expires_at"]),
         )
 
@@ -471,3 +555,23 @@ class PagedResponse(BaseModel):
     count: int
     has_more: bool
     next_cursor: str | None = None
+
+
+class UserResponse(BaseModel):
+    user_id: str
+    email: str
+    display_name: str
+    role: str
+    created_at: datetime
+    last_login_at: datetime
+
+    @classmethod
+    def from_user(cls, u: User) -> UserResponse:
+        return cls(
+            user_id=u.user_id,
+            email=u.email,
+            display_name=u.display_name,
+            role=u.role,
+            created_at=u.created_at,
+            last_login_at=u.last_login_at,
+        )

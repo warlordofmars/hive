@@ -6,10 +6,11 @@ Usage stats and activity log endpoints for the Hive management API.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
-from hive.api._auth import require_clients_read
+from hive.api._auth import require_mgmt_user
 from hive.models import PagedResponse, StatsResponse
 from hive.storage import HiveStorage
 
@@ -19,11 +20,16 @@ _ACTIVITY_LIMIT_DEFAULT = 100
 _ACTIVITY_LIMIT_MAX = 500
 
 
+def _storage() -> HiveStorage:
+    return HiveStorage()
+
+
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats(
-    auth: tuple[HiveStorage, str] = Depends(require_clients_read),
+    claims: dict[str, Any] = Depends(require_mgmt_user),
+    storage: HiveStorage = Depends(_storage),
 ) -> StatsResponse:
-    storage, _ = auth
+    owner_user_id = None if claims.get("role") == "admin" else claims["sub"]
     today = date.today()
     last_7 = [(today - timedelta(days=i)).isoformat() for i in range(7)]
 
@@ -31,8 +37,8 @@ async def get_stats(
     events_7 = storage.get_events_for_dates(last_7, limit=10000)
 
     return StatsResponse(
-        total_memories=storage.count_memories(),
-        total_clients=storage.count_clients(),
+        total_memories=storage.count_memories(owner_user_id=owner_user_id),
+        total_clients=storage.count_clients(owner_user_id=owner_user_id),
         events_today=len(events_today),
         events_last_7_days=len(events_7),
     )
@@ -47,9 +53,9 @@ async def get_activity(
         le=_ACTIVITY_LIMIT_MAX,
         description="Max events to return",
     ),
-    auth: tuple[HiveStorage, str] = Depends(require_clients_read),
+    claims: dict[str, Any] = Depends(require_mgmt_user),
+    storage: HiveStorage = Depends(_storage),
 ) -> PagedResponse:
-    storage, _ = auth
     today = date.today()
     dates = [(today - timedelta(days=i)).isoformat() for i in range(days)]
     events = storage.get_events_for_dates(dates, limit=limit + 1)
@@ -70,5 +76,5 @@ async def get_activity(
         ],
         count=len(events),
         has_more=has_more,
-        next_cursor=None,  # activity uses limit-based not cursor-based pagination
+        next_cursor=None,
     )

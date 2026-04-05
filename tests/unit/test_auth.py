@@ -188,6 +188,7 @@ def _create_table(table_name: str = "hive-unit-auth") -> None:
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI4PK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -203,6 +204,13 @@ def _create_table(table_name: str = "hive-unit-auth") -> None:
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "UserEmailIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI4PK", "KeyType": "HASH"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -1278,3 +1286,252 @@ class TestOriginVerifySecret:
 
             result = _origin_verify_secret()
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Management JWT (issue_mgmt_jwt / decode_mgmt_jwt)
+# ---------------------------------------------------------------------------
+
+
+class TestMgmtJwt:
+    def _make_user(self):
+        from hive.models import User
+
+        return User(email="alice@example.com", display_name="Alice", role="admin")
+
+    def test_issue_and_decode(self):
+        from hive.auth.tokens import decode_mgmt_jwt, issue_mgmt_jwt
+
+        user = self._make_user()
+        token = issue_mgmt_jwt(user)
+        claims = decode_mgmt_jwt(token)
+        assert claims["sub"] == user.user_id
+        assert claims["email"] == user.email
+        assert claims["role"] == "admin"
+        assert claims["typ"] == "mgmt"
+
+    def test_mcp_token_rejected_as_mgmt(self):
+        """An MCP access token must not be accepted by decode_mgmt_jwt."""
+        from datetime import datetime, timedelta, timezone
+
+        from jose import JWTError
+
+        from hive.auth.tokens import decode_mgmt_jwt, issue_jwt
+        from hive.models import Token
+
+        now = datetime.now(timezone.utc)
+        mcp_token = Token(
+            client_id="c1",
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        jwt_str = issue_jwt(mcp_token)
+        with pytest.raises(JWTError, match="management token"):
+            decode_mgmt_jwt(jwt_str)
+
+    def test_is_admin_email(self, monkeypatch):
+        from hive.auth.google import _allowed_emails, is_admin_email
+
+        _allowed_emails.cache_clear()
+        monkeypatch.setenv("ALLOWED_EMAILS", '["admin@example.com"]')
+        _allowed_emails.cache_clear()
+        assert is_admin_email("admin@example.com") is True
+        assert is_admin_email("other@example.com") is False
+        _allowed_emails.cache_clear()
+
+    def test_is_admin_email_empty_list(self, monkeypatch):
+        from hive.auth.google import _allowed_emails, is_admin_email
+
+        _allowed_emails.cache_clear()
+        monkeypatch.setenv("ALLOWED_EMAILS", "[]")
+        _allowed_emails.cache_clear()
+        assert is_admin_email("anyone@example.com") is False
+        _allowed_emails.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Management auth routes (/auth/login, /auth/callback)
+# ---------------------------------------------------------------------------
+
+
+class TestMgmtAuthRoutes:
+    @pytest.fixture()
+    def mgmt_client(self):
+        with mock_aws():
+            _create_table()
+            old = os.environ.get("HIVE_TABLE_NAME")
+            os.environ["HIVE_TABLE_NAME"] = "hive-unit-auth"
+            try:
+                from fastapi.testclient import TestClient
+
+                from hive.api.main import app
+
+                yield TestClient(app, follow_redirects=False)
+            finally:
+                if old is not None:
+                    os.environ["HIVE_TABLE_NAME"] = old
+                else:
+                    os.environ.pop("HIVE_TABLE_NAME", None)
+
+    def test_login_bypass_issues_jwt(self, mgmt_client):
+        """In bypass mode, /auth/login returns HTML with a management JWT."""
+        from unittest.mock import patch
+
+        with patch("hive.auth.mgmt_auth._BYPASS", True):
+            resp = mgmt_client.get("/auth/login?test_email=dev@example.com")
+        assert resp.status_code == 200
+        assert "hive_mgmt_token" in resp.text
+
+    def test_login_redirects_to_google(self, mgmt_client):
+        """Without bypass, /auth/login redirects to Google."""
+        from unittest.mock import patch
+
+        with (
+            patch("hive.auth.mgmt_auth._BYPASS", False),
+            patch(
+                "hive.auth.mgmt_auth.google_authorization_url",
+                return_value="https://accounts.google.com/auth?state=x",
+            ),
+        ):
+            resp = mgmt_client.get("/auth/login")
+        assert resp.status_code == 302
+        assert "accounts.google.com" in resp.headers["location"]
+
+    def test_callback_error_param_returns_400(self, mgmt_client):
+        resp = mgmt_client.get("/auth/callback?error=access_denied")
+        assert resp.status_code == 400
+
+    def test_callback_missing_code_returns_400(self, mgmt_client):
+        resp = mgmt_client.get("/auth/callback?state=x")
+        assert resp.status_code == 400
+
+    def test_callback_invalid_state_returns_400(self, mgmt_client):
+        resp = mgmt_client.get("/auth/callback?code=c&state=no-such-state")
+        assert resp.status_code == 400
+
+    def test_callback_creates_user_and_issues_jwt(self, mgmt_client, monkeypatch):
+        """Full happy-path: valid state + Google exchange → HTML with JWT."""
+        monkeypatch.delenv("HIVE_BYPASS_GOOGLE_AUTH", raising=False)
+        from unittest.mock import AsyncMock, patch
+
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-auth", region="us-east-1")
+        pending = storage.create_mgmt_pending_state()
+
+        fake_claims = {
+            "email": "alice@example.com",
+            "email_verified": True,
+            "name": "Alice",
+            "sub": "google-uid-1",
+        }
+        with (
+            patch(
+                "hive.auth.mgmt_auth.exchange_google_code",
+                new_callable=AsyncMock,
+                return_value="fake-id-token",
+            ),
+            patch(
+                "hive.auth.mgmt_auth.verify_google_id_token",
+                new_callable=AsyncMock,
+                return_value=fake_claims,
+            ),
+        ):
+            resp = mgmt_client.get(f"/auth/callback?code=abc&state={pending.state}")
+
+        assert resp.status_code == 200
+        assert "hive_mgmt_token" in resp.text
+        # User should have been created
+        user = storage.get_user_by_email("alice@example.com")
+        assert user is not None
+        assert user.email == "alice@example.com"
+
+    def test_callback_unverified_email_returns_400(self, mgmt_client):
+        from unittest.mock import AsyncMock, patch
+
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-auth", region="us-east-1")
+        pending = storage.create_mgmt_pending_state()
+
+        fake_claims = {"email": "bad@example.com", "email_verified": False, "name": "Bad"}
+        with (
+            patch(
+                "hive.auth.mgmt_auth.exchange_google_code", new_callable=AsyncMock, return_value="t"
+            ),
+            patch(
+                "hive.auth.mgmt_auth.verify_google_id_token",
+                new_callable=AsyncMock,
+                return_value=fake_claims,
+            ),
+        ):
+            resp = mgmt_client.get(f"/auth/callback?code=c&state={pending.state}")
+        assert resp.status_code == 400
+
+    def test_callback_expired_state_returns_400(self, mgmt_client):
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-auth", region="us-east-1")
+        pending = storage.create_mgmt_pending_state()
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        with patch("hive.auth.mgmt_auth.datetime") as mock_dt:
+            mock_dt.now.return_value = future
+            resp = mgmt_client.get(f"/auth/callback?code=c&state={pending.state}")
+        assert resp.status_code == 400
+
+    def test_callback_google_exchange_failure_returns_400(self, mgmt_client):
+        from unittest.mock import AsyncMock, patch
+
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-auth", region="us-east-1")
+        pending = storage.create_mgmt_pending_state()
+
+        with patch(
+            "hive.auth.mgmt_auth.exchange_google_code",
+            new_callable=AsyncMock,
+            side_effect=Exception("network error"),
+        ):
+            resp = mgmt_client.get(f"/auth/callback?code=c&state={pending.state}")
+        assert resp.status_code == 400
+
+    def test_callback_updates_existing_user(self, mgmt_client):
+        """Second login updates display_name and last_login_at."""
+        from unittest.mock import AsyncMock, patch
+
+        from hive.models import User
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-auth", region="us-east-1")
+        # Pre-create user
+        existing = User(email="bob@example.com", display_name="Bob Old", role="user")
+        storage.put_user(existing)
+
+        pending = storage.create_mgmt_pending_state()
+        fake_claims = {
+            "email": "bob@example.com",
+            "email_verified": True,
+            "name": "Bob New",
+            "sub": "google-uid-bob",
+        }
+        with (
+            patch(
+                "hive.auth.mgmt_auth.exchange_google_code", new_callable=AsyncMock, return_value="t"
+            ),
+            patch(
+                "hive.auth.mgmt_auth.verify_google_id_token",
+                new_callable=AsyncMock,
+                return_value=fake_claims,
+            ),
+        ):
+            resp = mgmt_client.get(f"/auth/callback?code=c&state={pending.state}")
+
+        assert resp.status_code == 200
+        user = storage.get_user_by_email("bob@example.com")
+        assert user is not None
+        assert user.display_name == "Bob New"

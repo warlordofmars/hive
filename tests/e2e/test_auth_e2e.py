@@ -32,7 +32,7 @@ class TestOAuthE2E:
     async def test_discovery_document(self):
         import httpx
 
-        async with httpx.AsyncClient(base_url=API_URL) as http:
+        async with httpx.AsyncClient(base_url=API_URL, timeout=30.0) as http:
             resp = await http.get("/.well-known/oauth-authorization-server")
             assert resp.status_code == 200
             data = resp.json()
@@ -43,7 +43,9 @@ class TestOAuthE2E:
     async def test_dcr_and_token_flow(self):
         import httpx
 
-        async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False) as http:
+        async with httpx.AsyncClient(
+            base_url=API_URL, follow_redirects=False, timeout=30.0
+        ) as http:
             # Register
             reg = await http.post(
                 "/oauth/register",
