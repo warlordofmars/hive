@@ -47,3 +47,8 @@ AVD-AWS-0017
 # DynamoDB PITR is intentionally disabled in the dev stack to reduce cost.
 # It is enabled in the prod stack where data durability is required.
 AVD-AWS-0024
+
+# X-Ray tracing is enabled (ACTIVE) on all application Lambda functions (MCP
+# and API). The dev stack also contains CDK-managed custom resource Lambdas
+# (e.g. AutoDeleteObjects for UiBucket) whose tracing cannot be configured.
+AVD-AWS-0066
