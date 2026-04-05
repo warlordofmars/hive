@@ -18,7 +18,7 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 from moto import mock_aws
 
-from hive.models import ActivityEvent, EventType, Memory, OAuthClient, TokenType, User
+from hive.models import ActivityEvent, EventType, Memory, OAuthClient, TokenType, User, UserResponse
 from hive.storage import HiveStorage
 
 
@@ -525,6 +525,48 @@ class TestUserStorage:
         emails = {u.email for u in users}
         assert {"a@example.com", "b@example.com"}.issubset(emails)
         assert cursor is None
+
+    def test_list_users_pagination(self, storage):
+        for i in range(5):
+            storage.put_user(self._user(f"user{i}@example.com"))
+        page1, cursor1 = storage.list_users(limit=3)
+        assert len(page1) == 3
+        assert cursor1 is not None
+        page2, cursor2 = storage.list_users(limit=3, cursor=cursor1)
+        assert len(page2) == 2
+        assert cursor2 is None
+
+    def test_list_users_follows_scan_pages(self, storage):
+        """Covers the scan-loop continuation path in list_users."""
+        from unittest.mock import patch
+
+        users = [User(email=f"u{i}@example.com", display_name=f"U{i}") for i in range(3)]
+        for u in users:
+            storage.put_user(u)
+
+        fake_lek = {"PK": f"USER#{users[0].user_id}", "SK": "META"}
+        page1_items = [users[0].to_dynamo()]
+        page2_items = [users[1].to_dynamo(), users[2].to_dynamo()]
+        responses = iter(
+            [
+                {"Items": page1_items, "LastEvaluatedKey": fake_lek},
+                {"Items": page2_items},
+            ]
+        )
+
+        with patch.object(storage.table, "scan", side_effect=lambda **_kw: next(responses)):
+            result, cursor = storage.list_users(limit=5)
+
+        assert len(result) == 3
+        assert cursor is None
+
+    def test_user_response_from_user(self):
+        u = User(email="x@example.com", display_name="X", role="admin")
+        resp = UserResponse.from_user(u)
+        assert resp.user_id == u.user_id
+        assert resp.email == u.email
+        assert resp.display_name == u.display_name
+        assert resp.role == "admin"
 
 
 # ---------------------------------------------------------------------------
