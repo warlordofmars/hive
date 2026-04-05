@@ -368,6 +368,7 @@ class HiveStack(cdk.Stack):
             removal_policy=data_removal,
             auto_delete_objects=not is_prod,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            enforce_ssl=True,
         )
 
         # API origin — strip "https://" prefix and trailing "/" from the function URL

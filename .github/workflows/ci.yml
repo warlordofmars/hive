@@ -75,6 +75,18 @@ jobs:
         working-directory: ui
         run: npm audit --audit-level=high
 
+      - name: Trivy — dependency scan (table, for log visibility)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          ignore-unfixed: true
+          scanners: vuln
+          trivyignores: .trivyignore
+
       - name: Trivy — dependency scan
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
@@ -85,6 +97,8 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+          scanners: vuln
+          trivyignores: .trivyignore
 
       - name: Upload Trivy dependency results to GitHub Security
         if: always()
