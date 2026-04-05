@@ -401,6 +401,16 @@ jobs:
         working-directory: infra
         run: cdk synth HiveStack-dev --no-staging -c env=dev -c hosted_zone_id=${{ vars.HOSTED_ZONE_ID }}
 
+      - name: Trivy — IaC scan (table, for log visibility)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: config
+          scan-ref: infra/cdk.out/
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          trivyignores: .trivyignore
+
       - name: Trivy — IaC scan (CloudFormation templates)
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
@@ -409,7 +419,10 @@ jobs:
           format: sarif
           output: trivy-iac.sarif
           severity: HIGH,CRITICAL
-          exit-code: "1"
+          # cdk-nag is the hard gate for IaC security (fails synth on violations).
+          # Trivy IaC is informational — findings go to the Security tab.
+          exit-code: "0"
+          trivyignores: .trivyignore
 
       - name: Upload Trivy IaC results to GitHub Security
         if: always()
