@@ -33,7 +33,7 @@ def browser_page():
         # the UI) so the mgmt JWT lands in the correct localStorage origin.
         # HIVE_BYPASS_GOOGLE_AUTH=1 causes /auth/login to issue a mgmt JWT,
         # write it to localStorage as hive_mgmt_token, and redirect to /.
-        page.goto(f"{UI_URL}auth/login", timeout=30_000, wait_until="networkidle")
+        page.goto(f"{UI_URL}/auth/login", timeout=30_000, wait_until="networkidle")
 
         # Should now be at UI_URL root with hive_mgmt_token in localStorage.
         page.wait_for_url(f"{UI_URL}**", timeout=10_000)
