@@ -454,3 +454,50 @@ class TestMcpToolScopeEnforcement:
         write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
         with pytest.raises(ToolError, match="Insufficient scope"):
             await summarize_context("any-topic", ctx=_make_ctx(write_only_jwt))
+
+
+# ---------------------------------------------------------------------------
+# _OriginVerifyMiddleware
+# ---------------------------------------------------------------------------
+
+
+class TestOriginVerifyMiddleware:
+    def _make_app(self):
+        """Build a minimal Starlette app wrapped with _OriginVerifyMiddleware."""
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Route
+
+        from hive.server import _OriginVerifyMiddleware
+
+        async def homepage(request: Request):
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/", homepage)])
+        app.add_middleware(_OriginVerifyMiddleware)
+        return app
+
+    def test_returns_403_when_secret_set_and_header_missing(self):
+        """Middleware rejects requests without the X-Origin-Verify header."""
+        from unittest.mock import patch
+
+        from starlette.testclient import TestClient
+
+        app = self._make_app()
+        with patch("hive.server._origin_verify_secret", return_value="real-secret"):
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get("/")
+        assert resp.status_code == 403
+
+    def test_passes_through_when_header_correct(self):
+        """Middleware allows requests that supply the correct X-Origin-Verify header."""
+        from unittest.mock import patch
+
+        from starlette.testclient import TestClient
+
+        app = self._make_app()
+        with patch("hive.server._origin_verify_secret", return_value="real-secret"):
+            tc = TestClient(app, raise_server_exceptions=False)
+            resp = tc.get("/", headers={"x-origin-verify": "real-secret"})
+        assert resp.status_code == 200

@@ -1220,3 +1220,61 @@ class TestTokenScopeIntersection:
         claims = decode_jwt(data["access_token"])
         assert claims["scope"] == "memories:read"
         assert "memories:write" not in claims["scope"]
+
+
+# ---------------------------------------------------------------------------
+# _origin_verify_secret
+# ---------------------------------------------------------------------------
+
+
+class TestOriginVerifySecret:
+    def setup_method(self):
+        # Clear the lru_cache before each test so env changes take effect
+        from hive.auth.tokens import _origin_verify_secret
+
+        _origin_verify_secret.cache_clear()
+
+    def teardown_method(self):
+        from hive.auth.tokens import _origin_verify_secret
+
+        _origin_verify_secret.cache_clear()
+
+    def test_returns_env_var_when_set(self, monkeypatch):
+        monkeypatch.setenv("HIVE_ORIGIN_VERIFY_SECRET", "env-secret")
+        monkeypatch.delenv("HIVE_ORIGIN_VERIFY_PARAM", raising=False)
+        from hive.auth.tokens import _origin_verify_secret
+
+        assert _origin_verify_secret() == "env-secret"
+
+    def test_returns_none_when_no_param_name(self, monkeypatch):
+        monkeypatch.delenv("HIVE_ORIGIN_VERIFY_SECRET", raising=False)
+        monkeypatch.delenv("HIVE_ORIGIN_VERIFY_PARAM", raising=False)
+        from hive.auth.tokens import _origin_verify_secret
+
+        assert _origin_verify_secret() is None
+
+    def test_fetches_from_ssm_when_param_name_set(self, monkeypatch):
+        monkeypatch.delenv("HIVE_ORIGIN_VERIFY_SECRET", raising=False)
+        monkeypatch.setenv("HIVE_ORIGIN_VERIFY_PARAM", "/hive/origin-verify-secret")
+        from unittest.mock import MagicMock, patch
+
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "ssm-secret"}}
+        with patch("boto3.client", return_value=mock_ssm):
+            from hive.auth.tokens import _origin_verify_secret
+
+            result = _origin_verify_secret()
+        assert result == "ssm-secret"
+
+    def test_returns_none_on_ssm_exception(self, monkeypatch):
+        monkeypatch.delenv("HIVE_ORIGIN_VERIFY_SECRET", raising=False)
+        monkeypatch.setenv("HIVE_ORIGIN_VERIFY_PARAM", "/hive/origin-verify-secret")
+        from unittest.mock import MagicMock, patch
+
+        mock_ssm = MagicMock()
+        mock_ssm.get_parameter.side_effect = Exception("SSM unavailable")
+        with patch("boto3.client", return_value=mock_ssm):
+            from hive.auth.tokens import _origin_verify_secret
+
+            result = _origin_verify_secret()
+        assert result is None
