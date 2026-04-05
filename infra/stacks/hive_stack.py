@@ -584,6 +584,13 @@ class HiveStack(cdk.Stack):
             certificate=certificate,
             default_root_object="index.html",
             error_responses=[
+                # S3 with OAC returns 403 (not 404) for missing paths.
+                # Both must redirect to index.html so React Router handles routing.
+                cloudfront.ErrorResponse(
+                    http_status=403,
+                    response_page_path="/index.html",
+                    response_http_status=200,
+                ),
                 cloudfront.ErrorResponse(
                     http_status=404,
                     response_page_path="/index.html",
