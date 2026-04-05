@@ -5,12 +5,15 @@ import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
+import SetupPanel from "./components/SetupPanel.jsx";
 import UsersPanel from "./components/UsersPanel.jsx";
+import { api } from "./api.js";
 
 const BASE_TABS = [
   { id: "memories", label: "Memories" },
   { id: "clients", label: "OAuth Clients" },
   { id: "activity", label: "Activity Log" },
+  { id: "setup", label: "Setup" },
 ];
 const ADMIN_TABS = [...BASE_TABS, { id: "users", label: "Users" }];
 
@@ -58,6 +61,14 @@ export default function App() {
     fetch("/health")
       .then((r) => r.json())
       .then((data) => setVersion(data.version ?? null))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api.listClients()
+      .then((data) => {
+        if (data && data.items.length === 0) setTab("setup");
+      })
       .catch(() => {});
   }, []);
 
@@ -119,6 +130,7 @@ export default function App() {
         {tab === "clients" && <ClientManager />}
         {tab === "activity" && <ActivityLog />}
         {tab === "users" && isAdmin && <UsersPanel />}
+        {tab === "setup" && <SetupPanel />}
       </main>
 
       {version && (
