@@ -119,6 +119,13 @@ class HiveStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
+        # GSI 4 — UserEmailIndex: look up users by email
+        table.add_global_secondary_index(
+            index_name="UserEmailIndex",
+            partition_key=dynamodb.Attribute(name="GSI4PK", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
         # ----------------------------------------------------------------
         # SSM Parameters
         # ----------------------------------------------------------------
