@@ -3,7 +3,7 @@
 Playwright E2E tests for the Hive management UI.
 Requires:
   HIVE_UI_URL   — deployed UI URL (CloudFront)
-  HIVE_API_URL  — deployed API URL (used to issue a fresh token)
+  HIVE_API_URL  — deployed API URL (used to prime the session via bypass login)
 """
 
 from __future__ import annotations
@@ -12,9 +12,8 @@ import os
 
 import pytest
 
-from tests.e2e.conftest import issue_token_sync
-
 UI_URL = os.environ.get("HIVE_UI_URL", "")
+API_URL = os.environ.get("HIVE_API_URL", "")
 
 pytestmark = pytest.mark.skipif(
     not UI_URL,
@@ -26,16 +25,17 @@ pytestmark = pytest.mark.skipif(
 def browser_page():
     from playwright.sync_api import sync_playwright
 
-    token = issue_token_sync()
-
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
 
-        # Inject token into localStorage before navigating
-        page.goto(UI_URL)
-        page.evaluate(f"localStorage.setItem('hive_token', '{token}')")
-        page.reload()
+        # Navigate to the bypass login endpoint.  In non-prod deployments,
+        # HIVE_BYPASS_GOOGLE_AUTH=1 causes /auth/login to issue a mgmt JWT,
+        # write it to localStorage as hive_mgmt_token, and redirect to /.
+        page.goto(f"{API_URL}auth/login", timeout=30_000, wait_until="networkidle")
+
+        # Should now be at UI_URL with hive_mgmt_token in localStorage.
+        page.wait_for_url(f"{UI_URL}**", timeout=10_000)
 
         yield page
         browser.close()

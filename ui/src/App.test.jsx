@@ -18,11 +18,14 @@ vi.mock("./components/LoginPage.jsx", () => ({
 vi.mock("./components/AuthCallback.jsx", () => ({
   default: () => <div data-testid="auth-callback" />,
 }));
+vi.mock("./components/UsersPanel.jsx", () => ({
+  default: () => <div data-testid="users-panel" />,
+}));
 
-/** Build a syntactically-valid JWT with the given exp (seconds from epoch). */
-function makeToken(expOffsetSeconds = 3600) {
+/** Build a syntactically-valid mgmt JWT with given claims. */
+function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
   const exp = Math.floor(Date.now() / 1000) + expOffsetSeconds;
-  const payload = btoa(JSON.stringify({ exp, sub: "test-client" }));
+  const payload = btoa(JSON.stringify({ exp, sub: "test-user", role, email }));
   return `eyJhbGciOiJIUzI1NiJ9.${payload}.sig`;
 }
 
@@ -49,7 +52,7 @@ describe("App", () => {
       }),
     );
     // Most tests need a valid token — set it by default
-    _storage["hive_token"] = makeToken();
+    _storage["hive_mgmt_token"] = makeToken();
   });
 
   afterEach(() => {
@@ -61,11 +64,18 @@ describe("App", () => {
     expect(screen.getByText("Hive")).toBeTruthy();
   });
 
-  it("renders all three tab buttons", async () => {
+  it("renders the three base tab buttons for non-admin", async () => {
     await act(async () => render(<App />));
     expect(screen.getByText("Memories")).toBeTruthy();
     expect(screen.getByText("OAuth Clients")).toBeTruthy();
     expect(screen.getByText("Activity Log")).toBeTruthy();
+    expect(screen.queryByText("Users")).toBeNull();
+  });
+
+  it("renders Users tab for admin", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ role: "admin" });
+    await act(async () => render(<App />));
+    expect(screen.getByText("Users")).toBeTruthy();
   });
 
   it("shows MemoryBrowser on initial render", async () => {
@@ -89,32 +99,52 @@ describe("App", () => {
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
+  it("switches to UsersPanel when Users tab is clicked (admin only)", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ role: "admin" });
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Users"));
+    expect(screen.getByTestId("users-panel")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
   it("shows LoginPage when no token is stored", async () => {
-    delete _storage["hive_token"];
+    delete _storage["hive_mgmt_token"];
     await act(async () => render(<App />));
     expect(screen.getByTestId("login-page")).toBeTruthy();
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
   it("shows LoginPage when token is expired", async () => {
-    _storage["hive_token"] = makeToken(-3600); // expired 1h ago
+    _storage["hive_mgmt_token"] = makeToken({ expOffsetSeconds: -3600 });
     await act(async () => render(<App />));
     expect(screen.getByTestId("login-page")).toBeTruthy();
   });
 
   it("shows LoginPage when token is malformed", async () => {
-    _storage["hive_token"] = "not.a.jwt"; // base64 decodes but no exp field
+    _storage["hive_mgmt_token"] = "not.a.jwt";
     await act(async () => render(<App />));
-    // isTokenValid catches the exception and returns false
     expect(screen.getByTestId("login-page")).toBeTruthy();
   });
 
-  it("sign out button clears token and reloads", async () => {
+  it("displays user email in header", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ email: "alice@example.com" });
+    await act(async () => render(<App />));
+    expect(screen.getByText("alice@example.com")).toBeTruthy();
+  });
+
+  it("does not show email when token has no email claim", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ email: null });
+    await act(async () => render(<App />));
+    // email span is rendered with "" so it's not visible — just confirm no crash
+    expect(screen.getByText("Hive")).toBeTruthy();
+  });
+
+  it("sign out button clears mgmt token and reloads", async () => {
     const replaceMock = vi.fn();
     vi.stubGlobal("location", { ...window.location, replace: replaceMock });
     await act(async () => render(<App />));
     fireEvent.click(screen.getByText("Sign out"));
-    expect(_storage["hive_token"]).toBeUndefined();
+    expect(_storage["hive_mgmt_token"]).toBeUndefined();
     expect(replaceMock).toHaveBeenCalledWith("/");
   });
 
