@@ -29,12 +29,13 @@ def browser_page():
         browser = p.chromium.launch()
         page = browser.new_page()
 
-        # Navigate to the bypass login endpoint.  In non-prod deployments,
+        # Navigate to the bypass login endpoint via CloudFront (same origin as
+        # the UI) so the mgmt JWT lands in the correct localStorage origin.
         # HIVE_BYPASS_GOOGLE_AUTH=1 causes /auth/login to issue a mgmt JWT,
         # write it to localStorage as hive_mgmt_token, and redirect to /.
-        page.goto(f"{API_URL}auth/login", timeout=30_000, wait_until="networkidle")
+        page.goto(f"{UI_URL}auth/login", timeout=30_000, wait_until="networkidle")
 
-        # Should now be at UI_URL with hive_mgmt_token in localStorage.
+        # Should now be at UI_URL root with hive_mgmt_token in localStorage.
         page.wait_for_url(f"{UI_URL}**", timeout=10_000)
 
         yield page
