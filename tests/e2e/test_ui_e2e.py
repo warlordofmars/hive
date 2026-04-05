@@ -51,14 +51,20 @@ class TestUIE2E:
     def test_create_and_see_memory(self, browser_page):
         page = browser_page
         page.goto(UI_URL)
+        page.wait_for_load_state("networkidle")  # wait for initial memories load
 
         page.locator("button:has-text('+ New')").click()
         page.locator("input[placeholder='unique-key']").fill("ui-e2e-key")
         page.locator("textarea").fill("UI e2e test value")
         page.locator("input[placeholder='tag1, tag2']").fill("e2e")
-        page.locator("button:has-text('Save')").click()
 
-        page.wait_for_selector("text=ui-e2e-key")
+        with page.expect_response(
+            lambda r: "/api/memories" in r.url and r.request.method == "POST",
+            timeout=30_000,
+        ):
+            page.locator("button:has-text('Save')").click()
+
+        page.wait_for_selector("text=ui-e2e-key", timeout=30_000)
         assert page.locator("text=ui-e2e-key").first.is_visible()
 
     def test_clients_tab(self, browser_page):
