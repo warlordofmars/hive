@@ -5,7 +5,7 @@ export default defineConfig({
   title: "Hive Docs",
   description: "Shared persistent memory for AI agents — documentation",
   cleanUrls: true,
-  head: [["link", { rel: "icon", href: "/docs/favicon.ico" }]],
+  head: [["link", { rel: "icon", type: "image/svg+xml", href: "/docs/favicon.svg" }]],
 
   themeConfig: {
     logo: { src: "/docs/logo.svg", alt: "Hive" },
