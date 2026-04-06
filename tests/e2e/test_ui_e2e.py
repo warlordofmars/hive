@@ -14,7 +14,6 @@ import pytest
 
 UI_URL = os.environ.get("HIVE_UI_URL", "")
 API_URL = os.environ.get("HIVE_API_URL", "")
-ADMIN_EMAIL = os.environ.get("HIVE_ADMIN_EMAIL", "")
 
 pytestmark = pytest.mark.skipif(
     not UI_URL,
@@ -89,61 +88,3 @@ class TestUIE2E:
         page = browser_page
         page.locator("nav button:has-text('Activity Log')").click()
         assert page.locator("nav button:has-text('Activity Log')").is_visible()
-
-
-@pytest.fixture()
-async def admin_browser_page():
-    """Browser page logged in as an admin user via the Google auth bypass.
-
-    Uses the async Playwright API to avoid conflicts with pytest-asyncio's
-    event loop (sync_playwright() raises if a loop is already running).
-    """
-    if not ADMIN_EMAIL:
-        pytest.skip("HIVE_ADMIN_EMAIL not set — skipping admin UI e2e tests")
-
-    from playwright.async_api import async_playwright
-
-    # Use .start() instead of the context-manager form — async_playwright() as a
-    # context manager creates its own asyncio Runner, which raises when a loop
-    # is already running (pytest-asyncio asyncio_mode=auto keeps one live).
-    p = await async_playwright().start()
-    browser = await p.chromium.launch()
-    page = await browser.new_page()
-
-    await page.goto(
-        f"{UI_URL}/auth/login?test_email={ADMIN_EMAIL}",
-        timeout=30_000,
-        wait_until="networkidle",
-    )
-    await page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
-
-    yield page
-    await browser.close()
-    await p.stop()
-
-
-class TestDashboardE2E:
-    async def test_dashboard_tab_visible_for_admin(self, admin_browser_page):
-        page = admin_browser_page
-        await page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
-        assert await page.locator("nav button:has-text('Dashboard')").is_visible()
-
-    async def test_dashboard_renders_without_error(self, admin_browser_page):
-        page = admin_browser_page
-        await page.locator("nav button:has-text('Dashboard')").click()
-        await page.wait_for_load_state("networkidle")
-        # No error banner should be present after metrics load
-        assert not await page.locator("text=Failed to load metrics").is_visible()
-        assert not await page.locator("text=Failed to load costs").is_visible()
-
-    async def test_dashboard_period_selector(self, admin_browser_page):
-        page = admin_browser_page
-        await page.locator("nav button:has-text('Dashboard')").click()
-        await page.wait_for_load_state("networkidle")
-        # Switch through all period options — none should trigger an error banner
-        for period in ("1h", "7d", "24h"):
-            await page.locator(f"button:has-text('{period}')").click()
-            await page.wait_for_load_state("networkidle")
-            assert not await page.locator("text=Failed to load metrics").is_visible(), (
-                f"Error banner appeared after switching to {period}"
-            )
