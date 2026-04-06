@@ -132,6 +132,22 @@ class HiveStorage:
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         return True
 
+    def hydrate_memory_ids(
+        self, id_score_pairs: list[tuple[str, float]]
+    ) -> list[tuple[Memory, float]]:
+        """Fetch full Memory objects for a list of (memory_id, score) pairs.
+
+        Pairs whose memory_id no longer exists in DynamoDB (deleted between the
+        vector write and this lookup) are silently filtered out.  Result order
+        mirrors the input order so relevance ranking is preserved.
+        """
+        results: list[tuple[Memory, float]] = []
+        for memory_id, score in id_score_pairs:
+            memory = self.get_memory_by_id(memory_id)
+            if memory is not None:
+                results.append((memory, score))
+        return results
+
     def list_memories_by_tag(
         self,
         tag: str,

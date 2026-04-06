@@ -509,3 +509,123 @@ class TestOriginVerifyMiddleware:
             tc = TestClient(app, raise_server_exceptions=False)
             resp = tc.get("/", headers={"x-origin-verify": "real-secret"})
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# search_memories MCP tool
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_vector_store(pairs: list[tuple[str, float]] | None = None):
+    """Return a mock VectorStore that returns the given (memory_id, score) pairs."""
+    from unittest.mock import MagicMock
+
+    vs = MagicMock()
+    vs.search.return_value = pairs or []
+    return vs
+
+
+class TestSearchMemories:
+    async def test_returns_results_with_scores(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, client_id, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("search-key", "some searchable content", ["t"], ctx=ctx)
+
+        m = storage.get_memory_by_key("search-key")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.88)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("searchable content", top_k=5, ctx=ctx)
+
+        assert result["count"] == 1
+        assert result["query"] == "searchable content"
+        item = result["items"][0]
+        assert item["key"] == "search-key"
+        assert item["score"] == 0.88
+
+    async def test_returns_empty_when_no_index(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import search_memories
+        from hive.vector_store import VectorIndexNotFoundError
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = VectorIndexNotFoundError("no index")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("anything", ctx=_make_ctx(jwt))
+
+        assert result == {"items": [], "count": 0, "query": "anything"}
+
+    async def test_caps_top_k_at_50(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import search_memories
+
+        _, _, jwt = server_env
+        mock_vs = _make_mock_vector_store([])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await search_memories("q", top_k=999, ctx=_make_ctx(jwt))
+
+        mock_vs.search.assert_called_once()
+        assert mock_vs.search.call_args.kwargs["top_k"] == 50
+
+    async def test_requires_read_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import search_memories
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await search_memories("q", ctx=_make_ctx(write_only_jwt))
+
+    async def test_remember_dual_writes_to_vector_store(self, server_env):
+        """remember() calls upsert_memory on the VectorStore for new memories."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("dual-write-key", "value", ["tag"], ctx=_make_ctx(jwt))
+
+        mock_vs.upsert_memory.assert_called_once()
+
+    async def test_remember_dual_writes_on_update(self, server_env):
+        """remember() calls upsert_memory on the VectorStore when updating."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("upd-dw-key", "original", [], ctx=_make_ctx(jwt))
+            await remember("upd-dw-key", "updated", ["x"], ctx=_make_ctx(jwt))
+
+        assert mock_vs.upsert_memory.call_count == 2
+
+    async def test_forget_deletes_from_vector_store(self, server_env):
+        """forget() calls delete_memory on the VectorStore."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import forget, remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("forget-dw-key", "v", [], ctx=_make_ctx(jwt))
+            await forget("forget-dw-key", ctx=_make_ctx(jwt))
+
+        mock_vs.delete_memory.assert_called_once()

@@ -414,6 +414,7 @@ class EventType(str, Enum):
     memory_deleted = "memory_deleted"
     memory_recalled = "memory_recalled"
     memory_listed = "memory_listed"
+    memory_searched = "memory_searched"
     context_summarized = "context_summarized"
     token_issued = "token_issued"
     token_revoked = "token_revoked"
@@ -574,4 +575,28 @@ class UserResponse(BaseModel):
             role=u.role,
             created_at=u.created_at,
             last_login_at=u.last_login_at,
+        )
+
+
+class MemorySearchResult(BaseModel):
+    """A memory returned by semantic search, with a relevance score."""
+
+    memory_id: str
+    key: str
+    value: str
+    tags: list[str]
+    score: float  # cosine similarity (0.0–1.0); higher = more relevant
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_memory_and_score(cls, m: Memory, score: float) -> MemorySearchResult:
+        return cls(
+            memory_id=m.memory_id,
+            key=m.key,
+            value=m.value,
+            tags=m.tags,
+            score=score,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
         )

@@ -19,6 +19,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "boto3-stubs>=1.42.78",
+    "mypy-boto3-bedrock-runtime>=1.35.0",
+    "mypy-boto3-s3vectors>=1.41.0",
     "invoke>=2.2.0",
     "moto>=5.1.22",
     "mypy>=1.19.1",

@@ -31,8 +31,9 @@ from starlette.responses import JSONResponse as StarletteJSONResponse
 from hive.auth.tokens import _origin_verify_secret, validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
-from hive.models import ActivityEvent, EventType, Memory
+from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
 from hive.storage import HiveStorage
+from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
 configure_logging("mcp")
 logger = get_logger("hive.server")
@@ -122,6 +123,10 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
     return storage, token.client_id
 
 
+def _vector_store() -> VectorStore:
+    return VectorStore()
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -164,6 +169,7 @@ async def remember(
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_updated
         action = "Updated"
+        _vector_store().upsert_memory(existing)
     else:
         memory = Memory(key=key, value=value, tags=tags, owner_client_id=client_id)
         try:
@@ -173,6 +179,7 @@ async def remember(
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_created
         action = "Stored"
+        _vector_store().upsert_memory(memory)
 
     storage.log_event(
         ActivityEvent(
@@ -270,6 +277,7 @@ async def forget(
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.delete_memory(existing.memory_id)
+    _vector_store().delete_memory(existing.memory_id, client_id)
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_deleted,
@@ -403,6 +411,62 @@ async def summarize_context(
         operation="summarize_context",
     )
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def search_memories(
+    query: Annotated[str, "Natural language search query"],
+    top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 10,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Search memories by semantic similarity to a natural language query.
+
+    Returns memories ranked by relevance.  ``score`` ranges from 0.0 to 1.0
+    where higher means more semantically similar to the query.
+    """
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:read")
+    top_k = max(1, min(top_k, 50))
+
+    try:
+        pairs = _vector_store().search(query, client_id, top_k=top_k)
+    except VectorIndexNotFoundError:
+        return {"items": [], "count": 0, "query": query}
+
+    results = storage.hydrate_memory_ids(pairs)
+
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_searched,
+            client_id=client_id,
+            metadata={"query": query, "result_count": len(results)},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Searched memories for '%s', %d result(s)",
+        query,
+        len(results),
+        extra={
+            "tool": "search_memories",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="search_memories")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="search_memories",
+    )
+    return {
+        "items": [
+            MemorySearchResult.from_memory_and_score(m, score).model_dump() for m, score in results
+        ],
+        "count": len(results),
+        "query": query,
+    }
 
 
 # ---------------------------------------------------------------------------

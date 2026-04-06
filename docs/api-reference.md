@@ -22,26 +22,39 @@ A 401 is returned for missing, invalid, or expired tokens. See [oauth.md](oauth.
 
 ### `GET /api/memories`
 
-List all memories. Optionally filter by tag.
+List or search memories.
 
 **Query parameters:**
 | Param | Type | Description |
-|---|---|---|
-| `tag` | string | Filter to memories that have this tag |
+| --- | --- | --- |
+| `tag` | string | Filter to memories that have this tag (mutually exclusive with `search`) |
+| `search` | string | Semantic search query — returns memories ranked by relevance (mutually exclusive with `tag`) |
+| `limit` | int | Max results to return (default 50, max 200) |
+| `cursor` | string | Pagination cursor from a previous response (not used with `search`) |
+
+When `search` is provided, results include a `score` field (0.0–1.0, higher = more relevant) and are not paginated.
 
 **Response `200`:**
 ```json
-[
-  {
-    "memory_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "key": "project/deadline",
-    "value": "March 31, 2026",
-    "tags": ["project", "deadline"],
-    "created_at": "2026-03-01T10:00:00Z",
-    "updated_at": "2026-03-01T10:00:00Z"
-  }
-]
+{
+  "items": [
+    {
+      "memory_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "key": "project/deadline",
+      "value": "March 31, 2026",
+      "tags": ["project", "deadline"],
+      "created_at": "2026-03-01T10:00:00Z",
+      "updated_at": "2026-03-01T10:00:00Z",
+      "score": 0.91
+    }
+  ],
+  "count": 1,
+  "has_more": false,
+  "next_cursor": null
+}
 ```
+
+The `score` field is only present when `search` is used.
 
 ---
 

@@ -37,6 +37,7 @@ from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as route53_targets
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
+from aws_cdk import aws_s3vectors as s3vectors
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_wafv2 as wafv2
@@ -236,9 +237,18 @@ class HiveStack(cdk.Stack):
             validation=acm.CertificateValidation.from_dns(hosted_zone),
         )
 
+        # S3 Vectors bucket — one vector index per OAuth client, lazy-created
+        vectors_bucket_name = "hive-vectors" if is_prod else f"hive-vectors-{env_name}"
+        vectors_bucket = s3vectors.CfnVectorBucket(
+            self,
+            "VectorsBucket",
+            vector_bucket_name=vectors_bucket_name,
+        )
+
         app_version = os.environ.get("APP_VERSION", "dev")
         common_env = {
             "HIVE_TABLE_NAME": table.table_name,
+            "HIVE_VECTORS_BUCKET": vectors_bucket_name,
             # Custom domain is the canonical issuer URL for all environments.
             "HIVE_ISSUER": f"https://{custom_domain}",
             # Tell both Lambdas which SSM parameter holds the JWT secret.
@@ -282,6 +292,30 @@ class HiveStack(cdk.Stack):
         google_client_secret_param.grant_read(mcp_role)
         allowed_emails_param.grant_read(mcp_role)
         origin_verify_param.grant_read(mcp_role)
+        # S3 Vectors + Bedrock Titan Embeddings V2 for MCP Lambda
+        mcp_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "s3vectors:CreateIndex",
+                    "s3vectors:GetIndex",
+                    "s3vectors:PutVectors",
+                    "s3vectors:QueryVectors",
+                    "s3vectors:DeleteVectors",
+                ],
+                resources=[
+                    f"arn:aws:s3vectors:{self.region}:{self.account}:bucket/{vectors_bucket_name}",
+                    f"arn:aws:s3vectors:{self.region}:{self.account}:bucket/{vectors_bucket_name}/index/*",
+                ],
+            )
+        )
+        mcp_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    f"arn:aws:bedrock:{self.region}::foundation-model/amazon.titan-embed-text-v2:0"
+                ],
+            )
+        )
 
         mcp_fn = lambda_.Function(
             self,
@@ -335,6 +369,30 @@ class HiveStack(cdk.Stack):
             iam.PolicyStatement(
                 actions=["ce:GetCostAndUsage"],
                 resources=["*"],
+            )
+        )
+        # S3 Vectors + Bedrock Titan Embeddings V2 for API Lambda
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "s3vectors:CreateIndex",
+                    "s3vectors:GetIndex",
+                    "s3vectors:PutVectors",
+                    "s3vectors:QueryVectors",
+                    "s3vectors:DeleteVectors",
+                ],
+                resources=[
+                    f"arn:aws:s3vectors:{self.region}:{self.account}:bucket/{vectors_bucket_name}",
+                    f"arn:aws:s3vectors:{self.region}:{self.account}:bucket/{vectors_bucket_name}/index/*",
+                ],
+            )
+        )
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    f"arn:aws:bedrock:{self.region}::foundation-model/amazon.titan-embed-text-v2:0"
+                ],
             )
         )
 
