@@ -529,8 +529,13 @@ jobs:
         env:
           HIVE_API_URL: ${{ needs.deploy-dev.outputs.api_url }}
           HIVE_UI_URL: ${{ needs.deploy-dev.outputs.ui_url }}
-          HIVE_ADMIN_EMAIL: ${{ vars.HIVE_ADMIN_EMAIL }}
         run: uv run pytest tests/e2e/test_ui_e2e.py -v
+
+      - name: Run Dashboard e2e tests (Playwright)
+        env:
+          HIVE_UI_URL: ${{ needs.deploy-dev.outputs.ui_url }}
+          HIVE_ADMIN_EMAIL: ${{ vars.HIVE_ADMIN_EMAIL }}
+        run: uv run pytest tests/e2e/test_dashboard_e2e.py -v
 
       - name: Issue synthetic token via PKCE bypass
         id: synth-token
