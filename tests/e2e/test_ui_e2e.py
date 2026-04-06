@@ -33,7 +33,11 @@ def browser_page():
         # the UI) so the mgmt JWT lands in the correct localStorage origin.
         # test_email is required — HIVE_BYPASS_GOOGLE_AUTH only triggers the
         # synthetic path when test_email is explicitly supplied (#140).
-        page.goto(f"{UI_URL}/auth/login?test_email=e2e@example.com", timeout=30_000, wait_until="networkidle")
+        page.goto(
+            f"{UI_URL}/auth/login?test_email=e2e@example.com",
+            timeout=30_000,
+            wait_until="networkidle",
+        )
 
         # Token is now in localStorage. Navigate directly to /app — the
         # HomeRoute would also redirect there, but client-side redirects can
