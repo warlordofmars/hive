@@ -149,8 +149,6 @@ export default function HomePage() {
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-            maxWidth: 640,
-            margin: "0 auto",
             gap: 32,
           }}
         >
@@ -176,7 +174,7 @@ export default function HomePage() {
 
       {/* How it works */}
       <section style={{ background: "#f8f9fa", padding: "80px 32px" }}>
-        <div style={{ maxWidth: 640, margin: "0 auto" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <h2
             style={{
               textAlign: "center",
