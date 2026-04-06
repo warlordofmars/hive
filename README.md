@@ -38,9 +38,7 @@ Hive is an MCP server that gives Claude agents durable, shared memory across con
 ## Getting started
 
 1. **Sign in** at [hive.warlordofmars.net](https://hive.warlordofmars.net) with your Google account
-2. **Register a client** in the management UI (OAuth Clients tab → Register Client)
-3. **Get a token** by completing the OAuth flow for your new client
-4. **Connect Claude** using the MCP config below
+2. **Connect Claude** using the config for your client below — OAuth is handled automatically on first use
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -48,14 +46,29 @@ Hive is an MCP server that gives Claude agents durable, shared memory across con
 {
   "mcpServers": {
     "hive": {
-      "url": "https://hive.warlordofmars.net/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-token>"
-      }
+      "command": "npx",
+      "args": ["mcp-remote", "https://hive.warlordofmars.net/mcp"]
     }
   }
 }
 ```
+
+Claude Desktop doesn't support HTTP MCP servers directly — [`mcp-remote`](https://github.com/geelen/mcp-remote) proxies the connection and handles the OAuth flow automatically on first run.
+
+**Claude Code** (`~/.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "https://hive.warlordofmars.net/mcp"
+    }
+  }
+}
+```
+
+Claude Code supports HTTP MCP servers natively and handles the OAuth flow automatically.
 
 For detailed setup instructions see [docs/mcp-setup.md](docs/mcp-setup.md).
 
