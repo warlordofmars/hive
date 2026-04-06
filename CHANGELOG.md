@@ -4,6 +4,12 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.13.1 — 2026-04-06
+
+### Fixed
+
+- LoginPage tagline still referenced "Claude agents" after #184 — updated to "AI agents" (#188)
+
 ## v0.13.0 — 2026-04-06
 
 ### Added
