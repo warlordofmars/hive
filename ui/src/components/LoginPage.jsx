@@ -28,7 +28,7 @@ export default function LoginPage() {
           Hive
         </h1>
         <p style={{ color: "var(--text-muted)", marginBottom: 32 }}>
-          Shared persistent memory for Claude agents
+          Shared persistent memory for AI agents
         </p>
         <button
           onClick={() => {
