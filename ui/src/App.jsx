@@ -89,9 +89,10 @@ function AppShell() {
       >
         <span
           onClick={() => navigate("/")}
-          style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1, cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
         >
-          Hive
+          <img src="/logo.svg" alt="Hive" style={{ width: 28, height: 28 }} />
+          <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
         </span>
 
         <nav style={{ display: "flex", gap: 4, flex: 1 }}>
