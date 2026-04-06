@@ -48,6 +48,13 @@ describe("HomePage", () => {
     expect(screen.getByText(/Start remembering/)).toBeTruthy();
   });
 
+  it("renders the logo in the nav header", async () => {
+    const { container } = await act(async () => renderInRouter(<HomePage />));
+    const logo = container.querySelector('img[alt="Hive"]');
+    expect(logo).toBeTruthy();
+    expect(logo.getAttribute("src")).toBe("/logo.svg");
+  });
+
   it("renders the nav Sign in button", async () => {
     await act(async () => renderInRouter(<HomePage />));
     expect(screen.getByText("Sign in")).toBeTruthy();
