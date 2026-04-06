@@ -640,8 +640,13 @@ function handler(event) {
             runtime=cloudfront.FunctionRuntime.JS_2_0,
         )
 
+        # Single S3 origin shared by default + docs behaviors — two separate
+        # with_origin_access_control() calls would create distinct OACs and the
+        # second one would not receive a bucket policy grant, causing 403s.
+        ui_s3_origin = origins.S3BucketOrigin.with_origin_access_control(ui_bucket)
+
         docs_behavior = cloudfront.BehaviorOptions(
-            origin=origins.S3BucketOrigin.with_origin_access_control(ui_bucket),
+            origin=ui_s3_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
             function_associations=[
@@ -656,7 +661,7 @@ function handler(event) {
             self,
             "UiDistribution",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3BucketOrigin.with_origin_access_control(ui_bucket),
+                origin=ui_s3_origin,
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
             ),

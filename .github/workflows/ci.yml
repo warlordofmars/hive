@@ -540,6 +540,11 @@ jobs:
           HIVE_UI_URL: ${{ needs.deploy-dev.outputs.ui_url }}
         run: uv run pytest tests/e2e/test_ui_e2e.py -v
 
+      - name: Run docs e2e tests (Playwright)
+        env:
+          HIVE_UI_URL: ${{ needs.deploy-dev.outputs.ui_url }}
+        run: uv run pytest tests/e2e/test_docs_e2e.py -v
+
       - name: Run Dashboard e2e tests (Playwright)
         env:
           HIVE_UI_URL: ${{ needs.deploy-dev.outputs.ui_url }}
