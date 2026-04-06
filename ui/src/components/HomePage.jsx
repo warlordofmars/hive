@@ -62,7 +62,10 @@ export default function HomePage() {
             justifyContent: "space-between",
           }}
         >
-          <img src="/logo.svg" alt="Hive" style={{ height: 28 }} />
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <img src="/logo.svg" alt="Hive" style={{ height: 28 }} />
+            <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
+          </span>
           <button
             onClick={() => navigate("/app")}
             style={{
@@ -173,7 +176,7 @@ export default function HomePage() {
 
       {/* How it works */}
       <section style={{ background: "#f8f9fa", padding: "80px 32px" }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        <div style={{ maxWidth: 640, margin: "0 auto" }}>
           <h2
             style={{
               textAlign: "center",

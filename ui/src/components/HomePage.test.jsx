@@ -48,11 +48,13 @@ describe("HomePage", () => {
     expect(screen.getByText(/Start remembering/)).toBeTruthy();
   });
 
-  it("renders the logo in the nav header", async () => {
+  it("renders the logo and wordmark in the nav header", async () => {
     const { container } = await act(async () => renderInRouter(<HomePage />));
     const logo = container.querySelector('img[alt="Hive"]');
     expect(logo).toBeTruthy();
     expect(logo.getAttribute("src")).toBe("/logo.svg");
+    // "Hive" wordmark text appears alongside logo
+    expect(screen.getAllByText("Hive").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders the nav Sign in button", async () => {
