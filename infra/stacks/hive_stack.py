@@ -633,6 +633,14 @@ function handler(event) {
         return request;
     }
 
+    // /docs/app → redirect to /app (Sign in link from docs nav)
+    if (uri === '/docs/app') {
+        return {
+            statusCode: 302,
+            headers: { location: { value: '/app' } }
+        };
+    }
+
     // Last path segment has a dot — treat as a static asset, pass through.
     var lastSegment = uri.split('/').pop();
     if (lastSegment.indexOf('.') !== -1) {
