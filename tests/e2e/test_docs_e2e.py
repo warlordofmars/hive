@@ -300,24 +300,20 @@ class TestDocsNavbar:
             f"Docs link navigated to {page.url!r} — expected '/docs/'."
         )
 
-    def test_home_nav_link_click(self, docs_page):
-        """Clicking Home nav link stays within the site (no broken redirect).
+    def test_logo_click_navigates_to_marketing(self, docs_page):
+        """Clicking the Hive logo navigates to the marketing page root (/).
 
-        Start from a subpage for the same reason as test_docs_nav_link_click.
+        VitePress logoLink is used directly without withBase(), so logoLink: '/'
+        produces href='/' which goes to the marketing site, not /docs/.
         """
         page = docs_page
-        page.goto(
-            f"{UI_URL}/docs/getting-started/quick-start",
-            timeout=30_000,
-            wait_until="networkidle",
-        )
-        home_link = page.locator(".VPNavBarMenuLink", has_text="Home")
-        if not home_link.is_visible():
-            pytest.skip("Home nav link not visible")
+        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        logo = page.locator(".VPNavBarTitle .title")
         with page.expect_navigation(timeout=15_000):
-            home_link.click()
-        # Home link (link: '/') gets base prepended → /docs/ (docs home)
-        assert UI_URL in page.url, f"Home link navigated outside the site: {page.url!r}."
+            logo.click()
+        assert page.url.rstrip("/") == UI_URL.rstrip("/"), (
+            f"Logo click navigated to {page.url!r} — expected marketing page '{UI_URL}'."
+        )
 
     def test_signin_nav_link_click(self, docs_page):
         """Clicking Sign in nav link reaches the React app (/app).
