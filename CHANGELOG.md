@@ -4,6 +4,17 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.14.0 — 2026-04-06
+
+### Added
+
+- Semantic memory search via Amazon S3 Vectors + Bedrock Titan Embeddings V2 — new `search_memories` MCP tool and `GET /api/memories?search=` API endpoint return memories ranked by cosine similarity (#193, #194)
+- Debounced semantic search input in Memory Browser UI with match score badges (#193, #194)
+
+### Fixed
+
+- SetupPanel tab and JSON panel colors were hardcoded light-mode values and did not render correctly in dark mode (#196)
+
 ## v0.13.1 — 2026-04-06
 
 ### Fixed
