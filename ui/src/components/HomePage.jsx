@@ -61,7 +61,7 @@ export default function HomePage() {
           justifyContent: "space-between",
         }}
       >
-        <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
+        <img src="/logo.svg" alt="Hive" style={{ height: 28 }} />
         <button
           onClick={() => navigate("/app")}
           style={{
@@ -142,7 +142,9 @@ export default function HomePage() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            maxWidth: 640,
+            margin: "0 auto",
             gap: 32,
           }}
         >
