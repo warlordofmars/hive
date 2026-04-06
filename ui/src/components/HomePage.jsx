@@ -50,32 +50,34 @@ export default function HomePage() {
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", color: "#1a1a2e" }}>
       {/* Nav */}
-      <header
-        style={{
-          background: "#1a1a2e",
-          color: "#fff",
-          padding: "0 32px",
-          height: 56,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <img src="/logo.svg" alt="Hive" style={{ height: 28 }} />
-        <button
-          onClick={() => navigate("/app")}
+      <header style={{ background: "#1a1a2e", color: "#fff" }}>
+        <div
           style={{
-            background: "transparent",
-            color: "rgba(255,255,255,.8)",
-            border: "1px solid rgba(255,255,255,.3)",
-            borderRadius: 6,
-            padding: "6px 16px",
-            fontSize: 14,
-            cursor: "pointer",
+            maxWidth: 1100,
+            margin: "0 auto",
+            padding: "0 32px",
+            height: 56,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
           }}
         >
-          Sign in
-        </button>
+          <img src="/logo.svg" alt="Hive" style={{ height: 28 }} />
+          <button
+            onClick={() => navigate("/app")}
+            style={{
+              background: "transparent",
+              color: "rgba(255,255,255,.8)",
+              border: "1px solid rgba(255,255,255,.3)",
+              borderRadius: 6,
+              padding: "6px 16px",
+              fontSize: 14,
+              cursor: "pointer",
+            }}
+          >
+            Sign in
+          </button>
+        </div>
       </header>
 
       {/* Hero */}
@@ -133,7 +135,8 @@ export default function HomePage() {
       </section>
 
       {/* Features */}
-      <section style={{ padding: "80px 32px", maxWidth: 1100, margin: "0 auto" }}>
+      <section style={{ padding: "80px 32px" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <h2
           style={{ textAlign: "center", fontSize: "1.75rem", fontWeight: 700, marginBottom: 56 }}
         >
@@ -165,11 +168,12 @@ export default function HomePage() {
             </div>
           ))}
         </div>
+        </div>
       </section>
 
       {/* How it works */}
       <section style={{ background: "#f8f9fa", padding: "80px 32px" }}>
-        <div style={{ maxWidth: 860, margin: "0 auto" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <h2
             style={{
               textAlign: "center",
@@ -230,16 +234,19 @@ export default function HomePage() {
       </section>
 
       {/* Footer */}
-      <footer
-        style={{
-          textAlign: "center",
-          padding: "32px",
-          fontSize: 13,
-          color: "#999",
-          borderTop: "1px solid #eee",
-        }}
-      >
-        © 2026 Hive. Free to use.
+      <footer style={{ borderTop: "1px solid #eee" }}>
+        <div
+          style={{
+            maxWidth: 1100,
+            margin: "0 auto",
+            padding: "32px",
+            textAlign: "center",
+            fontSize: 13,
+            color: "#999",
+          }}
+        >
+          © 2026 Hive. Free to use.
+        </div>
       </footer>
     </div>
   );
