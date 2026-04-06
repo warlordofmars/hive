@@ -9,6 +9,8 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 ### Added
 - Scheduled synthetic traffic workflow generating real CloudWatch metrics every 15 minutes (#141)
 - E2E tests for CloudWatch metrics dashboard, including admin API and UI validation (#143)
+- Dark mode support with OS preference detection and manual toggle (#155)
+- Migrate UI to Tailwind CSS v4 with CSS custom property colour tokens (#156)
 
 ## Earlier releases
 

@@ -11,6 +11,7 @@ import LoginPage from "./components/LoginPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import SetupPanel from "./components/SetupPanel.jsx";
 import UsersPanel from "./components/UsersPanel.jsx";
+import { useTheme } from "./hooks/useTheme.js";
 
 const BASE_TABS = [
   { id: "memories", label: "Memories" },
@@ -47,6 +48,7 @@ function AppShell() {
   const [tab, setTab] = useState("memories");
   const [version, setVersion] = useState(null);
   const navigate = useNavigate();
+  const { theme, toggle } = useTheme();
 
   const token = localStorage.getItem("hive_mgmt_token") ?? "";
 
@@ -130,6 +132,22 @@ function AppShell() {
           }}
         >
           Sign out
+        </button>
+
+        <button
+          onClick={toggle}
+          style={{
+            background: "transparent",
+            color: "rgba(255,255,255,.7)",
+            border: "1px solid rgba(255,255,255,.3)",
+            borderRadius: 6,
+            padding: "5px 10px",
+            fontSize: 16,
+            cursor: "pointer",
+          }}
+          aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === "dark" ? "☀" : "☾"}
         </button>
       </header>
 
