@@ -126,6 +126,19 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("limit=10");
   });
 
+  it("searchMemories passes search param", async () => {
+    mockOk({ items: [], count: 0 });
+    await api.searchMemories("hello world");
+    expect(fetchMock.mock.calls[0][0]).toContain("search=hello+world");
+    expect(fetchMock.mock.calls[0][0]).toContain("limit=50");
+  });
+
+  it("searchMemories with custom limit", async () => {
+    mockOk({ items: [], count: 0 });
+    await api.searchMemories("q", { limit: 10 });
+    expect(fetchMock.mock.calls[0][0]).toContain("limit=10");
+  });
+
   // ---------------------------------------------------------------------------
   // Memory CRUD
   // ---------------------------------------------------------------------------

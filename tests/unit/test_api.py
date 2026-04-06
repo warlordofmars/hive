@@ -297,6 +297,78 @@ class TestMemories:
         resp = tc.delete("/api/memories/no-such-id")
         assert resp.status_code == 404
 
+    def test_search_returns_results_with_scores(self, client):
+        from unittest.mock import MagicMock
+
+        from hive.api import memories as memories_mod
+        from hive.api.main import app
+
+        tc, storage, _ = client
+        tc.post("/api/memories", json={"key": "srch-k", "value": "relevant text", "tags": []})
+        m = storage.get_memory_by_key("srch-k")
+
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = [(m.memory_id, 0.91)]
+        app.dependency_overrides[memories_mod._vector_store] = lambda: mock_vs
+
+        resp = tc.get("/api/memories", params={"search": "relevant"})
+
+        del app.dependency_overrides[memories_mod._vector_store]
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        item = data["items"][0]
+        assert item["key"] == "srch-k"
+        assert item["score"] == 0.91
+
+    def test_search_returns_empty_when_no_index(self, client):
+        from unittest.mock import MagicMock
+
+        from hive.api import memories as memories_mod
+        from hive.api.main import app
+        from hive.vector_store import VectorIndexNotFoundError
+
+        tc, *_ = client
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = VectorIndexNotFoundError("no index")
+        app.dependency_overrides[memories_mod._vector_store] = lambda: mock_vs
+
+        resp = tc.get("/api/memories", params={"search": "anything"})
+
+        del app.dependency_overrides[memories_mod._vector_store]
+        assert resp.status_code == 200
+        assert resp.json() == {"items": [], "count": 0, "has_more": False, "next_cursor": None}
+
+    def test_search_filters_by_owner_for_non_admin(self, client):
+        """Non-admin users only see their own memories in search results."""
+        from unittest.mock import MagicMock
+
+        from hive.api import memories as memories_mod
+        from hive.api.main import app
+        from hive.models import Memory
+
+        tc, storage, _ = client
+        other_mem = Memory(
+            key="other-k", value="v", owner_client_id="other", owner_user_id="other-user"
+        )
+        storage.put_memory(other_mem)
+        own_mem = Memory(
+            key="own-k", value="v", owner_client_id=_TEST_USER_ID, owner_user_id=_TEST_USER_ID
+        )
+        storage.put_memory(own_mem)
+
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = [(other_mem.memory_id, 0.9), (own_mem.memory_id, 0.8)]
+        app.dependency_overrides[memories_mod._vector_store] = lambda: mock_vs
+
+        resp = tc.get("/api/memories", params={"search": "q"})
+
+        del app.dependency_overrides[memories_mod._vector_store]
+        assert resp.status_code == 200
+        keys = [i["key"] for i in resp.json()["items"]]
+        assert "own-k" in keys
+        assert "other-k" not in keys
+
 
 # ---------------------------------------------------------------------------
 # Client endpoints
