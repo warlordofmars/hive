@@ -39,5 +39,9 @@ jobs:
         working-directory: ui
         run: npm install && npm run build
 
+      - name: Build docs site
+        working-directory: docs-site
+        run: npm install && npm run build
+
       - name: Deploy
         run: uv run inv deploy --env dev

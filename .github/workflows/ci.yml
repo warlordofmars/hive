@@ -336,6 +336,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build docs site
+        working-directory: docs-site
+        run: npm install && npm run build
+
       - name: Write JS coverage summary
         if: always()
         run: |
@@ -481,6 +485,10 @@ jobs:
 
       - name: Build React UI
         working-directory: ui
+        run: npm install && npm run build
+
+      - name: Build docs site
+        working-directory: docs-site
         run: npm install && npm run build
 
       - name: Deploy dev stack
@@ -660,6 +668,10 @@ jobs:
 
       - name: Build React UI
         working-directory: ui
+        run: npm install && npm run build
+
+      - name: Build docs site
+        working-directory: docs-site
         run: npm install && npm run build
 
       - name: Deploy prod stack
