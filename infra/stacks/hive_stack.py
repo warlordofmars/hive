@@ -612,6 +612,46 @@ class HiveStack(cdk.Stack):
 
             web_acl_arn = web_acl.attr_arn
 
+        # CloudFront Function: rewrite /docs and /docs/<subpath>/ to index.html
+        # S3 doesn't serve directory index files for subdirectory paths, so we
+        # must rewrite bare /docs and trailing-slash paths to their index.html.
+        docs_rewrite_fn = cloudfront.Function(
+            self,
+            "DocsUrlRewrite",
+            code=cloudfront.FunctionCode.from_inline(
+                """
+function handler(event) {
+    var request = event.request;
+    var uri = request.uri;
+    // /docs → /docs/index.html
+    if (uri === '/docs') {
+        request.uri = '/docs/index.html';
+        return request;
+    }
+    // /docs/<subpath>/ → /docs/<subpath>/index.html
+    if (uri.startsWith('/docs/') && uri.endsWith('/')) {
+        request.uri = uri + 'index.html';
+        return request;
+    }
+    return request;
+}
+"""
+            ),
+            runtime=cloudfront.FunctionRuntime.JS_2_0,
+        )
+
+        docs_behavior = cloudfront.BehaviorOptions(
+            origin=origins.S3BucketOrigin.with_origin_access_control(ui_bucket),
+            viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+            cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+            function_associations=[
+                cloudfront.FunctionAssociation(
+                    function=docs_rewrite_fn,
+                    event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                )
+            ],
+        )
+
         distribution = cloudfront.Distribution(
             self,
             "UiDistribution",
@@ -637,6 +677,7 @@ class HiveStack(cdk.Stack):
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
                 ),
                 "/mcp*": mcp_behavior,
+                "/docs*": docs_behavior,
             },
             domain_names=[custom_domain],
             certificate=certificate,
@@ -674,6 +715,21 @@ class HiveStack(cdk.Stack):
                 destination_bucket=ui_bucket,
                 distribution=distribution,
                 distribution_paths=["/*"],
+            )
+
+        # Deploy built docs site assets — only if docs-site/.vitepress/dist exists
+        docs_dist_path = os.path.join(
+            os.path.dirname(__file__), "../../docs-site/.vitepress/dist"
+        )
+        if os.path.exists(docs_dist_path):
+            s3deploy.BucketDeployment(
+                self,
+                "DeployDocs",
+                sources=[s3deploy.Source.asset(docs_dist_path)],
+                destination_bucket=ui_bucket,
+                destination_key_prefix="docs",
+                distribution=distribution,
+                distribution_paths=["/docs/*"],
             )
 
         # ----------------------------------------------------------------
