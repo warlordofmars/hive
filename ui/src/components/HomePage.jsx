@@ -7,12 +7,12 @@ const FEATURES = [
   {
     icon: BrainCircuit,
     title: "Persistent memory across sessions",
-    body: "Store facts, context, and decisions once. Every Claude session picks up exactly where the last one left off.",
+    body: "Store facts, context, and decisions once. Every session picks up exactly where the last one left off.",
   },
   {
     icon: Plug,
     title: "Works with any MCP client",
-    body: "Plug in to Claude Code, Claude Desktop, or any agent that speaks the Model Context Protocol.",
+    body: "Plug in to Claude Code, Claude Desktop, Cursor, Continue, or any client that speaks the Model Context Protocol.",
   },
   {
     icon: Users,
@@ -35,12 +35,12 @@ const HOW_IT_WORKS = [
   {
     step: "2",
     title: "Register an MCP client",
-    body: "Give your agent a name and copy the one-line config snippet into Claude Code.",
+    body: "Give your agent a name and copy the one-line config snippet into your MCP client.",
   },
   {
     step: "3",
     title: "Start remembering",
-    body: 'Tell Claude to "remember" something. Hive stores it. Every future session can recall it.',
+    body: 'Ask your agent to "remember" something. Hive stores it. Every future session can recall it.',
   },
 ];
 
@@ -102,7 +102,7 @@ export default function HomePage() {
         >
           Persistent memory
           <br />
-          for Claude agents
+          for AI agents
         </h1>
         <p
           style={{
@@ -113,8 +113,8 @@ export default function HomePage() {
             lineHeight: 1.6,
           }}
         >
-          Hive gives your Claude agents a shared, durable memory store via the Model Context
-          Protocol — so context survives across sessions, tools, and team members.
+          Hive gives your AI agents a shared, durable memory store via the Model Context
+          Protocol — works with Claude Code, Cursor, Continue, and any MCP-compatible client.
         </p>
         <button
           onClick={() => navigate("/app")}

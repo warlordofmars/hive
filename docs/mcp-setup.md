@@ -48,6 +48,44 @@ Restart Claude Desktop. On first use `mcp-remote` will open a browser window to 
 
 ---
 
+## Cursor
+
+Cursor supports HTTP MCP servers natively with built-in OAuth 2.1 + DCR — the same config format as Claude Code.
+
+Add to `~/.cursor/mcp.json` (create the file if it doesn't exist):
+
+```json
+{
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "https://hive.warlordofmars.net/mcp"
+    }
+  }
+}
+```
+
+Restart Cursor. On first use it will open a browser window to complete the OAuth flow.
+
+---
+
+## Continue
+
+Continue supports MCP servers via `mcp-remote`. Add to `.continue/config.yaml` in your project or home directory:
+
+```yaml
+mcpServers:
+  - name: hive
+    command: npx
+    args:
+      - mcp-remote
+      - https://hive.warlordofmars.net/mcp
+```
+
+On first use `mcp-remote` will open a browser window to complete the OAuth flow.
+
+---
+
 ## claude.ai (web)
 
 In your claude.ai account settings, navigate to **Integrations → Add MCP server**:

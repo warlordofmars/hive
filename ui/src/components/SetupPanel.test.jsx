@@ -24,9 +24,10 @@ describe("SetupPanel", () => {
     expect(screen.getByText(/Step 2/)).toBeTruthy();
   });
 
-  it("renders Claude Code and Claude Desktop tabs", async () => {
+  it("renders Claude Code, Cursor, and Claude Desktop tabs", async () => {
     await act(async () => render(<SetupPanel />));
     expect(screen.getByText("Claude Code")).toBeTruthy();
+    expect(screen.getByText("Cursor")).toBeTruthy();
     expect(screen.getByText("Claude Desktop")).toBeTruthy();
   });
 
@@ -81,5 +82,18 @@ describe("SetupPanel", () => {
     fireEvent.click(screen.getByText("Claude Desktop"));
     fireEvent.click(screen.getByText("Claude Code"));
     expect(document.body.textContent).toContain('"type": "http"');
+  });
+
+  it("switches to Cursor tab and shows http config", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Cursor"));
+    expect(document.body.textContent).toContain('"type": "http"');
+    expect(document.body.textContent).toContain("~/.cursor/mcp.json");
+  });
+
+  it("step 2 text updates when switching to Cursor tab", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Cursor"));
+    expect(document.body.textContent).toContain("Restart Cursor");
   });
 });
