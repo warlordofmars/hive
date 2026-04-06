@@ -186,6 +186,7 @@ function HomeRoute() {
 }
 
 export default function App() {
+  useTheme(); // apply data-theme to <html> for all routes
   return (
     <BrowserRouter>
       <Routes>

@@ -9,12 +9,13 @@ export default function LoginPage() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "#f5f5f5",
+        background: "var(--bg)",
       }}
     >
       <div
         style={{
-          background: "#fff",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
           borderRadius: 12,
           padding: 48,
           textAlign: "center",
@@ -23,10 +24,10 @@ export default function LoginPage() {
           width: "100%",
         }}
       >
-        <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8, color: "#1a1a2e" }}>
+        <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8, color: "var(--text)" }}>
           Hive
         </h1>
-        <p style={{ color: "#666", marginBottom: 32 }}>
+        <p style={{ color: "var(--text-muted)", marginBottom: 32 }}>
           Shared persistent memory for Claude agents
         </p>
         <button
@@ -36,11 +37,12 @@ export default function LoginPage() {
           style={{
             width: "100%",
             padding: "12px 0",
-            background: "#fff",
-            border: "1px solid #ddd",
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
             borderRadius: 8,
             cursor: "pointer",
             fontSize: 15,
+            color: "var(--text)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
