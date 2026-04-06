@@ -1,11 +1,12 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MemoryBrowser from "./MemoryBrowser.jsx";
 
 vi.mock("../api.js", () => ({
   api: {
     listMemories: vi.fn(),
+    searchMemories: vi.fn(),
     createMemory: vi.fn(),
     updateMemory: vi.fn(),
     deleteMemory: vi.fn(),
@@ -26,6 +27,7 @@ describe("MemoryBrowser", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
+    api.searchMemories.mockResolvedValue({ items: [], count: 0 });
     vi.stubGlobal("confirm", vi.fn(() => true));
   });
 
@@ -303,5 +305,108 @@ describe("MemoryBrowser", () => {
     await waitFor(() => screen.getByText("test-key"));
     await act(async () => fireEvent.click(screen.getByText("Delete")));
     expect(screen.queryByText("Edit: test-key")).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Semantic search
+  // ---------------------------------------------------------------------------
+
+  it("renders Search by meaning input", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    expect(screen.getByPlaceholderText("Search by meaning…")).toBeTruthy();
+  });
+
+  it("calls searchMemories after debounce when query is typed", async () => {
+    const m = makeMemory({ memory_id: "s1", key: "semantic-key" });
+    api.searchMemories.mockResolvedValue({ items: [m], count: 1 });
+
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "semantic" } }),
+    );
+    await waitFor(() => expect(api.searchMemories).toHaveBeenCalledWith("semantic"), {
+      timeout: 1000,
+    });
+  });
+
+  it("renders score badge on search results", async () => {
+    const m = makeMemory({ memory_id: "s2", score: 0.87 });
+    api.searchMemories.mockResolvedValue({ items: [m], count: 1 });
+
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "anything" } }),
+    );
+    await waitFor(() => expect(screen.getByText("87% match")).toBeTruthy(), { timeout: 1000 });
+  });
+
+  it("clears tag filter when search query is typed", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    const tagInput = screen.getByPlaceholderText("Filter by tag");
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+
+    await act(async () => fireEvent.change(tagInput, { target: { value: "mytag" } }));
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "query" } }),
+    );
+
+    expect(tagInput.value).toBe("");
+  });
+
+  it("clears search query when tag filter is typed", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    const tagInput = screen.getByPlaceholderText("Filter by tag");
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "query" } }),
+    );
+    await act(async () => fireEvent.change(tagInput, { target: { value: "mytag" } }));
+
+    expect(searchInput.value).toBe("");
+  });
+
+  it("does not call searchMemories when search is cleared", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "" } }),
+    );
+    // searchMemories should not be called for empty query
+    expect(api.searchMemories).not.toHaveBeenCalled();
+  });
+
+  it("clears search mode when search input is cleared", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+
+    // Type something to enter search mode
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "query" } }),
+    );
+    // Clear it — should exit search mode (isSearchMode = false)
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "" } }),
+    );
+    // Tag filter should still work (list mode re-engaged)
+    await waitFor(() =>
+      expect(api.listMemories).toHaveBeenCalled(),
+    );
+  });
+
+  it("shows error when searchMemories fails", async () => {
+    api.searchMemories.mockRejectedValue(new Error("Search error"));
+
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "bad query" } }),
+    );
+    await waitFor(() => expect(screen.getByText("Search error")).toBeTruthy(), {
+      timeout: 1000,
+    });
   });
 });

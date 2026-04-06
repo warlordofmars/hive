@@ -174,8 +174,9 @@ Tokens are valid for **1 hour**. Use the `refresh_token` to get a new access tok
 | `remember` | Store or update a memory | `key` (str), `value` (str), `tags` (list[str]) |
 | `recall` | Retrieve a memory by key | `key` (str) |
 | `forget` | Delete a memory | `key` (str) |
-| `list_memories` | List all memories with a given tag | `tag` (str) |
+| `list_memories` | List all memories with a given tag | `tag` (str), `limit` (int), `cursor` (str) |
 | `summarize_context` | Synthesize memories on a topic into a summary | `topic` (str) |
+| `search_memories` | Search memories by semantic similarity | `query` (str), `top_k` (int, default 10) |
 
 ---
 

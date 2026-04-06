@@ -21,10 +21,12 @@ from hive.models import (
     Memory,
     MemoryCreate,
     MemoryResponse,
+    MemorySearchResult,
     MemoryUpdate,
     PagedResponse,
 )
 from hive.storage import HiveStorage
+from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
 router = APIRouter(tags=["memories"])
 
@@ -36,6 +38,10 @@ def _storage() -> HiveStorage:
     return HiveStorage()
 
 
+def _vector_store() -> VectorStore:
+    return VectorStore()
+
+
 def _user_filter(claims: dict[str, Any]) -> str | None:
     """Return owner_user_id filter for non-admins; None for admins (see all)."""
     return None if claims.get("role") == "admin" else claims["sub"]
@@ -44,12 +50,35 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
 @router.get("/memories", response_model=PagedResponse)
 async def list_memories(
     tag: str | None = Query(None, description="Filter by tag"),
+    search: str | None = Query(None, description="Semantic search query"),
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX, description="Max items to return"),
     cursor: str | None = Query(None, description="Pagination cursor from previous response"),
     claims: dict[str, Any] = Depends(require_mgmt_user),
     storage: HiveStorage = Depends(_storage),
+    vs: VectorStore = Depends(_vector_store),
 ) -> PagedResponse:
     owner_user_id = _user_filter(claims)
+
+    if search:
+        # Semantic search — top-K, no pagination
+        client_id: str = claims["sub"]
+        try:
+            pairs = vs.search(search, client_id, top_k=min(limit, 50))
+        except VectorIndexNotFoundError:
+            return PagedResponse(items=[], count=0, has_more=False, next_cursor=None)
+        results = storage.hydrate_memory_ids(pairs)
+        if owner_user_id:
+            results = [(m, s) for m, s in results if m.owner_user_id == owner_user_id]
+        return PagedResponse(
+            items=[
+                MemorySearchResult.from_memory_and_score(m, score).model_dump()
+                for m, score in results
+            ],
+            count=len(results),
+            has_more=False,
+            next_cursor=None,
+        )
+
     if tag:
         items, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
         if owner_user_id:

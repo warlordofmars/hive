@@ -626,3 +626,41 @@ class TestOwnerUserIdFiltering:
         storage.put_client(OAuthClient(client_name="C2", owner_user_id="user-2"))
         assert storage.count_clients(owner_user_id="user-1") == 1
         assert storage.count_clients() == 2
+
+
+# ---------------------------------------------------------------------------
+# hydrate_memory_ids
+# ---------------------------------------------------------------------------
+
+
+class TestHydrateMemoryIds:
+    def test_returns_memory_and_score_pairs(self, storage):
+        m = Memory(key="h1", value="v1", owner_client_id="c1")
+        storage.put_memory(m)
+        pairs = [(m.memory_id, 0.95)]
+        result = storage.hydrate_memory_ids(pairs)
+        assert len(result) == 1
+        mem, score = result[0]
+        assert mem.key == "h1"
+        assert score == 0.95
+
+    def test_skips_missing_memory_ids(self, storage):
+        m = Memory(key="h2", value="v2", owner_client_id="c1")
+        storage.put_memory(m)
+        pairs = [("nonexistent-id", 0.8), (m.memory_id, 0.7)]
+        result = storage.hydrate_memory_ids(pairs)
+        assert len(result) == 1
+        assert result[0][1] == 0.7
+
+    def test_returns_empty_for_empty_input(self, storage):
+        assert storage.hydrate_memory_ids([]) == []
+
+    def test_preserves_order(self, storage):
+        m1 = Memory(key="ord-a", value="v", owner_client_id="c")
+        m2 = Memory(key="ord-b", value="v", owner_client_id="c")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        pairs = [(m1.memory_id, 0.9), (m2.memory_id, 0.5)]
+        result = storage.hydrate_memory_ids(pairs)
+        assert result[0][0].key == "ord-a"
+        assert result[1][0].key == "ord-b"

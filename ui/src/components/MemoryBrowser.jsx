@@ -1,5 +1,5 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 
 export default function MemoryBrowser() {
@@ -9,9 +9,12 @@ export default function MemoryBrowser() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [tagFilter, setTagFilter] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchMode, setIsSearchMode] = useState(false);
   const [editing, setEditing] = useState(null); // memory object or null
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ key: "", value: "", tags: "" });
+  const searchDebounceRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -28,9 +31,53 @@ export default function MemoryBrowser() {
     }
   }, [tagFilter]);
 
+  const runSearch = useCallback(async (query) => {
+    setLoading(true);
+    setError("");
+    setNextCursor(null);
+    try {
+      const data = await api.searchMemories(query);
+      setMemories(data.items);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // When tag filter changes, run list (not search)
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!isSearchMode) load();
+  }, [load, isSearchMode]);
+
+  // Debounce search input
+  useEffect(() => {
+    if (!searchQuery) return;
+    clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      runSearch(searchQuery);
+    }, 400);
+    return () => clearTimeout(searchDebounceRef.current);
+  }, [searchQuery, runSearch]);
+
+  function handleTagFilterChange(e) {
+    setTagFilter(e.target.value);
+    if (e.target.value) {
+      setSearchQuery("");
+      setIsSearchMode(false);
+    }
+  }
+
+  function handleSearchQueryChange(e) {
+    const val = e.target.value;
+    setSearchQuery(val);
+    if (val) {
+      setTagFilter("");
+      setIsSearchMode(true);
+    } else {
+      setIsSearchMode(false);
+    }
+  }
 
   async function loadMore() {
     if (!nextCursor) return; /* c8 ignore next */
@@ -112,9 +159,15 @@ export default function MemoryBrowser() {
           <h2 style={{ flex: 1, fontSize: 18 }}>Memories</h2>
           <input
             style={{ width: 180 }}
+            placeholder="Search by meaning…"
+            value={searchQuery}
+            onChange={handleSearchQueryChange}
+          />
+          <input
+            style={{ width: 150 }}
             placeholder="Filter by tag"
             value={tagFilter}
-            onChange={(e) => setTagFilter(e.target.value)}
+            onChange={handleTagFilterChange}
           />
           <button className="primary" onClick={openCreate}>
             + New
@@ -145,8 +198,21 @@ export default function MemoryBrowser() {
                   alignItems: "flex-start",
                 }}
               >
-                <div>
-                  <strong>{m.key}</strong>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <strong>{m.key}</strong>
+                    {m.score !== undefined && (
+                      <span
+                        className="badge"
+                        style={{
+                          background: `hsl(${Math.round(m.score * 120)}, 60%, 88%)`,
+                          color: "#333",
+                        }}
+                      >
+                        {Math.round(m.score * 100)}% match
+                      </span>
+                    )}
+                  </div>
                   <p
                     style={{
                       marginTop: 4,

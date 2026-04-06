@@ -45,6 +45,10 @@ export const api = {
     if (cursor) params.set("cursor", cursor);
     return request("GET", `/api/memories?${params}`);
   },
+  searchMemories: (query, { limit = 50 } = {}) => {
+    const params = new URLSearchParams({ search: query, limit });
+    return request("GET", `/api/memories?${params}`);
+  },
   getMemory: (id) => request("GET", `/api/memories/${id}`),
   createMemory: (body) => request("POST", "/api/memories", body),
   updateMemory: (id, body) => request("PATCH", `/api/memories/${id}`, body),
