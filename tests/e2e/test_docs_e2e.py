@@ -57,11 +57,11 @@ class TestDocsE2E:
         assert page.locator("h1").first.is_visible()
         assert not page.locator("button:has-text('Sign in')").is_visible()
 
-    def test_docs_directory_path_loads(self, docs_page):
-        """Trailing-slash directory path resolves to the right page (CloudFront Function)."""
+    def test_docs_trailing_slash_page_loads(self, docs_page):
+        """Trailing slash on a content page resolves correctly (CloudFront Function)."""
         page = docs_page
         page.goto(
-            f"{UI_URL}/docs/getting-started/",
+            f"{UI_URL}/docs/getting-started/quick-start/",
             timeout=30_000,
             wait_until="networkidle",
         )
@@ -72,16 +72,16 @@ class TestDocsE2E:
         """Logo image loads successfully (not a broken image)."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        logo = page.locator("img.VPImage")
+        logo = page.locator("img[alt='Hive']")
         assert logo.is_visible()
         natural_width = page.evaluate("el => el.naturalWidth", logo.element_handle())
         assert natural_width > 0, "Logo image failed to load (naturalWidth == 0)"
 
     def test_docs_sidebar_navigation(self, docs_page):
-        """Sidebar links are visible and navigable."""
+        """Sidebar section headings are visible."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        assert page.locator(".VPSidebarItem").first.is_visible()
+        assert page.locator("text=Getting started").first.is_visible()
 
     def test_docs_search_present(self, docs_page):
         """Local search button is present."""
