@@ -6,17 +6,20 @@ export default function SetupPanel() {
   const [activeTab, setActiveTab] = useState("code");
   const [copied, setCopied] = useState(false);
 
+  const httpConfig = JSON.stringify(
+    { mcpServers: { hive: { type: "http", url: mcpUrl } } },
+    null,
+    2,
+  );
+  const mrConfig = JSON.stringify(
+    { mcpServers: { hive: { command: "npx", args: ["mcp-remote", mcpUrl] } } },
+    null,
+    2,
+  );
   const configs = {
-    code: JSON.stringify(
-      { mcpServers: { hive: { type: "http", url: mcpUrl } } },
-      null,
-      2,
-    ),
-    desktop: JSON.stringify(
-      { mcpServers: { hive: { command: "npx", args: ["mcp-remote", mcpUrl] } } },
-      null,
-      2,
-    ),
+    code: httpConfig,
+    cursor: httpConfig,
+    desktop: mrConfig,
   };
 
   function handleCopy() {
@@ -51,6 +54,9 @@ export default function SetupPanel() {
           <button style={tabStyle("code")} onClick={() => setActiveTab("code")}>
             Claude Code
           </button>
+          <button style={tabStyle("cursor")} onClick={() => setActiveTab("cursor")}>
+            Cursor
+          </button>
           <button style={tabStyle("desktop")} onClick={() => setActiveTab("desktop")}>
             Claude Desktop
           </button>
@@ -67,6 +73,11 @@ export default function SetupPanel() {
           {activeTab === "code" && (
             <p style={{ margin: "0 0 8px", color: "#555", fontSize: 13 }}>
               Add to <code>~/.claude/settings.json</code>:
+            </p>
+          )}
+          {activeTab === "cursor" && (
+            <p style={{ margin: "0 0 8px", color: "#555", fontSize: 13 }}>
+              Add to <code>~/.cursor/mcp.json</code> (create it if it doesn't exist):
             </p>
           )}
           {activeTab === "desktop" && (
@@ -101,6 +112,8 @@ export default function SetupPanel() {
         <p style={{ color: "#555" }}>
           {activeTab === "code"
             ? "Open Claude Code. The next time you use a Hive memory tool, it will prompt you to authorise access via your browser. Complete the flow and you're done."
+            : activeTab === "cursor"
+            ? "Restart Cursor. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."
             : "Restart Claude Desktop. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."}
         </p>
       </section>
