@@ -612,9 +612,14 @@ class HiveStack(cdk.Stack):
 
             web_acl_arn = web_acl.attr_arn
 
-        # CloudFront Function: rewrite /docs and /docs/<subpath>/ to index.html
-        # S3 doesn't serve directory index files for subdirectory paths, so we
-        # must rewrite bare /docs and trailing-slash paths to their index.html.
+        # CloudFront Function: rewrite clean /docs URLs to the S3 .html files.
+        # VitePress with cleanUrls:true outputs flat .html files (e.g.
+        # getting-started/quick-start.html), not directory index files.
+        # Rules:
+        #   /docs or /docs/          → /docs/index.html
+        #   /docs/<path>/            → /docs/<path>.html  (strip trailing slash)
+        #   /docs/<path> (no ext)    → /docs/<path>.html
+        #   /docs/assets/app.js etc  → pass through (has file extension)
         docs_rewrite_fn = cloudfront.Function(
             self,
             "DocsUrlRewrite",
@@ -623,16 +628,31 @@ class HiveStack(cdk.Stack):
 function handler(event) {
     var request = event.request;
     var uri = request.uri;
-    // /docs → /docs/index.html
-    if (uri === '/docs') {
+
+    if (!uri.startsWith('/docs')) {
+        return request;
+    }
+
+    // Last path segment has a dot — treat as a static asset, pass through.
+    var lastSegment = uri.split('/').pop();
+    if (lastSegment.indexOf('.') !== -1) {
+        return request;
+    }
+
+    // /docs or /docs/ → /docs/index.html
+    if (uri === '/docs' || uri === '/docs/') {
         request.uri = '/docs/index.html';
         return request;
     }
-    // /docs/<subpath>/ → /docs/<subpath>/index.html
-    if (uri.startsWith('/docs/') && uri.endsWith('/')) {
-        request.uri = uri + 'index.html';
+
+    // /docs/<path>/ → /docs/<path>.html  (trailing slash, no extension)
+    if (uri.endsWith('/')) {
+        request.uri = uri.slice(0, -1) + '.html';
         return request;
     }
+
+    // /docs/<path> → /docs/<path>.html
+    request.uri = uri + '.html';
     return request;
 }
 """
