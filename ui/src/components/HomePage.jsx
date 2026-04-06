@@ -48,7 +48,7 @@ export default function HomePage() {
   const navigate = useNavigate();
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", color: "#1a1a2e" }}>
+    <div style={{ fontFamily: "system-ui, sans-serif", color: "var(--text)" }}>
       {/* Nav */}
       <header style={{ background: "#1a1a2e", color: "#fff" }}>
         <div
@@ -156,8 +156,8 @@ export default function HomePage() {
             <div
               key={f.title}
               style={{
-                background: "#fff",
-                border: "1px solid #e8e8e8",
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
                 borderRadius: 12,
                 padding: 28,
                 boxShadow: "0 2px 8px rgba(0,0,0,.04)",
@@ -165,7 +165,7 @@ export default function HomePage() {
             >
               <div style={{ marginBottom: 12 }}><f.icon size={32} color="#e8a020" /></div>
               <h3 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: 8 }}>{f.title}</h3>
-              <p style={{ color: "#555", fontSize: 14, lineHeight: 1.6 }}>{f.body}</p>
+              <p style={{ color: "var(--text-muted)", fontSize: 14, lineHeight: 1.6 }}>{f.body}</p>
             </div>
           ))}
         </div>
@@ -173,7 +173,7 @@ export default function HomePage() {
       </section>
 
       {/* How it works */}
-      <section style={{ background: "#f8f9fa", padding: "80px 32px" }}>
+      <section style={{ background: "var(--surface)", padding: "80px 32px" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <h2
             style={{
@@ -193,8 +193,8 @@ export default function HomePage() {
                     width: 40,
                     height: 40,
                     borderRadius: "50%",
-                    background: "#1a1a2e",
-                    color: "#fff",
+                    background: "var(--accent)",
+                    color: "var(--accent-fg)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -209,7 +209,7 @@ export default function HomePage() {
                   <h3 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: 6 }}>
                     {s.title}
                   </h3>
-                  <p style={{ color: "#555", fontSize: 14, lineHeight: 1.6 }}>{s.body}</p>
+                  <p style={{ color: "var(--text-muted)", fontSize: 14, lineHeight: 1.6 }}>{s.body}</p>
                 </div>
               </div>
             ))}
@@ -218,8 +218,8 @@ export default function HomePage() {
             <button
               onClick={() => navigate("/app")}
               style={{
-                background: "#1a1a2e",
-                color: "#fff",
+                background: "var(--accent)",
+                color: "var(--accent-fg)",
                 border: "none",
                 borderRadius: 8,
                 padding: "14px 36px",
@@ -235,7 +235,7 @@ export default function HomePage() {
       </section>
 
       {/* Footer */}
-      <footer style={{ borderTop: "1px solid #eee" }}>
+      <footer style={{ borderTop: "1px solid var(--border)" }}>
         <div
           style={{
             maxWidth: 1100,
@@ -243,7 +243,7 @@ export default function HomePage() {
             padding: "32px",
             textAlign: "center",
             fontSize: 13,
-            color: "#999",
+            color: "var(--text-muted)",
           }}
         >
           © 2026 Hive. Free to use.
