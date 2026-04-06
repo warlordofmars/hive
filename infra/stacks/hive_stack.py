@@ -633,10 +633,12 @@ function handler(event) {
         return request;
     }
 
-    // /docs/app → redirect to /app (Sign in link from docs nav)
+    // /docs/app → redirect to /app (Sign in link from docs nav).
+    // statusDescription is required; omitting it causes CF to reject the response.
     if (uri === '/docs/app') {
         return {
             statusCode: 302,
+            statusDescription: 'Found',
             headers: { location: { value: '/app' } }
         };
     }
