@@ -31,9 +31,9 @@ def browser_page():
 
         # Navigate to the bypass login endpoint via CloudFront (same origin as
         # the UI) so the mgmt JWT lands in the correct localStorage origin.
-        # HIVE_BYPASS_GOOGLE_AUTH=1 causes /auth/login to issue a mgmt JWT,
-        # write it to localStorage as hive_mgmt_token, and redirect to /.
-        page.goto(f"{UI_URL}/auth/login", timeout=30_000, wait_until="networkidle")
+        # test_email is required — HIVE_BYPASS_GOOGLE_AUTH only triggers the
+        # synthetic path when test_email is explicitly supplied (#140).
+        page.goto(f"{UI_URL}/auth/login?test_email=e2e@example.com", timeout=30_000, wait_until="networkidle")
 
         # Token is now in localStorage. Navigate directly to /app — the
         # HomeRoute would also redirect there, but client-side redirects can
