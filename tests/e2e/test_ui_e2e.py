@@ -103,19 +103,23 @@ async def admin_browser_page():
 
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
+    # Use .start() instead of the context-manager form — async_playwright() as a
+    # context manager creates its own asyncio Runner, which raises when a loop
+    # is already running (pytest-asyncio asyncio_mode=auto keeps one live).
+    p = await async_playwright().start()
+    browser = await p.chromium.launch()
+    page = await browser.new_page()
 
-        await page.goto(
-            f"{UI_URL}/auth/login?test_email={ADMIN_EMAIL}",
-            timeout=30_000,
-            wait_until="networkidle",
-        )
-        await page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
+    await page.goto(
+        f"{UI_URL}/auth/login?test_email={ADMIN_EMAIL}",
+        timeout=30_000,
+        wait_until="networkidle",
+    )
+    await page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
 
-        yield page
-        await browser.close()
+    yield page
+    await browser.close()
+    await p.stop()
 
 
 class TestDashboardE2E:
