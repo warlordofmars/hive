@@ -75,4 +75,11 @@ describe("SetupPanel", () => {
     fireEvent.click(screen.getByText("Claude Desktop"));
     expect(document.body.textContent).toContain("Restart Claude Desktop");
   });
+
+  it("switching back to Claude Code tab restores http config", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Claude Desktop"));
+    fireEvent.click(screen.getByText("Claude Code"));
+    expect(document.body.textContent).toContain('"type": "http"');
+  });
 });
