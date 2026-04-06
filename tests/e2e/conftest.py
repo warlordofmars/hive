@@ -19,7 +19,7 @@ API_URL = os.environ.get("HIVE_API_URL", "")
 ADMIN_EMAIL = os.environ.get("HIVE_ADMIN_EMAIL", "")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 async def live_token() -> str:
     """Issue a fresh access token via DCR + PKCE against the deployed API."""
     if not API_URL:
@@ -113,7 +113,7 @@ def issue_token_sync() -> str:
         return token_resp.json()["access_token"]
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 async def live_admin_token() -> str:
     """Issue a management JWT with admin role via the Google auth bypass.
 
