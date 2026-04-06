@@ -66,20 +66,32 @@ export default function HomePage() {
             <img src="/logo.svg" alt="Hive" style={{ height: 28 }} />
             <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
           </span>
-          <button
-            onClick={() => navigate("/app")}
-            style={{
-              background: "transparent",
-              color: "rgba(255,255,255,.8)",
-              border: "1px solid rgba(255,255,255,.3)",
-              borderRadius: 6,
-              padding: "6px 16px",
-              fontSize: 14,
-              cursor: "pointer",
-            }}
-          >
-            Sign in
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <a
+              href="/docs/"
+              style={{
+                color: "rgba(255,255,255,.75)",
+                fontSize: 14,
+                textDecoration: "none",
+              }}
+            >
+              Docs
+            </a>
+            <button
+              onClick={() => navigate("/app")}
+              style={{
+                background: "transparent",
+                color: "rgba(255,255,255,.8)",
+                border: "1px solid rgba(255,255,255,.3)",
+                borderRadius: 6,
+                padding: "6px 16px",
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              Sign in
+            </button>
+          </div>
         </div>
       </header>
 

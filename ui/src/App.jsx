@@ -115,6 +115,13 @@ function AppShell() {
           ))}
         </nav>
 
+        <a
+          href="/docs/"
+          style={{ fontSize: 13, color: "rgba(255,255,255,.6)", textDecoration: "none" }}
+        >
+          Docs
+        </a>
+
         {userEmail && (
           <span style={{ fontSize: 13, color: "rgba(255,255,255,.7)" }}>{userEmail}</span>
         )}
