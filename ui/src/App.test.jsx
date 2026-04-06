@@ -66,6 +66,11 @@ describe("App routing", () => {
       setItem: (k, v) => { _storage[k] = v; },
       removeItem: (k) => { delete _storage[k]; },
     });
+    vi.stubGlobal("matchMedia", (q) => ({
+      matches: q === "(prefers-color-scheme: dark)" ? false : false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
     vi.stubGlobal("fetch", makeFetch());
   });
 
@@ -110,6 +115,11 @@ describe("AppShell", () => {
       setItem: (k, v) => { _storage[k] = v; },
       removeItem: (k) => { delete _storage[k]; },
     });
+    vi.stubGlobal("matchMedia", (q) => ({
+      matches: q === "(prefers-color-scheme: dark)" ? false : false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
     vi.stubGlobal("fetch", makeFetch());
     _storage["hive_mgmt_token"] = makeToken();
     window.history.pushState({}, "", "/app");
@@ -317,5 +327,20 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     expect(screen.getByText("Memories")).toBeTruthy();
     expect(screen.queryByText(/Hive \d/)).toBeNull();
+  });
+
+  it("renders dark mode toggle button", async () => {
+    await act(async () => render(<App />));
+    const toggle = screen.getByRole("button", { name: /switch to dark mode/i });
+    expect(toggle).toBeTruthy();
+    expect(toggle.textContent).toBe("☾");
+  });
+
+  it("clicking dark mode toggle changes aria-label and icon", async () => {
+    await act(async () => render(<App />));
+    const toggle = screen.getByRole("button", { name: /switch to dark mode/i });
+    fireEvent.click(toggle);
+    const toggled = screen.getByRole("button", { name: /switch to light mode/i });
+    expect(toggled.textContent).toBe("☀");
   });
 });

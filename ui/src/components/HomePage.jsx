@@ -1,25 +1,26 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React from "react";
+import { BrainCircuit, Plug, ShieldCheck, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 const FEATURES = [
   {
-    icon: "🧠",
+    icon: BrainCircuit,
     title: "Persistent memory across sessions",
     body: "Store facts, context, and decisions once. Every Claude session picks up exactly where the last one left off.",
   },
   {
-    icon: "🔗",
+    icon: Plug,
     title: "Works with any MCP client",
     body: "Plug in to Claude Code, Claude Desktop, or any agent that speaks the Model Context Protocol.",
   },
   {
-    icon: "👥",
+    icon: Users,
     title: "Share memory across your team",
     body: "One Hive, many agents. Team members and automated workflows read from the same memory store.",
   },
   {
-    icon: "🔒",
+    icon: ShieldCheck,
     title: "Your data, scoped to you",
     body: "Each user sees only their own memories and clients. Admins get a full view. OAuth 2.1 throughout.",
   },
@@ -156,7 +157,7 @@ export default function HomePage() {
                 boxShadow: "0 2px 8px rgba(0,0,0,.04)",
               }}
             >
-              <div style={{ fontSize: 32, marginBottom: 12 }}>{f.icon}</div>
+              <div style={{ marginBottom: 12 }}><f.icon size={32} color="#e8a020" /></div>
               <h3 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: 8 }}>{f.title}</h3>
               <p style={{ color: "#555", fontSize: 14, lineHeight: 1.6 }}>{f.body}</p>
             </div>

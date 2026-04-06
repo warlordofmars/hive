@@ -2,6 +2,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import { BrainCircuit, Plug, ShieldCheck, Users } from "lucide-react";
 import HomePage from "./HomePage.jsx";
 
 // Wrap in MemoryRouter so useNavigate works in tests
@@ -69,5 +70,14 @@ describe("HomePage", () => {
     fireEvent.click(screen.getByText("Sign in"));
     const ctaButtons = screen.getAllByText(/Get started free/);
     ctaButtons.forEach((btn) => fireEvent.click(btn));
+  });
+
+  it("renders Lucide icons for feature cards", async () => {
+    const { container } = await act(async () => renderInRouter(<HomePage />));
+    // lucide-react renders SVGs with data-testid based on icon name
+    expect(container.querySelector("svg")).toBeTruthy();
+    const svgs = container.querySelectorAll("svg");
+    // 4 feature icons
+    expect(svgs.length).toBeGreaterThanOrEqual(4);
   });
 });
