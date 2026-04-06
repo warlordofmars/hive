@@ -378,4 +378,35 @@ describe("MemoryBrowser", () => {
     // searchMemories should not be called for empty query
     expect(api.searchMemories).not.toHaveBeenCalled();
   });
+
+  it("clears search mode when search input is cleared", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+
+    // Type something to enter search mode
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "query" } }),
+    );
+    // Clear it — should exit search mode (isSearchMode = false)
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "" } }),
+    );
+    // Tag filter should still work (list mode re-engaged)
+    await waitFor(() =>
+      expect(api.listMemories).toHaveBeenCalled(),
+    );
+  });
+
+  it("shows error when searchMemories fails", async () => {
+    api.searchMemories.mockRejectedValue(new Error("Search error"));
+
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () =>
+      fireEvent.change(searchInput, { target: { value: "bad query" } }),
+    );
+    await waitFor(() => expect(screen.getByText("Search error")).toBeTruthy(), {
+      timeout: 1000,
+    });
+  });
 });

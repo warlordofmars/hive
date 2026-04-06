@@ -23,7 +23,7 @@ import boto3
 from hive.logging_config import get_logger
 from hive.models import Memory
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from mypy_boto3_bedrock_runtime import BedrockRuntimeClient
     from mypy_boto3_s3vectors import S3VectorsClient
 
