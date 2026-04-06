@@ -11,9 +11,9 @@ export default defineConfig({
     logo: { src: "/logo.svg", alt: "Hive" },
     siteTitle: "Hive",
     nav: [
-      { text: "Home", link: "https://hive.warlordofmars.net" },
+      { text: "Home", link: "/" },
       { text: "Docs", link: "/docs/" },
-      { text: "App", link: "https://hive.warlordofmars.net/app" },
+      { text: "Sign in", link: "/app" },
     ],
 
     sidebar: [
