@@ -26,26 +26,34 @@ _MIN_ALPHA = 0.6  # channel value 0–1 for rgba text colours
 
 
 @pytest.fixture(scope="module")
-def docs_page():
+def _browser():
+    """Single Playwright browser instance shared across all docs e2e tests.
+
+    Two separate sync_playwright() calls in the same process conflict because
+    each one tries to start its own asyncio event loop and the second raises
+    "Sync API inside asyncio loop" when the first is still active (yielded).
+    """
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
-        yield page
+        yield browser
         browser.close()
 
 
 @pytest.fixture(scope="module")
-def docs_page_mobile():
-    """Separate page at 375×812 (iPhone viewport) for mobile tests."""
-    from playwright.sync_api import sync_playwright
+def docs_page(_browser):
+    page = _browser.new_page()
+    yield page
+    page.close()
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 375, "height": 812})
-        yield page
-        browser.close()
+
+@pytest.fixture(scope="module")
+def docs_page_mobile(_browser):
+    """Page at 375×812 (iPhone viewport) for mobile tests."""
+    page = _browser.new_page(viewport={"width": 375, "height": 812})
+    yield page
+    page.close()
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +276,18 @@ class TestDocsNavbar:
         )
 
     def test_docs_nav_link_click(self, docs_page):
-        """Clicking Docs nav link stays on /docs/ — no double redirect."""
+        """Clicking Docs nav link returns to /docs/ — no double redirect.
+
+        Start from a subpage so that clicking Docs triggers a real navigation
+        (VitePress SPA routing doesn't fire expect_navigation on same-page clicks).
+        """
         page = docs_page
-        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        # Start from a subpage so the Docs click is a real navigation.
+        page.goto(
+            f"{UI_URL}/docs/getting-started/quick-start",
+            timeout=30_000,
+            wait_until="networkidle",
+        )
         docs_link = page.locator(".VPNavBarMenuLink", has_text="Docs")
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible")
@@ -280,19 +297,26 @@ class TestDocsNavbar:
             f"Docs link navigated to {page.url!r} — double prefix detected."
         )
         assert page.url.rstrip("/").endswith("/docs"), (
-            f"Docs link navigated to {page.url!r} — expected to stay at '/docs/'."
+            f"Docs link navigated to {page.url!r} — expected '/docs/'."
         )
 
     def test_home_nav_link_click(self, docs_page):
-        """Clicking Home nav link stays within the site (no broken redirect)."""
+        """Clicking Home nav link stays within the site (no broken redirect).
+
+        Start from a subpage for the same reason as test_docs_nav_link_click.
+        """
         page = docs_page
-        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        page.goto(
+            f"{UI_URL}/docs/getting-started/quick-start",
+            timeout=30_000,
+            wait_until="networkidle",
+        )
         home_link = page.locator(".VPNavBarMenuLink", has_text="Home")
         if not home_link.is_visible():
             pytest.skip("Home nav link not visible")
         with page.expect_navigation(timeout=15_000):
             home_link.click()
-        # Home link (link: '/') gets base prepended → /docs/ (docs home page)
+        # Home link (link: '/') gets base prepended → /docs/ (docs home)
         assert UI_URL in page.url, f"Home link navigated outside the site: {page.url!r}."
 
     def test_signin_nav_link_click(self, docs_page):
