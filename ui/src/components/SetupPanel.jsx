@@ -30,10 +30,11 @@ export default function SetupPanel() {
 
   const tabStyle = (tab) => ({
     padding: "6px 16px",
-    border: "1px solid #d0d0d0",
-    borderBottom: activeTab === tab ? "1px solid #fff" : "1px solid #d0d0d0",
+    border: "1px solid var(--border)",
+    borderBottom: activeTab === tab ? "1px solid var(--bg)" : "1px solid var(--border)",
     borderRadius: "4px 4px 0 0",
-    background: activeTab === tab ? "#fff" : "#f5f5f5",
+    background: activeTab === tab ? "var(--bg)" : "var(--surface)",
+    color: "var(--text)",
     cursor: "pointer",
     marginBottom: -1,
     fontWeight: activeTab === tab ? 600 : 400,
@@ -45,7 +46,7 @@ export default function SetupPanel() {
 
       <section style={{ marginBottom: 32 }}>
         <h3 style={{ marginBottom: 12 }}>Step 1 — Connect your MCP client</h3>
-        <p style={{ marginBottom: 12, color: "#555" }}>
+        <p style={{ marginBottom: 12, color: "var(--text-muted)" }}>
           Add Hive to your client config. OAuth is handled automatically on first use — no token
           needed.
         </p>
@@ -64,24 +65,24 @@ export default function SetupPanel() {
 
         <div
           style={{
-            border: "1px solid #d0d0d0",
+            border: "1px solid var(--border)",
             borderRadius: "0 4px 4px 4px",
             padding: "12px 16px",
-            background: "#fff",
+            background: "var(--bg)",
           }}
         >
           {activeTab === "code" && (
-            <p style={{ margin: "0 0 8px", color: "#555", fontSize: 13 }}>
+            <p style={{ margin: "0 0 8px", color: "var(--text-muted)", fontSize: 13 }}>
               Add to <code>~/.claude/settings.json</code>:
             </p>
           )}
           {activeTab === "cursor" && (
-            <p style={{ margin: "0 0 8px", color: "#555", fontSize: 13 }}>
+            <p style={{ margin: "0 0 8px", color: "var(--text-muted)", fontSize: 13 }}>
               Add to <code>~/.cursor/mcp.json</code> (create it if it doesn't exist):
             </p>
           )}
           {activeTab === "desktop" && (
-            <p style={{ margin: "0 0 8px", color: "#555", fontSize: 13 }}>
+            <p style={{ margin: "0 0 8px", color: "var(--text-muted)", fontSize: 13 }}>
               Add to{" "}
               <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>.
               Requires <a href="https://github.com/geelen/mcp-remote" target="_blank" rel="noreferrer">mcp-remote</a> (
@@ -90,13 +91,14 @@ export default function SetupPanel() {
           )}
           <pre
             style={{
-              background: "#f5f5f5",
-              border: "1px solid #e0e0e0",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
               borderRadius: 6,
               padding: "12px 16px",
               fontSize: 13,
               overflowX: "auto",
               margin: 0,
+              color: "var(--text)",
             }}
           >
             {configs[activeTab]}
@@ -109,7 +111,7 @@ export default function SetupPanel() {
 
       <section>
         <h3 style={{ marginBottom: 12 }}>Step 2 — Authorise</h3>
-        <p style={{ color: "#555" }}>
+        <p style={{ color: "var(--text-muted)" }}>
           {activeTab === "code"
             ? "Open Claude Code. The next time you use a Hive memory tool, it will prompt you to authorise access via your browser. Complete the flow and you're done."
             : activeTab === "cursor"
