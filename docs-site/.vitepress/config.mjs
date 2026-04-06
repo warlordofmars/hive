@@ -8,7 +8,7 @@ export default defineConfig({
   head: [["link", { rel: "icon", type: "image/svg+xml", href: "/docs/favicon.svg" }]],
 
   themeConfig: {
-    logo: { src: "/docs/logo.svg", alt: "Hive" },
+    logo: { src: "/logo.svg", alt: "Hive" },
     siteTitle: "Hive",
     nav: [
       { text: "Home", link: "https://hive.warlordofmars.net" },
