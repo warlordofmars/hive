@@ -12,7 +12,7 @@ export default defineConfig({
     siteTitle: "Hive",
     nav: [
       { text: "Home", link: "/" },
-      { text: "Docs", link: "/docs/" },
+      { text: "Docs", link: "/" },
       { text: "Sign in", link: "/app" },
     ],
 

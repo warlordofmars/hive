@@ -16,6 +16,10 @@
   --vp-button-brand-active-border: transparent;
   --vp-button-brand-active-text: #fff;
   --vp-button-brand-active-bg: #d4891a;
+
+  /* Override nav background variable used by VitePress */
+  --vp-nav-bg-color: #1a1a2e;
+  --vp-nav-screen-bg-color: #1a1a2e;
 }
 
 .dark {
@@ -23,23 +27,57 @@
   --vp-c-brand-2: #e8a020;
   --vp-c-brand-3: #cc8010;
   --vp-c-brand-soft: rgba(245, 166, 35, 0.16);
+
+  --vp-nav-bg-color: #1a1a2e;
+  --vp-nav-screen-bg-color: #1a1a2e;
 }
 
 /* ============================================================
    Navbar — always dark navy (#1a1a2e), matching marketing site
+
+   VitePress navbar internals (1.6.x):
+   - Background is on .VPNavBar directly (not ::before)
+   - On desktop (>=960px), .VPNavBar:not(.home) becomes transparent,
+     and only .content-body gets var(--vp-nav-bg-color)
+   - .has-sidebar pages need .content-body overridden separately
+   - .home.top is transparent by design (hero shows through)
    ============================================================ */
-.VPNavBar,
-.VPNavBar.has-sidebar,
-.VPNavBar.fill {
+
+/* Base — covers mobile and all initial states */
+.VPNavBar {
   background-color: #1a1a2e !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
-/* Blur effect on scroll should also be dark */
-.VPNavBar::before {
+/* Explicitly cover every dynamic class combination */
+.VPNavBar.home,
+.VPNavBar.has-sidebar,
+.VPNavBar.home.top,
+.VPNavBar.screen-open {
   background-color: #1a1a2e !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
+/* Desktop — VitePress overrides to transparent; re-apply dark navy */
+@media (min-width: 960px) {
+  .VPNavBar,
+  .VPNavBar:not(.home),
+  .VPNavBar:not(.has-sidebar):not(.home.top),
+  .VPNavBar.home.top {
+    background-color: #1a1a2e !important;
+  }
+
+  /* content-body is the right-side container on desktop */
+  .VPNavBar .content-body {
+    background-color: #1a1a2e !important;
+  }
+
+  .VPNavBar:not(.has-sidebar):not(.home.top) .content-body {
+    background-color: #1a1a2e !important;
+  }
+}
+
+/* Navbar text and links */
 .VPNavBarTitle .title {
   color: #fff !important;
 }
