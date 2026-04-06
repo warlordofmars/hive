@@ -64,10 +64,12 @@ async def mgmt_login(request: Request) -> RedirectResponse:
     """Redirect the management UI user to Google for authentication.
 
     In HIVE_BYPASS_GOOGLE_AUTH mode (non-prod), issue a synthetic JWT directly
-    for the test email so e2e tests can run without a real Google account.
+    when a test_email query parameter is provided, so e2e tests can run without
+    a real Google account.  Omitting test_email falls through to the real Google
+    OAuth flow, allowing developers to log in with their actual identity in dev.
     """
-    if _BYPASS:
-        test_email = request.query_params.get("test_email", "test@example.com")
+    test_email = request.query_params.get("test_email")
+    if _BYPASS and test_email:
         storage = HiveStorage()
         user = _upsert_user(storage, test_email, test_email.split("@")[0], test_email)
         token = issue_mgmt_jwt(user)
