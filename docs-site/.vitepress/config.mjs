@@ -10,8 +10,10 @@ export default defineConfig({
   themeConfig: {
     logo: { src: "/logo.svg", alt: "Hive" },
     siteTitle: "Hive",
+    // logoLink is used directly (no withBase() applied), so "/" goes to the
+    // marketing page root, not /docs/.
+    logoLink: "/",
     nav: [
-      { text: "Home", link: "/" },
       { text: "Docs", link: "/" },
       { text: "Sign in", link: "/app" },
     ],
