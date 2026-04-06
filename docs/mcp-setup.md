@@ -1,75 +1,88 @@
 # Connecting to Hive via MCP
 
-Hive exposes a standard MCP server over Streamable HTTP. Any MCP-compatible client can connect to it with a Bearer token.
+Hive exposes a standard MCP server over Streamable HTTP at `https://hive.warlordofmars.net/mcp`.
 
-## Prerequisites
-
-You need two things before connecting:
-
-1. **MCP URL** — the URL of your Hive MCP Lambda (ends in `/mcp`)
-2. **Access token** — a valid OAuth Bearer token
-
-### Getting an access token
-
-Tokens are issued via the OAuth 2.1 authorization code flow (PKCE required). The easiest way to get one is through the [Admin UI](admin-ui.md#getting-a-token). Alternatively, use the CLI flow below.
-
-#### CLI token issuance
-
-```bash
-# 1. Register a client
-curl -s -X POST https://<api-url>/oauth/register \
-  -H "Content-Type: application/json" \
-  -d '{"client_name": "My Agent", "redirect_uris": ["http://localhost/cb"]}' \
-  | jq .
-
-# Save client_id from the response
-
-# 2. Generate PKCE verifier + challenge
-VERIFIER=$(python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode())")
-CHALLENGE=$(python3 -c "import base64,hashlib,sys; v=sys.argv[1].encode(); print(base64.urlsafe_b64encode(hashlib.sha256(v).digest()).rstrip(b'=').decode())" "$VERIFIER")
-
-# 3. Get authorization code
-curl -s -G https://<api-url>/oauth/authorize \
-  --data-urlencode "response_type=code" \
-  --data-urlencode "client_id=<client-id>" \
-  --data-urlencode "redirect_uri=http://localhost/cb" \
-  --data-urlencode "code_challenge=$CHALLENGE" \
-  --data-urlencode "code_challenge_method=S256" \
-  -D - | grep location
-
-# Extract `code` from the redirect URL
-
-# 4. Exchange code for token
-curl -s -X POST https://<api-url>/oauth/token \
-  -d "grant_type=authorization_code" \
-  -d "code=<code>" \
-  -d "redirect_uri=http://localhost/cb" \
-  -d "client_id=<client-id>" \
-  -d "code_verifier=$VERIFIER"
-```
-
-Tokens are valid for **1 hour**. Use the `refresh_token` from the response to get a new access token without re-authenticating.
+Authentication uses OAuth 2.1 with Dynamic Client Registration (DCR) — supported MCP clients handle the full auth flow automatically. You never need to manually register a client or obtain a token.
 
 ---
 
-## Claude Desktop
+## Claude Code
 
-Add Hive to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Claude Code supports HTTP MCP servers natively with built-in OAuth 2.1 + DCR.
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
     "hive": {
-      "url": "https://<your-mcp-url>/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-access-token>"
-      }
+      "type": "http",
+      "url": "https://hive.warlordofmars.net/mcp"
     }
   }
 }
 ```
 
-Restart Claude Desktop. You should see "hive" appear in the MCP servers list with five tools: `remember`, `recall`, `forget`, `list_memories`, `summarize_context`.
+On first use Claude Code will open a browser window to complete the OAuth flow. After authorising, the token is stored and refreshed automatically.
+
+---
+
+## Claude Desktop
+
+Claude Desktop doesn't support HTTP MCP servers directly. Use [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy — it handles DCR and the OAuth flow automatically.
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "hive": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://hive.warlordofmars.net/mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. On first use `mcp-remote` will open a browser window to complete the OAuth flow.
+
+---
+
+## Cursor
+
+Cursor supports HTTP MCP servers natively with built-in OAuth 2.1 + DCR — the same config format as Claude Code.
+
+Add to `~/.cursor/mcp.json` (create the file if it doesn't exist):
+
+```json
+{
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "https://hive.warlordofmars.net/mcp"
+    }
+  }
+}
+```
+
+Restart Cursor. On first use it will open a browser window to complete the OAuth flow.
+
+---
+
+## Continue
+
+Continue supports MCP servers via `mcp-remote`. Add to `.continue/config.yaml` in your project or home directory:
+
+```yaml
+mcpServers:
+  - name: hive
+    command: npx
+    args:
+      - mcp-remote
+      - https://hive.warlordofmars.net/mcp
+```
+
+On first use `mcp-remote` will open a browser window to complete the OAuth flow.
 
 ---
 
@@ -78,12 +91,15 @@ Restart Claude Desktop. You should see "hive" appear in the MCP servers list wit
 In your claude.ai account settings, navigate to **Integrations → Add MCP server**:
 
 - **Name:** Hive
-- **URL:** `https://<your-mcp-url>/mcp`
-- **Auth header:** `Authorization: Bearer <your-access-token>`
+- **URL:** `https://hive.warlordofmars.net/mcp`
+
+claude.ai will prompt you to authorise via OAuth on first use.
 
 ---
 
 ## Claude SDK / custom agents
+
+The Claude SDK does not perform DCR or OAuth automatically — you need a pre-issued Bearer token.
 
 ```python
 import anthropic
@@ -96,7 +112,7 @@ response = client.beta.messages.create(
     mcp_servers=[
         {
             "type": "url",
-            "url": "https://<your-mcp-url>/mcp",
+            "url": "https://hive.warlordofmars.net/mcp",
             "name": "hive",
             "authorization_token": "<your-access-token>",
         }
@@ -106,40 +122,60 @@ response = client.beta.messages.create(
 )
 ```
 
+To obtain a token manually, use the [CLI flow](#manual-token-issuance) below or the management UI.
+
+---
+
+## Manual token issuance
+
+Only needed for the Claude SDK or custom agents — Desktop, Code, and claude.ai handle this automatically.
+
+```bash
+# 1. Register a client
+curl -s -X POST https://hive.warlordofmars.net/oauth/register \
+  -H "Content-Type: application/json" \
+  -d '{"client_name": "My Agent", "redirect_uris": ["http://localhost/cb"]}' \
+  | jq .
+
+# Save client_id from the response
+
+# 2. Generate PKCE verifier + challenge
+VERIFIER=$(python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode())")
+CHALLENGE=$(python3 -c "import base64,hashlib,sys; v=sys.argv[1].encode(); print(base64.urlsafe_b64encode(hashlib.sha256(v).digest()).rstrip(b'=').decode())" "$VERIFIER")
+
+# 3. Get authorization code
+curl -s -G https://hive.warlordofmars.net/oauth/authorize \
+  --data-urlencode "response_type=code" \
+  --data-urlencode "client_id=<client-id>" \
+  --data-urlencode "redirect_uri=http://localhost/cb" \
+  --data-urlencode "code_challenge=$CHALLENGE" \
+  --data-urlencode "code_challenge_method=S256" \
+  -D - | grep location
+
+# Extract `code` from the redirect URL
+
+# 4. Exchange code for token
+curl -s -X POST https://hive.warlordofmars.net/oauth/token \
+  -d "grant_type=authorization_code" \
+  -d "code=<code>" \
+  -d "redirect_uri=http://localhost/cb" \
+  -d "client_id=<client-id>" \
+  -d "code_verifier=$VERIFIER"
+```
+
+Tokens are valid for **1 hour**. Use the `refresh_token` to get a new access token without re-authenticating.
+
 ---
 
 ## Available MCP tools
 
-Once connected, Claude has access to these tools:
-
 | Tool | Description | Parameters |
-|---|---|---|
+| --- | --- | --- |
 | `remember` | Store or update a memory | `key` (str), `value` (str), `tags` (list[str]) |
 | `recall` | Retrieve a memory by key | `key` (str) |
 | `forget` | Delete a memory | `key` (str) |
 | `list_memories` | List all memories with a given tag | `tag` (str) |
 | `summarize_context` | Synthesize memories on a topic into a summary | `topic` (str) |
-
-### Usage examples
-
-```
-User: Remember that our API rate limit is 1000 req/min.
-
-Claude: [calls remember(key="api-rate-limit", value="1000 req/min", tags=["api", "limits"])]
-        Stored memory 'api-rate-limit'.
-
-User: What's our API rate limit?
-
-Claude: [calls recall(key="api-rate-limit")]
-        Your API rate limit is 1000 req/min.
-
-User: Summarize everything we know about our API.
-
-Claude: [calls summarize_context(topic="api")]
-        ## Memories tagged 'api'
-        **api-rate-limit**: 1000 req/min
-        ...
-```
 
 ---
 
@@ -157,8 +193,8 @@ list_memories(tag="project")  # → all project memories across all agents
 
 ## Token management
 
-- Tokens expire after **1 hour**
+- Tokens expire after **1 hour** — Desktop, Code, and claude.ai refresh automatically
 - Each OAuth client gets its own tokens — revoke one client without affecting others
-- To refresh: `POST /oauth/token` with `grant_type=refresh_token&refresh_token=<token>`
+- To refresh manually: `POST /oauth/token` with `grant_type=refresh_token&refresh_token=<token>`
 - To revoke: `POST /oauth/revoke` with `token=<token>`
-- Manage clients via the [Admin UI](admin-ui.md) or the [API](api-reference.md#clients)
+- Manage clients via the [management UI](admin-ui.md) or the [API](api-reference.md#clients)

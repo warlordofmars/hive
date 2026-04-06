@@ -11,6 +11,7 @@ import LoginPage from "./components/LoginPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import SetupPanel from "./components/SetupPanel.jsx";
 import UsersPanel from "./components/UsersPanel.jsx";
+import { useTheme } from "./hooks/useTheme.js";
 
 const BASE_TABS = [
   { id: "memories", label: "Memories" },
@@ -47,6 +48,7 @@ function AppShell() {
   const [tab, setTab] = useState("memories");
   const [version, setVersion] = useState(null);
   const navigate = useNavigate();
+  const { theme, toggle } = useTheme();
 
   const token = localStorage.getItem("hive_mgmt_token") ?? "";
 
@@ -89,9 +91,10 @@ function AppShell() {
       >
         <span
           onClick={() => navigate("/")}
-          style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1, cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
         >
-          Hive
+          <img src="/logo.svg" alt="Hive" style={{ width: 28, height: 28 }} />
+          <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
         </span>
 
         <nav style={{ display: "flex", gap: 4, flex: 1 }}>
@@ -130,6 +133,22 @@ function AppShell() {
         >
           Sign out
         </button>
+
+        <button
+          onClick={toggle}
+          style={{
+            background: "transparent",
+            color: "rgba(255,255,255,.7)",
+            border: "1px solid rgba(255,255,255,.3)",
+            borderRadius: 6,
+            padding: "5px 10px",
+            fontSize: 16,
+            cursor: "pointer",
+          }}
+          aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === "dark" ? "☀" : "☾"}
+        </button>
       </header>
 
       <main style={{ flex: 1, padding: 24, maxWidth: 1100, margin: "0 auto", width: "100%" }}>
@@ -167,6 +186,7 @@ function HomeRoute() {
 }
 
 export default function App() {
+  useTheme(); // apply data-theme to <html> for all routes
   return (
     <BrowserRouter>
       <Routes>

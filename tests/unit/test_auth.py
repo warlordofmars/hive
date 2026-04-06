@@ -1383,6 +1383,21 @@ class TestMgmtAuthRoutes:
         assert resp.status_code == 200
         assert "hive_mgmt_token" in resp.text
 
+    def test_login_bypass_without_test_email_redirects_to_google(self, mgmt_client):
+        """In bypass mode, /auth/login without test_email falls through to Google."""
+        from unittest.mock import patch
+
+        with (
+            patch("hive.auth.mgmt_auth._BYPASS", True),
+            patch(
+                "hive.auth.mgmt_auth.google_authorization_url",
+                return_value="https://accounts.google.com/auth?state=x",
+            ),
+        ):
+            resp = mgmt_client.get("/auth/login")
+        assert resp.status_code == 302
+        assert "accounts.google.com" in resp.headers["location"]
+
     def test_login_redirects_to_google(self, mgmt_client):
         """Without bypass, /auth/login redirects to Google."""
         from unittest.mock import patch

@@ -2,6 +2,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import { BrainCircuit, Plug, ShieldCheck, Users } from "lucide-react";
 import HomePage from "./HomePage.jsx";
 
 // Wrap in MemoryRouter so useNavigate works in tests
@@ -47,6 +48,15 @@ describe("HomePage", () => {
     expect(screen.getByText(/Start remembering/)).toBeTruthy();
   });
 
+  it("renders the logo and wordmark in the nav header", async () => {
+    const { container } = await act(async () => renderInRouter(<HomePage />));
+    const logo = container.querySelector('img[alt="Hive"]');
+    expect(logo).toBeTruthy();
+    expect(logo.getAttribute("src")).toBe("/logo.svg");
+    // "Hive" wordmark text appears alongside logo
+    expect(screen.getAllByText("Hive").length).toBeGreaterThanOrEqual(1);
+  });
+
   it("renders the nav Sign in button", async () => {
     await act(async () => renderInRouter(<HomePage />));
     expect(screen.getByText("Sign in")).toBeTruthy();
@@ -69,5 +79,14 @@ describe("HomePage", () => {
     fireEvent.click(screen.getByText("Sign in"));
     const ctaButtons = screen.getAllByText(/Get started free/);
     ctaButtons.forEach((btn) => fireEvent.click(btn));
+  });
+
+  it("renders Lucide icons for feature cards", async () => {
+    const { container } = await act(async () => renderInRouter(<HomePage />));
+    // lucide-react renders SVGs with data-testid based on icon name
+    expect(container.querySelector("svg")).toBeTruthy();
+    const svgs = container.querySelectorAll("svg");
+    // 4 feature icons
+    expect(svgs.length).toBeGreaterThanOrEqual(4);
   });
 });

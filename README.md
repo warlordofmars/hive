@@ -29,39 +29,48 @@
 <!-- MCP -->
 [![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet)](https://modelcontextprotocol.io/)
 
-Shared persistent memory for Claude agents — free hosted service, no AWS account required.
+Shared persistent memory for AI agents — works with any MCP-compatible client. Free hosted service, no AWS account required.
 
-Hive is an MCP server that gives Claude agents durable, shared memory across conversations. Connect any number of Claude clients, store and retrieve memories by key or tag, and manage everything through a web UI.
+Hive is an MCP server that gives AI agents durable, shared memory across conversations. Connect any MCP-compatible client — Claude Code, Claude Desktop, Cursor, Continue, or custom agents — store and retrieve memories by key or tag, and manage everything through a web UI.
 
 **Hosted at [hive.warlordofmars.net](https://hive.warlordofmars.net) — sign in with Google, no setup required.**
 
 ## Getting started
 
 1. **Sign in** at [hive.warlordofmars.net](https://hive.warlordofmars.net) with your Google account
-2. **Register a client** in the management UI (OAuth Clients tab → Register Client)
-3. **Get a token** by completing the OAuth flow for your new client
-4. **Connect Claude** using the MCP config below
+2. **Connect your MCP client** using the config for your client below — OAuth is handled automatically on first use
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+**Claude Code** (`~/.claude/settings.json`) / **Cursor** (`~/.cursor/mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "hive": {
-      "url": "https://hive.warlordofmars.net/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-token>"
-      }
+      "type": "http",
+      "url": "https://hive.warlordofmars.net/mcp"
     }
   }
 }
 ```
 
-For detailed setup instructions see [docs/mcp-setup.md](docs/mcp-setup.md).
+**Claude Desktop / any stdio-based client** — use [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy:
+
+```json
+{
+  "mcpServers": {
+    "hive": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://hive.warlordofmars.net/mcp"]
+    }
+  }
+}
+```
+
+OAuth is handled automatically on first use for all of the above. For detailed setup instructions see [docs/mcp-setup.md](docs/mcp-setup.md).
 
 ## What it does
 
-Claude agents are stateless — every new conversation starts blank. Hive gives them a persistent, shared memory store:
+AI agents are stateless — every new conversation starts blank. Hive gives them a persistent, shared memory store:
 
 | Tool | Description |
 |---|---|
@@ -78,7 +87,7 @@ Multiple agents or team members connect with their own OAuth clients, so you can
 Hive is a serverless, AWS-native stack deployed on Lambda + DynamoDB behind CloudFront:
 
 ```
-Claude (MCP client)
+MCP client (Claude Code, Cursor, …)
       │  MCP / Streamable HTTP
       ▼
 ┌──────────────────────────────────────────────┐
@@ -113,7 +122,7 @@ Claude (MCP client)
 
 | Doc | Description |
 |---|---|
-| [docs/mcp-setup.md](docs/mcp-setup.md) | Connecting Claude Desktop, claude.ai, and SDK to Hive |
+| [docs/mcp-setup.md](docs/mcp-setup.md) | Connecting MCP clients (Claude Code, Claude Desktop, Cursor, and more) to Hive |
 | [docs/admin-ui.md](docs/admin-ui.md) | Using the management UI |
 | [docs/api-reference.md](docs/api-reference.md) | REST API reference |
 | [docs/oauth.md](docs/oauth.md) | OAuth 2.1 implementation details |

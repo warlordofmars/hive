@@ -99,6 +99,7 @@ jobs:
           ignore-unfixed: true
           scanners: vuln
           trivyignores: .trivyignore
+          limit-severities-for-sarif: "true"
 
       - name: Upload Trivy dependency results to GitHub Security
         if: always()
