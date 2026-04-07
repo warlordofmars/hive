@@ -4,6 +4,23 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.15.0 — 2026-04-07
+
+### Added
+
+- VitePress user-facing documentation site hosted at `/docs` (#201)
+- CloudFront routing for `/docs/*` with clean URL rewriting — VitePress `cleanUrls` output served correctly without trailing-slash issues (#201, #204, #205)
+- Docs site themed to match marketing site: dark navy navbar, orange accent, Hive logo/favicon (#203, #207, #220)
+- Docs navbar with Docs and Sign in links rendered as plain `<a>` elements (bypasses Vue Router so navigation works correctly across site boundaries) (#209, #210, #213, #214, #221, #222)
+- `/docs` and `/docs/` redirect to `what-is-hive` first doc page (#215)
+- Playwright e2e test suite for docs site: routing, navbar appearance, nav link clicks, logo/Sign in navigation, mobile hamburger (#204, #209, #210, #211, #213, #214, #221, #222)
+
+### Fixed
+
+- Dark mode toggle and GitHub icon removed from docs navbar (#223, #224)
+- Logo navigates to marketing page root (Vue Router SPA interception bypassed) (#213)
+- Sign in button positioned at far right of navbar next to Docs link (#222)
+
 ## v0.14.0 — 2026-04-06
 
 ### Added
