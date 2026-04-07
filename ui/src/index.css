@@ -1,5 +1,20 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Brand colour tokens — match VitePress docs theme exactly
+   ============================================================ */
+@theme {
+  /* Orange — #e8a020 primary, matching docs site --vp-c-brand-1 */
+  --color-brand:       #e8a020;
+  --color-brand-light: #f5a623;
+  --color-brand-dark:  #d4891a;
+
+  /* Navy — #1a1a2e, matching docs site navbar */
+  --color-navy:      #1a1a2e;
+  --color-navy-mid:  #16213e;
+  --color-navy-deep: #0f3460;
+}
+
 :root {
   --bg: #ffffff;
   --surface: #f9f9f9;
