@@ -89,15 +89,18 @@ def _parse_rgb(css: str) -> tuple[int, int, int, float]:
 
 
 class TestDocsRouting:
-    def test_docs_home_loads(self, docs_page):
-        """GET /docs/ returns the VitePress home page, not the React app."""
+    def test_docs_home_redirects(self, docs_page):
+        """/docs/ redirects to the What is Hive? page (no separate landing page)."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        assert page.locator("text=Hive").first.is_visible()
+        assert page.url.rstrip("/").endswith("/docs/getting-started/what-is-hive"), (
+            f"/docs/ should redirect to what-is-hive, got {page.url!r}"
+        )
+        assert page.locator("h1").first.is_visible()
         assert not page.locator("button:has-text('Sign in')").is_visible()
 
     def test_docs_home_title(self, docs_page):
-        """Page title contains 'Hive'."""
+        """Page title contains 'Hive' after redirect."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
         assert "Hive" in page.title()
@@ -178,13 +181,13 @@ class TestDocsNavbar:
         )
 
     def test_navbar_dark_on_home_page(self, docs_page):
-        """Navbar background is dark navy on the home page."""
+        """Navbar background is dark navy when navigating via /docs/ (redirects to sidebar page)."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
         bg = _bg(page, ".VPNavBar")
         assert bg == _NAVBAR_BG, (
-            f"Expected navbar bg {_NAVBAR_BG!r} on home page, got {bg!r}. "
-            "Check .VPNavBar.home.top CSS override."
+            f"Expected navbar bg {_NAVBAR_BG!r}, got {bg!r}. "
+            "Check .VPNavBar and .VPNavBar.has-sidebar CSS overrides."
         )
 
     def test_navbar_dark_after_scroll(self, docs_page):
