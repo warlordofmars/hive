@@ -206,6 +206,36 @@ class TestDocsNavbar:
             "Check .VPNavBar:not(.home) desktop media-query override."
         )
 
+    def test_logo_wordmark_matches_marketing(self, docs_page):
+        """Logo wordmark font matches the marketing site header: 700 weight, 20px, 1px spacing."""
+        page = docs_page
+        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        title = page.locator(".VPNavBarTitle .title")
+        el = title.element_handle()
+
+        font_weight = page.evaluate("el => window.getComputedStyle(el).fontWeight", el)
+        assert font_weight == "700", (
+            f"Logo wordmark font-weight {font_weight!r} — expected '700' to match marketing site."
+        )
+
+        font_size = page.evaluate("el => window.getComputedStyle(el).fontSize", el)
+        assert font_size == "20px", (
+            f"Logo wordmark font-size {font_size!r} — expected '20px' to match marketing site."
+        )
+
+        letter_spacing = page.evaluate("el => window.getComputedStyle(el).letterSpacing", el)
+        assert letter_spacing == "1px", (
+            f"Logo wordmark letter-spacing {letter_spacing!r} — expected '1px'."
+        )
+
+        logo_img = page.locator(".VPNavBarTitle .logo")
+        if logo_img.is_visible():
+            el2 = logo_img.element_handle()
+            logo_height = page.evaluate("el => window.getComputedStyle(el).height", el2)
+            assert logo_height == "28px", (
+                f"Logo image height {logo_height!r} — expected '28px' to match marketing site."
+            )
+
     def test_navbar_title_is_light(self, docs_page):
         """Site title text is light (readable on dark navbar)."""
         page = docs_page
