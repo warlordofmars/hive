@@ -325,10 +325,11 @@ class TestDocsNavbar:
         )
 
     def test_signin_nav_link_click(self, docs_page):
-        """Clicking Sign in nav link loads the React login page.
+        """Clicking Sign in nav link loads the React login page at /app.
 
-        The CloudFront Function redirects /docs/app → /app (302) so the user
-        lands on the correct sign-in page, not a 404.
+        VitePress's Vue Router would intercept href='/docs/app' as a client-side
+        route. The theme's enhanceApp override intercepts the click and calls
+        window.location.href='/app' directly to force a real page load.
         """
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
@@ -338,10 +339,9 @@ class TestDocsNavbar:
         with page.expect_navigation(timeout=15_000):
             signin_link.click()
         # Wait for the React app to fully mount — VPNavBar must be gone
-        page.locator(".VPNavBar").wait_for(state="hidden", timeout=10_000)
+        page.locator(".VPNavBar").wait_for(state="hidden", timeout=15_000)
         assert page.url.rstrip("/").endswith("/app"), (
-            f"Sign in link navigated to {page.url!r} — expected URL ending in '/app'. "
-            "Check CloudFront Function redirect: /docs/app → /app."
+            f"Sign in link navigated to {page.url!r} — expected URL ending in '/app'."
         )
 
     def test_navbar_hamburger_visible_mobile(self, docs_page_mobile):
