@@ -306,23 +306,22 @@ class TestDocsNavbar:
         )
 
     def test_logo_click_navigates_to_marketing(self, docs_page):
-        """Clicking the Hive logo navigates to the marketing page root.
+        """Clicking the Hive logo performs a full page navigation to the marketing root.
 
-        logoLink: '/' is used directly by VitePress (no withBase() applied),
-        so href='/' goes to the marketing site, not /docs/.
+        VitePress's Vue Router would intercept href='/' as a client-side SPA
+        navigation, keeping the user on /docs/. The theme's enhanceApp override
+        intercepts the click in the capture phase and calls window.location.href='/'
+        to force a real page load of the marketing site instead.
         """
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
         logo = page.locator(".VPNavBarTitle .title")
         with page.expect_navigation(timeout=15_000):
             logo.click()
-        page.wait_for_load_state("networkidle", timeout=15_000)
+        # Wait for the React app to fully mount — VPNavBar must be gone
+        page.locator(".VPNavBar").wait_for(state="hidden", timeout=10_000)
         assert page.url.rstrip("/") == UI_URL.rstrip("/"), (
             f"Logo click navigated to {page.url!r} — expected marketing page '{UI_URL}'."
-        )
-        # Marketing page has the React app shell — no VitePress elements
-        assert not page.locator(".VPNavBar").is_visible(), (
-            "VitePress navbar still visible after logo click — still on docs page."
         )
 
     def test_signin_nav_link_click(self, docs_page):
@@ -338,14 +337,11 @@ class TestDocsNavbar:
             pytest.skip("Sign in nav link not visible")
         with page.expect_navigation(timeout=15_000):
             signin_link.click()
-        page.wait_for_load_state("networkidle", timeout=15_000)
+        # Wait for the React app to fully mount — VPNavBar must be gone
+        page.locator(".VPNavBar").wait_for(state="hidden", timeout=10_000)
         assert page.url.rstrip("/").endswith("/app"), (
             f"Sign in link navigated to {page.url!r} — expected URL ending in '/app'. "
             "Check CloudFront Function redirect: /docs/app → /app."
-        )
-        # The login page must be visible, not a 404 or docs page
-        assert not page.locator(".VPNavBar").is_visible(), (
-            "VitePress navbar visible after Sign in click — still on docs page."
         )
 
     def test_navbar_hamburger_visible_mobile(self, docs_page_mobile):
