@@ -2,6 +2,7 @@
 import React from "react";
 import { BrainCircuit, Plug, ShieldCheck, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { Button } from "@/components/ui/button";
 
 const FEATURES = [
   {
@@ -48,216 +49,103 @@ export default function HomePage() {
   const navigate = useNavigate();
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", color: "var(--text)" }}>
+    <div className="font-[system-ui,sans-serif] text-[var(--text)]">
       {/* Nav */}
-      <header style={{ background: "#1a1a2e", color: "#fff" }}>
-        <div
-          style={{
-            maxWidth: 1100,
-            margin: "0 auto",
-            padding: "0 32px",
-            height: 56,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <img src="/logo.svg" alt="Hive" style={{ height: 28 }} />
-            <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
+      <header className="bg-navy text-white">
+        <div className="max-w-[1100px] mx-auto px-8 h-14 flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <img src="/logo.svg" alt="Hive" className="h-7 w-auto" />
+            <span className="font-bold text-xl tracking-[1px]">Hive</span>
           </span>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div className="flex items-center gap-3">
             <a
               href="/docs/"
-              style={{
-                color: "rgba(255,255,255,.75)",
-                fontSize: 14,
-                textDecoration: "none",
-              }}
+              className="text-white/75 text-sm no-underline hover:text-white transition-colors"
             >
               Docs
             </a>
-            <button
-              onClick={() => navigate("/app")}
-              style={{
-                background: "transparent",
-                color: "rgba(255,255,255,.8)",
-                border: "1px solid rgba(255,255,255,.3)",
-                borderRadius: 6,
-                padding: "6px 16px",
-                fontSize: 14,
-                cursor: "pointer",
-              }}
-            >
+            <Button variant="outline" size="sm" onClick={() => navigate("/app")}>
               Sign in
-            </button>
+            </Button>
           </div>
         </div>
       </header>
 
       {/* Hero */}
       <section
+        className="text-white py-24 px-8 text-center"
         style={{
           background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%)",
-          color: "#fff",
-          padding: "96px 32px",
-          textAlign: "center",
         }}
       >
-        <h1
-          style={{
-            fontSize: "clamp(2rem, 5vw, 3.5rem)",
-            fontWeight: 800,
-            marginBottom: 24,
-            lineHeight: 1.15,
-          }}
-        >
+        <h1 className="text-[clamp(2rem,5vw,3.5rem)] font-extrabold mb-6 leading-[1.15]">
           Persistent memory
           <br />
           for AI agents
         </h1>
-        <p
-          style={{
-            fontSize: "clamp(1rem, 2vw, 1.25rem)",
-            color: "rgba(255,255,255,.75)",
-            maxWidth: 560,
-            margin: "0 auto 40px",
-            lineHeight: 1.6,
-          }}
-        >
+        <p className="text-[clamp(1rem,2vw,1.25rem)] text-white/75 max-w-[560px] mx-auto mb-10 leading-relaxed">
           Hive gives your AI agents a shared, durable memory store via the Model Context
           Protocol — works with Claude Code, Cursor, Continue, and any MCP-compatible client.
         </p>
-        <button
-          onClick={() => navigate("/app")}
-          style={{
-            background: "#e8a020",
-            color: "#fff",
-            border: "none",
-            borderRadius: 8,
-            padding: "14px 36px",
-            fontSize: 17,
-            fontWeight: 600,
-            cursor: "pointer",
-            letterSpacing: 0.3,
-          }}
-        >
+        <Button variant="brand" size="lg" onClick={() => navigate("/app")}>
           Get started free →
-        </button>
-        <p style={{ marginTop: 16, color: "rgba(255,255,255,.45)", fontSize: 13 }}>
-          No credit card required
-        </p>
+        </Button>
+        <p className="mt-4 text-white/45 text-[13px]">No credit card required</p>
       </section>
 
       {/* Features */}
-      <section style={{ padding: "80px 32px" }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h2
-          style={{ textAlign: "center", fontSize: "1.75rem", fontWeight: 700, marginBottom: 56 }}
-        >
-          Everything your agents need to remember
-        </h2>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-            gap: 32,
-          }}
-        >
-          {FEATURES.map((f) => (
-            <div
-              key={f.title}
-              style={{
-                background: "var(--surface)",
-                border: "1px solid var(--border)",
-                borderRadius: 12,
-                padding: 28,
-                boxShadow: "0 2px 8px rgba(0,0,0,.04)",
-              }}
-            >
-              <div style={{ marginBottom: 12 }}><f.icon size={32} color="#e8a020" /></div>
-              <h3 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: 8 }}>{f.title}</h3>
-              <p style={{ color: "var(--text-muted)", fontSize: 14, lineHeight: 1.6 }}>{f.body}</p>
-            </div>
-          ))}
-        </div>
+      <section className="py-20 px-8">
+        <div className="max-w-[1100px] mx-auto">
+          <h2 className="text-center text-[1.75rem] font-bold mb-14">
+            Everything your agents need to remember
+          </h2>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-8">
+            {FEATURES.map((f) => (
+              <div
+                key={f.title}
+                className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-7 shadow-sm"
+              >
+                <div className="mb-3">
+                  <f.icon size={32} color="#e8a020" />
+                </div>
+                <h3 className="text-base font-bold mb-2">{f.title}</h3>
+                <p className="text-[var(--text-muted)] text-sm leading-relaxed">{f.body}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
       {/* How it works */}
-      <section style={{ background: "var(--surface)", padding: "80px 32px" }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-          <h2
-            style={{
-              textAlign: "center",
-              fontSize: "1.75rem",
-              fontWeight: 700,
-              marginBottom: 56,
-            }}
-          >
+      <section className="bg-[var(--surface)] py-20 px-8">
+        <div className="max-w-[1100px] mx-auto">
+          <h2 className="text-center text-[1.75rem] font-bold mb-14">
             Up and running in minutes
           </h2>
-          <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+          <div className="flex flex-col gap-8">
             {HOW_IT_WORKS.map((s) => (
-              <div key={s.step} style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
-                <div
-                  style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: "50%",
-                    background: "var(--accent)",
-                    color: "var(--accent-fg)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontWeight: 700,
-                    fontSize: 16,
-                    flexShrink: 0,
-                  }}
-                >
+              <div key={s.step} className="flex gap-6 items-start">
+                <div className="size-10 rounded-full bg-[var(--accent)] text-[var(--accent-fg)] flex items-center justify-center font-bold text-base shrink-0">
                   {s.step}
                 </div>
                 <div>
-                  <h3 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: 6 }}>
-                    {s.title}
-                  </h3>
-                  <p style={{ color: "var(--text-muted)", fontSize: 14, lineHeight: 1.6 }}>{s.body}</p>
+                  <h3 className="text-base font-bold mb-1.5">{s.title}</h3>
+                  <p className="text-[var(--text-muted)] text-sm leading-relaxed">{s.body}</p>
                 </div>
               </div>
             ))}
           </div>
-          <div style={{ textAlign: "center", marginTop: 56 }}>
-            <button
-              onClick={() => navigate("/app")}
-              style={{
-                background: "var(--accent)",
-                color: "var(--accent-fg)",
-                border: "none",
-                borderRadius: 8,
-                padding: "14px 36px",
-                fontSize: 16,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
+          <div className="text-center mt-14">
+            <Button variant="brand" size="lg" onClick={() => navigate("/app")}>
               Get started free →
-            </button>
+            </Button>
           </div>
         </div>
       </section>
 
       {/* Footer */}
-      <footer style={{ borderTop: "1px solid var(--border)" }}>
-        <div
-          style={{
-            maxWidth: 1100,
-            margin: "0 auto",
-            padding: "32px",
-            textAlign: "center",
-            fontSize: 13,
-            color: "var(--text-muted)",
-          }}
-        >
+      <footer className="border-t border-[var(--border)]">
+        <div className="max-w-[1100px] mx-auto px-8 py-8 text-center text-[13px] text-[var(--text-muted)]">
           © 2026 Hive. Free to use.
         </div>
       </footer>
