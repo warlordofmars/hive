@@ -13,7 +13,11 @@ export default defineConfig({
     // logoLink is used directly (no withBase() applied), so "/" goes to the
     // marketing page root, not /docs/.
     logoLink: "/",
-    nav: [{ text: "Docs", link: "/" }],
+    // link: "/getting-started/what-is-hive" → VitePress prepends base →
+    // href="/docs/getting-started/what-is-hive". The VitePress SPA navigates
+    // directly to this page client-side, bypassing the /docs/ → what-is-hive
+    // CloudFront redirect (which only fires on full-page loads).
+    nav: [{ text: "Docs", link: "/getting-started/what-is-hive" }],
 
     sidebar: [
       {

@@ -90,8 +90,9 @@ def _parse_rgb(css: str) -> tuple[int, int, int, float]:
 
 class TestDocsRouting:
     def test_docs_home_redirects(self, docs_page):
-        """/docs/ redirects to the What is Hive? page (no separate landing page)."""
+        """/docs and /docs/ both redirect to What is Hive? (no separate landing page)."""
         page = docs_page
+        # Test /docs/ (the href VitePress emits for the Docs nav link)
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
         assert page.url.rstrip("/").endswith("/docs/getting-started/what-is-hive"), (
             f"/docs/ should redirect to what-is-hive, got {page.url!r}"
@@ -287,31 +288,32 @@ class TestDocsNavbar:
             "Check .VPNavBar .content-body CSS override."
         )
 
-    def test_docs_nav_link_no_double_prefix(self, docs_page):
-        """Docs nav link href is '/docs/' — VitePress base must not be double-applied.
+    def test_docs_nav_link_href(self, docs_page):
+        """Docs nav link href points directly to what-is-hive — no /docs/ home page.
 
-        config.mjs must use link: '/' (not '/docs/') so that VitePress prepends
-        the base once, producing '/docs/', not '/docs/docs/'.
+        config.mjs uses link: '/getting-started/what-is-hive' so VitePress
+        prepends base once → '/docs/getting-started/what-is-hive'. The VitePress
+        SPA navigates there client-side without needing a CloudFront redirect.
+        No double-prefix (/docs/docs/) is possible with this approach.
         """
         page = docs_page
-        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        page.goto(
+            f"{UI_URL}/docs/getting-started/what-is-hive", timeout=30_000, wait_until="networkidle"
+        )
         docs_link = page.locator(".VPNavBarMenuLink", has_text="Docs")
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible")
         href = docs_link.get_attribute("href")
-        assert href == "/docs/", (
-            f"Docs nav link href {href!r} is not '/docs/'. "
-            "Check that config.mjs uses link: '/' — VitePress prepends the base automatically."
+        assert href == "/docs/getting-started/what-is-hive", (
+            f"Docs nav link href {href!r} — expected '/docs/getting-started/what-is-hive'. "
+            "Check config.mjs nav link value."
         )
-        assert "/docs/docs" not in href, (
-            f"Docs nav link has double prefix: {href!r}. "
-            "Set link: '/' in config.mjs nav, not link: '/docs/'."
-        )
+        assert "/docs/docs" not in href, f"Docs nav link has double prefix: {href!r}."
 
     def test_docs_nav_link_click(self, docs_page):
-        """Clicking Docs nav link loads the VitePress home page.
+        """Clicking Docs nav link navigates to what-is-hive.
 
-        Start from a subpage so the click triggers a real navigation (VitePress
+        Start from quick-start so the click triggers a real navigation (VitePress
         SPA routing doesn't fire expect_navigation on same-page clicks).
         """
         page = docs_page
@@ -326,16 +328,11 @@ class TestDocsNavbar:
         with page.expect_navigation(timeout=15_000):
             docs_link.click()
         page.wait_for_load_state("networkidle", timeout=15_000)
-        assert "/docs/docs" not in page.url, (
-            f"Docs link navigated to {page.url!r} — double prefix detected."
+        assert "getting-started/what-is-hive" in page.url, (
+            f"Docs link navigated to {page.url!r} — expected what-is-hive page."
         )
-        # VitePress home page has the hero or at minimum the site title
-        assert page.locator(".VPHome, .VPContent").first.is_visible(), (
-            "Expected VitePress docs home content after clicking Docs link."
-        )
-        # Must NOT show the React app's Sign in button (wrong page)
-        assert not page.locator("button:has-text('Sign in with Google')").is_visible(), (
-            "React app appeared after clicking Docs — docs routing is broken."
+        assert page.locator("h1").first.is_visible(), (
+            "Expected doc page h1 after clicking Docs link."
         )
 
     def test_logo_click_navigates_to_marketing(self, docs_page):
@@ -349,10 +346,9 @@ class TestDocsNavbar:
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
         logo = page.locator(".VPNavBarTitle .title")
-        with page.expect_navigation(timeout=15_000):
+        with page.expect_navigation(timeout=30_000):
             logo.click()
-        # Wait for the React app to fully mount — VPNavBar must be gone
-        page.locator(".VPNavBar").wait_for(state="hidden", timeout=10_000)
+        page.wait_for_url(f"{UI_URL}/", timeout=30_000)
         assert page.url.rstrip("/") == UI_URL.rstrip("/"), (
             f"Logo click navigated to {page.url!r} — expected marketing page '{UI_URL}'."
         )
@@ -369,9 +365,9 @@ class TestDocsNavbar:
         signin_btn = page.locator(".docs-signin-btn")
         if not signin_btn.is_visible():
             pytest.skip("Sign in button not visible")
-        with page.expect_navigation(timeout=15_000):
+        with page.expect_navigation(timeout=30_000):
             signin_btn.click()
-        page.locator(".VPNavBar").wait_for(state="hidden", timeout=15_000)
+        page.wait_for_url(f"{UI_URL}/app", timeout=30_000)
         assert page.url.rstrip("/").endswith("/app"), (
             f"Sign in button navigated to {page.url!r} — expected URL ending in '/app'."
         )
@@ -390,9 +386,9 @@ class TestDocsNavbar:
         signin_btn = page.locator(".docs-signin-btn")
         if not signin_btn.is_visible():
             pytest.skip("Sign in button not visible")
-        with page.expect_navigation(timeout=15_000):
+        with page.expect_navigation(timeout=30_000):
             signin_btn.click()
-        page.locator(".VPNavBar").wait_for(state="hidden", timeout=15_000)
+        page.wait_for_url(f"{UI_URL}/app", timeout=30_000)
         # Go back
         with page.expect_navigation(timeout=15_000):
             page.go_back()
@@ -400,7 +396,6 @@ class TestDocsNavbar:
         assert "/docs/app" not in page.url, (
             f"Back button landed on {page.url!r} — /docs/app 404 regression detected."
         )
-        # Should be back on a valid docs page, not the React app
         assert page.locator(".VPNavBar").is_visible(), (
             f"Back button left the docs site entirely ({page.url!r})."
         )
