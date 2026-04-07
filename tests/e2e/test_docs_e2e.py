@@ -347,6 +347,68 @@ class TestDocsNavbar:
             f"Sign in link navigated to {page.url!r} — expected URL ending in '/app'."
         )
 
+    def test_signin_link_has_button_style(self, docs_page):
+        """Sign in nav link is styled as a bordered button matching the marketing site.
+
+        The CSS targets .VPNavBarMenuLink[href="/docs/app"] — VitePress prepends
+        the base path, so the rendered href is /docs/app, not /app.  If the
+        selector is wrong the link will look like plain text with no border.
+        """
+        page = docs_page
+        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        signin_link = page.locator(".VPNavBarMenuLink", has_text="Sign in")
+        if not signin_link.is_visible():
+            pytest.skip("Sign in nav link not visible (may be mobile viewport)")
+
+        el = signin_link.element_handle()
+
+        border_style = page.evaluate(
+            "el => window.getComputedStyle(el).borderTopStyle", el
+        )
+        assert border_style == "solid", (
+            f"Sign in link borderTopStyle {border_style!r} — expected 'solid'. "
+            "Check .VPNavBarMenuLink[href='/docs/app'] border rule."
+        )
+
+        border_radius = page.evaluate(
+            "el => window.getComputedStyle(el).borderTopLeftRadius", el
+        )
+        assert border_radius == "6px", (
+            f"Sign in link border-radius {border_radius!r} — expected '6px'."
+        )
+
+        border_color = page.evaluate(
+            "el => window.getComputedStyle(el).borderTopColor", el
+        )
+        _, _, _, alpha = _parse_rgb(border_color)
+        assert alpha > 0, (
+            f"Sign in link border is transparent ({border_color!r}). "
+            "Check the CSS selector — VitePress renders the href as '/docs/app'."
+        )
+
+    def test_docs_link_style_matches_marketing(self, docs_page):
+        """Docs nav link color and font-size match the marketing site header."""
+        page = docs_page
+        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        docs_link = page.locator(".VPNavBarMenuLink", has_text="Docs")
+        if not docs_link.is_visible():
+            pytest.skip("Docs nav link not visible (may be mobile viewport)")
+
+        el = docs_link.element_handle()
+
+        color = page.evaluate("el => window.getComputedStyle(el).color", el)
+        r, g, b, _ = _parse_rgb(color)
+        # rgba(255,255,255,0.75) resolves to ~rgb(191,191,191) on a dark bg in
+        # Chromium, or may be returned as rgba.  Either way all channels > 150.
+        assert r > 150 and g > 150 and b > 150, (
+            f"Docs link color {color!r} is too dark — expected ~rgba(255,255,255,0.75)."
+        )
+
+        font_size = page.evaluate("el => window.getComputedStyle(el).fontSize", el)
+        assert font_size == "14px", (
+            f"Docs link font-size {font_size!r} — expected '14px'."
+        )
+
     def test_navbar_hamburger_visible_mobile(self, docs_page_mobile):
         """Hamburger menu button is visible on mobile viewport."""
         page = docs_page_mobile
