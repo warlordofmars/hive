@@ -61,7 +61,8 @@ export default defineConfig({
       },
     ],
 
-    socialLinks: [{ icon: "github", link: "https://github.com/warlordofmars/hive" }],
+    socialLinks: [],
+    appearance: false,
 
     footer: {
       message: "Hive — shared persistent memory for AI agents",
