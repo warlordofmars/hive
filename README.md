@@ -1,5 +1,7 @@
 # Hive
 
+[![SafeSkill 90/100](https://img.shields.io/badge/SafeSkill-90%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/warlordofmars-hive)
+
 <!-- CI/CD & quality -->
 [![CI (main)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml?query=branch%3Amain)
 [![CI (dev)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml/badge.svg?branch=development)](https://github.com/warlordofmars/hive/actions/workflows/ci.yml?query=branch%3Adevelopment)
