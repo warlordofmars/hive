@@ -82,14 +82,31 @@
   color: #fff !important;
 }
 
+/* "Docs" nav link — matches marketing site style */
 .VPNavBarMenuLink {
-  color: rgba(255, 255, 255, 0.72) !important;
+  color: rgba(255, 255, 255, 0.75) !important;
+  font-size: 14px !important;
 }
 
 .VPNavBarMenuLink:hover,
 .VPNavBarMenuLink.active {
   color: #fff !important;
-  background-color: rgba(255, 255, 255, 0.1) !important;
+  background-color: transparent !important;
+}
+
+/* "Sign in" nav link — matches marketing site button style */
+.VPNavBarMenuLink[href="/app"] {
+  color: rgba(255, 255, 255, 0.8) !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  border-radius: 6px !important;
+  padding: 6px 16px !important;
+  line-height: 1 !important;
+}
+
+.VPNavBarMenuLink[href="/app"]:hover {
+  color: #fff !important;
+  border-color: rgba(255, 255, 255, 0.5) !important;
+  background-color: transparent !important;
 }
 
 .VPNavBarSocialLinks .VPSocialLink {
