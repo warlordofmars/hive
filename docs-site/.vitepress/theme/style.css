@@ -78,8 +78,18 @@
 }
 
 /* Navbar text and links */
+/* Logo wordmark — matches marketing site: bold 20px, 1px letter-spacing */
 .VPNavBarTitle .title {
   color: #fff !important;
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1px !important;
+}
+
+/* Logo image — matches marketing site 28px height */
+.VPNavBarTitle .logo {
+  height: 28px !important;
+  width: auto !important;
 }
 
 /* "Docs" nav link — matches marketing site style */
