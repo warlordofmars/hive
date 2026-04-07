@@ -649,10 +649,13 @@ function handler(event) {
         return request;
     }
 
-    // /docs or /docs/ → /docs/index.html
+    // /docs or /docs/ → redirect to the first doc page
     if (uri === '/docs' || uri === '/docs/') {
-        request.uri = '/docs/index.html';
-        return request;
+        return {
+            statusCode: 302,
+            statusDescription: 'Found',
+            headers: { location: { value: '/docs/getting-started/what-is-hive' } }
+        };
     }
 
     // /docs/<path>/ → /docs/<path>.html  (trailing slash, no extension)
