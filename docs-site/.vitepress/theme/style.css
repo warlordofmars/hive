@@ -1,0 +1,252 @@
+/* ============================================================
+   Brand colour — orange, matching marketing site (#e8a020)
+   ============================================================ */
+:root {
+  --vp-c-brand-1: #e8a020;
+  --vp-c-brand-2: #f5a623;
+  --vp-c-brand-3: #d4891a;
+  --vp-c-brand-soft: rgba(232, 160, 32, 0.14);
+
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #fff;
+  --vp-button-brand-bg: #e8a020;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-hover-text: #fff;
+  --vp-button-brand-hover-bg: #f5a623;
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-active-text: #fff;
+  --vp-button-brand-active-bg: #d4891a;
+
+  /* Override nav background variable used by VitePress */
+  --vp-nav-bg-color: #1a1a2e;
+  --vp-nav-screen-bg-color: #1a1a2e;
+}
+
+.dark {
+  --vp-c-brand-1: #f5a623;
+  --vp-c-brand-2: #e8a020;
+  --vp-c-brand-3: #cc8010;
+  --vp-c-brand-soft: rgba(245, 166, 35, 0.16);
+
+  --vp-nav-bg-color: #1a1a2e;
+  --vp-nav-screen-bg-color: #1a1a2e;
+}
+
+/* ============================================================
+   Navbar — always dark navy (#1a1a2e), matching marketing site
+
+   VitePress navbar internals (1.6.x):
+   - Background is on .VPNavBar directly (not ::before)
+   - On desktop (>=960px), .VPNavBar:not(.home) becomes transparent,
+     and only .content-body gets var(--vp-nav-bg-color)
+   - .has-sidebar pages need .content-body overridden separately
+   - .home.top is transparent by design (hero shows through)
+   ============================================================ */
+
+/* Base — covers mobile and all initial states */
+.VPNavBar {
+  background-color: #1a1a2e !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Explicitly cover every dynamic class combination */
+.VPNavBar.home,
+.VPNavBar.has-sidebar,
+.VPNavBar.home.top,
+.VPNavBar.screen-open {
+  background-color: #1a1a2e !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Desktop — VitePress overrides to transparent; re-apply dark navy */
+@media (min-width: 960px) {
+  .VPNavBar,
+  .VPNavBar:not(.home),
+  .VPNavBar:not(.has-sidebar):not(.home.top),
+  .VPNavBar.home.top {
+    background-color: #1a1a2e !important;
+  }
+
+  /* content-body is the right-side container on desktop */
+  .VPNavBar .content-body {
+    background-color: #1a1a2e !important;
+  }
+
+  .VPNavBar:not(.has-sidebar):not(.home.top) .content-body {
+    background-color: #1a1a2e !important;
+  }
+}
+
+/* Navbar text and links */
+/* Logo wordmark — matches marketing site: bold 20px, 1px letter-spacing */
+.VPNavBarTitle .title {
+  color: #fff !important;
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1px !important;
+}
+
+/* Logo image — matches marketing site 28px height */
+.VPNavBarTitle .logo {
+  height: 28px !important;
+  width: auto !important;
+}
+
+/* "Docs" nav link — matches marketing site style */
+.VPNavBarMenuLink {
+  color: rgba(255, 255, 255, 0.75) !important;
+  font-size: 14px !important;
+}
+
+.VPNavBarMenuLink:hover,
+.VPNavBarMenuLink.active {
+  color: #fff !important;
+  background-color: transparent !important;
+}
+
+/* Desktop navbar group: Docs link + Sign in button rendered via
+   nav-bar-content-after so they appear at the far right, in order, matching
+   the marketing site layout. */
+.docs-nav-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.docs-nav-link {
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.25s;
+}
+
+.docs-nav-link:hover {
+  color: #fff;
+}
+
+.docs-signin-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.25s, border-color 0.25s;
+}
+
+.docs-signin-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* Mobile nav screen group */
+.docs-screen-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 24px 0;
+}
+
+.docs-screen-nav-link {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+  text-decoration: none;
+}
+
+.docs-signin-screen-btn {
+  display: block;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  text-decoration: none;
+  text-align: center;
+  transition: color 0.25s, border-color 0.25s;
+}
+
+.docs-signin-screen-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* Hide the dark/light mode appearance toggle */
+.VPNavBarAppearance {
+  display: none !important;
+}
+
+.VPNavBarSocialLinks .VPSocialLink {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+
+.VPNavBarSocialLinks .VPSocialLink:hover {
+  color: #fff !important;
+}
+
+/* Hamburger (mobile) */
+.VPNavBarHamburger .top,
+.VPNavBarHamburger .middle,
+.VPNavBarHamburger .bottom {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* Local search button */
+.VPNavBarSearch .DocSearch-Button {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+}
+
+.VPNavBarSearch .DocSearch-Button-Placeholder,
+.VPNavBarSearch .DocSearch-Button .DocSearch-Search-Icon {
+  color: rgba(255, 255, 255, 0.55) !important;
+}
+
+.VPNavBarSearch .DocSearch-Button-Keys .DocSearch-Button-Key {
+  color: rgba(255, 255, 255, 0.45) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  box-shadow: none !important;
+}
+
+/* ============================================================
+   Home page hero — gradient matching marketing site
+   ============================================================ */
+.VPHero {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+  padding-bottom: 80px;
+}
+
+/* Hero name ("Hive") — plain white instead of default gradient */
+:root {
+  --vp-home-hero-name-color: #fff;
+  --vp-home-hero-name-background: none;
+}
+
+.VPHero .text {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.VPHero .tagline {
+  color: rgba(255, 255, 255, 0.62) !important;
+}
+
+/* ============================================================
+   Feature cards — rounded corners, brand icon colour
+   ============================================================ */
+.VPFeature {
+  border-radius: 12px !important;
+}
+
+.VPFeature .icon {
+  color: var(--vp-c-brand-1);
+}

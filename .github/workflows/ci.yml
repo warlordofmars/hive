@@ -336,6 +336,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build docs site
+        working-directory: docs-site
+        run: npm install && npm run build
+
       - name: Write JS coverage summary
         if: always()
         run: |
@@ -483,6 +487,10 @@ jobs:
         working-directory: ui
         run: npm install && npm run build
 
+      - name: Build docs site
+        working-directory: docs-site
+        run: npm install && npm run build
+
       - name: Deploy dev stack
         run: uv run inv deploy --env dev
 
@@ -531,6 +539,11 @@ jobs:
           HIVE_API_URL: ${{ needs.deploy-dev.outputs.api_url }}
           HIVE_UI_URL: ${{ needs.deploy-dev.outputs.ui_url }}
         run: uv run pytest tests/e2e/test_ui_e2e.py -v
+
+      - name: Run docs e2e tests (Playwright)
+        env:
+          HIVE_UI_URL: ${{ needs.deploy-dev.outputs.ui_url }}
+        run: uv run pytest tests/e2e/test_docs_e2e.py -v
 
       - name: Run Dashboard e2e tests (Playwright)
         env:
@@ -660,6 +673,10 @@ jobs:
 
       - name: Build React UI
         working-directory: ui
+        run: npm install && npm run build
+
+      - name: Build docs site
+        working-directory: docs-site
         run: npm install && npm run build
 
       - name: Deploy prod stack

@@ -612,11 +612,89 @@ class HiveStack(cdk.Stack):
 
             web_acl_arn = web_acl.attr_arn
 
+        # CloudFront Function: rewrite clean /docs URLs to the S3 .html files.
+        # VitePress with cleanUrls:true outputs flat .html files (e.g.
+        # getting-started/quick-start.html), not directory index files.
+        # Rules:
+        #   /docs or /docs/          → /docs/index.html
+        #   /docs/<path>/            → /docs/<path>.html  (strip trailing slash)
+        #   /docs/<path> (no ext)    → /docs/<path>.html
+        #   /docs/assets/app.js etc  → pass through (has file extension)
+        docs_rewrite_fn = cloudfront.Function(
+            self,
+            "DocsUrlRewrite",
+            code=cloudfront.FunctionCode.from_inline(
+                """
+function handler(event) {
+    var request = event.request;
+    var uri = request.uri;
+
+    if (!uri.startsWith('/docs')) {
+        return request;
+    }
+
+    // /docs/app → redirect to /app (Sign in link from docs nav).
+    // statusDescription is required; omitting it causes CF to reject the response.
+    if (uri === '/docs/app') {
+        return {
+            statusCode: 302,
+            statusDescription: 'Found',
+            headers: { location: { value: '/app' } }
+        };
+    }
+
+    // Last path segment has a dot — treat as a static asset, pass through.
+    var lastSegment = uri.split('/').pop();
+    if (lastSegment.indexOf('.') !== -1) {
+        return request;
+    }
+
+    // /docs or /docs/ → redirect to the first doc page
+    if (uri === '/docs' || uri === '/docs/') {
+        return {
+            statusCode: 302,
+            statusDescription: 'Found',
+            headers: { location: { value: '/docs/getting-started/what-is-hive' } }
+        };
+    }
+
+    // /docs/<path>/ → /docs/<path>.html  (trailing slash, no extension)
+    if (uri.endsWith('/')) {
+        request.uri = uri.slice(0, -1) + '.html';
+        return request;
+    }
+
+    // /docs/<path> → /docs/<path>.html
+    request.uri = uri + '.html';
+    return request;
+}
+"""
+            ),
+            runtime=cloudfront.FunctionRuntime.JS_2_0,
+        )
+
+        # Single S3 origin shared by default + docs behaviors — two separate
+        # with_origin_access_control() calls would create distinct OACs and the
+        # second one would not receive a bucket policy grant, causing 403s.
+        ui_s3_origin = origins.S3BucketOrigin.with_origin_access_control(ui_bucket)
+
+        docs_behavior = cloudfront.BehaviorOptions(
+            origin=ui_s3_origin,
+            viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+            cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+            function_associations=[
+                cloudfront.FunctionAssociation(
+                    function=docs_rewrite_fn,
+                    event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                )
+            ],
+        )
+
         distribution = cloudfront.Distribution(
             self,
             "UiDistribution",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3BucketOrigin.with_origin_access_control(ui_bucket),
+                origin=ui_s3_origin,
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
             ),
@@ -637,6 +715,7 @@ class HiveStack(cdk.Stack):
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
                 ),
                 "/mcp*": mcp_behavior,
+                "/docs*": docs_behavior,
             },
             domain_names=[custom_domain],
             certificate=certificate,
@@ -674,6 +753,21 @@ class HiveStack(cdk.Stack):
                 destination_bucket=ui_bucket,
                 distribution=distribution,
                 distribution_paths=["/*"],
+            )
+
+        # Deploy built docs site assets — only if docs-site/.vitepress/dist exists
+        docs_dist_path = os.path.join(
+            os.path.dirname(__file__), "../../docs-site/.vitepress/dist"
+        )
+        if os.path.exists(docs_dist_path):
+            s3deploy.BucketDeployment(
+                self,
+                "DeployDocs",
+                sources=[s3deploy.Source.asset(docs_dist_path)],
+                destination_bucket=ui_bucket,
+                destination_key_prefix="docs",
+                distribution=distribution,
+                distribution_paths=["/docs/*"],
             )
 
         # ----------------------------------------------------------------
