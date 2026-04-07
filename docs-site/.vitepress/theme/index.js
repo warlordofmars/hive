@@ -1,35 +1,38 @@
+import { h } from "vue";
 import DefaultTheme from "vitepress/theme";
 import "./style.css";
 
 export default {
   ...DefaultTheme,
 
-  enhanceApp({ router }) {
-    // VitePress's Vue Router intercepts ALL root-relative link clicks, including
-    // links that should navigate outside the docs (logo → "/", Sign in → "/app").
-    // Intercept those clicks in the capture phase (before Vue Router) and call
-    // window.location.href directly to force a real full-page navigation.
+  // Inject a plain <a href="/app"> Sign in button via layout slots so it is
+  // never handled by Vue Router.  A RouterLink for /app would push /docs/app
+  // onto the browser history stack (VitePress base prepend), causing a 404
+  // when the user presses Back from /app.  A vanilla <a> bypasses all of that.
+  Layout() {
+    return h(DefaultTheme.Layout, null, {
+      // Desktop navbar — appears after social/search icons on the right
+      "nav-bar-content-after": () =>
+        h("a", { href: "/app", class: "docs-signin-btn" }, "Sign in"),
+      // Mobile expanded menu — appears at the bottom of the nav screen
+      "nav-screen-content-after": () =>
+        h("a", { href: "/app", class: "docs-signin-screen-btn" }, "Sign in"),
+    });
+  },
+
+  enhanceApp() {
+    // VitePress's Vue Router intercepts root-relative link clicks, including
+    // the logo which points to "/" (marketing root).  Intercept in the capture
+    // phase so we fire before Vue Router and force a real full-page navigation.
     if (typeof window !== "undefined") {
       document.addEventListener(
         "click",
         (e) => {
-          // Logo → marketing page root
           const title = e.target.closest(".VPNavBarTitle .title");
           if (title && title.getAttribute("href") === "/") {
             e.preventDefault();
             e.stopImmediatePropagation();
             window.location.href = "/";
-            return;
-          }
-
-          // Sign in nav link → /app
-          // VitePress base prepends /docs/ making the href /docs/app, which Vue
-          // Router would handle as a client-side route. Navigate directly to /app.
-          const navLink = e.target.closest(".VPNavBarMenuLink");
-          if (navLink && navLink.getAttribute("href") === "/docs/app") {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            window.location.href = "/app";
           }
         },
         true, // capture phase — fires before Vue Router's link handler

@@ -13,10 +13,7 @@ export default defineConfig({
     // logoLink is used directly (no withBase() applied), so "/" goes to the
     // marketing page root, not /docs/.
     logoLink: "/",
-    nav: [
-      { text: "Docs", link: "/" },
-      { text: "Sign in", link: "/app" },
-    ],
+    nav: [{ text: "Docs", link: "/" }],
 
     sidebar: [
       {

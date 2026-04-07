@@ -78,8 +78,18 @@
 }
 
 /* Navbar text and links */
+/* Logo wordmark — matches marketing site: bold 20px, 1px letter-spacing */
 .VPNavBarTitle .title {
   color: #fff !important;
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1px !important;
+}
+
+/* Logo image — matches marketing site 28px height */
+.VPNavBarTitle .logo {
+  height: 28px !important;
+  width: auto !important;
 }
 
 /* "Docs" nav link — matches marketing site style */
@@ -94,20 +104,45 @@
   background-color: transparent !important;
 }
 
-/* "Sign in" nav link — matches marketing site button style */
-/* VitePress prepends base (/docs/) so the rendered href is /docs/app */
-.VPNavBarMenuLink[href="/docs/app"] {
-  color: rgba(255, 255, 255, 0.8) !important;
-  border: 1px solid rgba(255, 255, 255, 0.3) !important;
-  border-radius: 6px !important;
-  padding: 6px 16px !important;
-  line-height: 1 !important;
+/* Sign in button — injected via nav-bar-content-after layout slot as a plain
+   <a href="/app"> so Vue Router never touches it (no /docs/app history entry). */
+.docs-signin-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.25s, border-color 0.25s;
 }
 
-.VPNavBarMenuLink[href="/docs/app"]:hover {
-  color: #fff !important;
-  border-color: rgba(255, 255, 255, 0.5) !important;
-  background-color: transparent !important;
+.docs-signin-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* Mobile nav screen variant */
+.docs-signin-screen-btn {
+  display: block;
+  margin: 12px 24px 0;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  text-decoration: none;
+  text-align: center;
+  transition: color 0.25s, border-color 0.25s;
+}
+
+.docs-signin-screen-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.5);
 }
 
 .VPNavBarSocialLinks .VPSocialLink {
