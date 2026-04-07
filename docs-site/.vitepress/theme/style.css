@@ -95,7 +95,8 @@
 }
 
 /* "Sign in" nav link — matches marketing site button style */
-.VPNavBarMenuLink[href="/app"] {
+/* VitePress prepends base (/docs/) so the rendered href is /docs/app */
+.VPNavBarMenuLink[href="/docs/app"] {
   color: rgba(255, 255, 255, 0.8) !important;
   border: 1px solid rgba(255, 255, 255, 0.3) !important;
   border-radius: 6px !important;
@@ -103,7 +104,7 @@
   line-height: 1 !important;
 }
 
-.VPNavBarMenuLink[href="/app"]:hover {
+.VPNavBarMenuLink[href="/docs/app"]:hover {
   color: #fff !important;
   border-color: rgba(255, 255, 255, 0.5) !important;
   background-color: transparent !important;
