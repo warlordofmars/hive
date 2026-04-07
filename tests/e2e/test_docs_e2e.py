@@ -362,24 +362,18 @@ class TestDocsNavbar:
 
         el = signin_link.element_handle()
 
-        border_style = page.evaluate(
-            "el => window.getComputedStyle(el).borderTopStyle", el
-        )
+        border_style = page.evaluate("el => window.getComputedStyle(el).borderTopStyle", el)
         assert border_style == "solid", (
             f"Sign in link borderTopStyle {border_style!r} — expected 'solid'. "
             "Check .VPNavBarMenuLink[href='/docs/app'] border rule."
         )
 
-        border_radius = page.evaluate(
-            "el => window.getComputedStyle(el).borderTopLeftRadius", el
-        )
+        border_radius = page.evaluate("el => window.getComputedStyle(el).borderTopLeftRadius", el)
         assert border_radius == "6px", (
             f"Sign in link border-radius {border_radius!r} — expected '6px'."
         )
 
-        border_color = page.evaluate(
-            "el => window.getComputedStyle(el).borderTopColor", el
-        )
+        border_color = page.evaluate("el => window.getComputedStyle(el).borderTopColor", el)
         _, _, _, alpha = _parse_rgb(border_color)
         assert alpha > 0, (
             f"Sign in link border is transparent ({border_color!r}). "
@@ -405,9 +399,7 @@ class TestDocsNavbar:
         )
 
         font_size = page.evaluate("el => window.getComputedStyle(el).fontSize", el)
-        assert font_size == "14px", (
-            f"Docs link font-size {font_size!r} — expected '14px'."
-        )
+        assert font_size == "14px", f"Docs link font-size {font_size!r} — expected '14px'."
 
     def test_navbar_hamburger_visible_mobile(self, docs_page_mobile):
         """Hamburger menu button is visible on mobile viewport."""
