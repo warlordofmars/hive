@@ -5,26 +5,43 @@ import "./style.css";
 export default {
   ...DefaultTheme,
 
-  // Inject a plain <a href="/app"> Sign in button via layout slots so it is
-  // never handled by Vue Router.  A RouterLink for /app would push /docs/app
-  // onto the browser history stack (VitePress base prepend), causing a 404
-  // when the user presses Back from /app.  A vanilla <a> bypasses all of that.
+  // Inject Docs and Sign in as plain <a> elements via nav-bar-content-after so
+  // they render at the far right of the navbar (after search/social), in the
+  // correct order, without Vue Router involvement.
+  //
+  // VitePress .content-body flex order:
+  //   [nav-bar-content-before] Search Menu Appearance Social [nav-bar-content-after]
+  //
+  // Using nav-bar-content-after puts our links at the rightmost position, which
+  // matches the marketing site layout: ... Docs | Sign in (at right edge).
   Layout() {
     return h(DefaultTheme.Layout, null, {
-      // Desktop navbar — appears between nav links and search/social icons
-      "nav-bar-content-before": () =>
-        h("a", { href: "/app", class: "docs-signin-btn" }, "Sign in"),
-      // Mobile expanded menu — appears at the bottom of the nav screen
+      "nav-bar-content-after": () =>
+        h("div", { class: "docs-nav-group" }, [
+          h(
+            "a",
+            { href: "/docs/getting-started/what-is-hive", class: "docs-nav-link" },
+            "Docs",
+          ),
+          h("a", { href: "/app", class: "docs-signin-btn" }, "Sign in"),
+        ]),
+      // Mobile expanded menu
       "nav-screen-content-after": () =>
-        h("a", { href: "/app", class: "docs-signin-screen-btn" }, "Sign in"),
+        h("div", { class: "docs-screen-group" }, [
+          h(
+            "a",
+            { href: "/docs/getting-started/what-is-hive", class: "docs-screen-nav-link" },
+            "Docs",
+          ),
+          h("a", { href: "/app", class: "docs-signin-screen-btn" }, "Sign in"),
+        ]),
     });
   },
 
   enhanceApp() {
-    // Vue Router 4 intercepts ALL same-origin anchor clicks, including hrefs
-    // that are outside its /docs/ base (e.g. "/" for marketing, "/app" for
-    // Sign in). Intercept these in the capture phase so we fire before Vue
-    // Router and force a real full-page navigation with window.location.href.
+    // Vue Router 4 intercepts ALL same-origin anchor clicks, even hrefs outside
+    // its /docs/ base. Intercept in capture phase and force window.location.href
+    // for links that must cause a real full-page navigation.
     if (typeof window !== "undefined") {
       document.addEventListener(
         "click",
@@ -37,7 +54,7 @@ export default {
             window.location.href = "/";
             return;
           }
-          // Sign in button → /app (injected via layout slot as plain <a>)
+          // Sign in → /app
           const signin = e.target.closest(".docs-signin-btn, .docs-signin-screen-btn");
           if (signin) {
             e.preventDefault();
@@ -45,7 +62,7 @@ export default {
             window.location.href = "/app";
           }
         },
-        true, // capture phase — fires before Vue Router's link handler
+        true,
       );
     }
   },

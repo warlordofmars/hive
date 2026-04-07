@@ -250,22 +250,20 @@ class TestDocsNavbar:
         )
 
     def test_nav_links_are_light(self, docs_page):
-        """Navigation menu links are light-coloured (readable on dark navbar)."""
+        """Docs nav link is light-coloured (readable on dark navbar)."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        # Get first nav menu link
-        link = page.locator(".VPNavBarMenuLink").first
+        link = page.locator(".docs-nav-link").first
         if not link.is_visible():
-            pytest.skip("No nav menu links visible (may be mobile viewport)")
+            pytest.skip("Docs nav link not visible (may be mobile viewport)")
         color = page.evaluate(
             "el => window.getComputedStyle(el).color",
             link.element_handle(),
         )
         r, g, b, a = _parse_rgb(color)
-        # Text should be at least 60% bright (alpha of rgba or high rgb values)
         assert r > 150 and g > 150 and b > 150, (
-            f"Nav link color {color!r} is too dark for dark navbar. "
-            "Check .VPNavBarMenuLink color override."
+            f"Docs nav link color {color!r} is too dark for dark navbar. "
+            "Check .docs-nav-link color."
         )
 
     def test_content_body_dark_on_sidebar_page(self, docs_page):
@@ -289,32 +287,25 @@ class TestDocsNavbar:
         )
 
     def test_docs_nav_link_href(self, docs_page):
-        """Docs nav link href points directly to what-is-hive — no /docs/ home page.
-
-        config.mjs uses link: '/getting-started/what-is-hive' so VitePress
-        prepends base once → '/docs/getting-started/what-is-hive'. The VitePress
-        SPA navigates there client-side without needing a CloudFront redirect.
-        No double-prefix (/docs/docs/) is possible with this approach.
-        """
+        """Docs nav link href points to what-is-hive, rendered via layout slot."""
         page = docs_page
         page.goto(
-            f"{UI_URL}/docs/getting-started/what-is-hive", timeout=30_000, wait_until="networkidle"
+            f"{UI_URL}/docs/getting-started/what-is-hive",
+            timeout=30_000,
+            wait_until="networkidle",
         )
-        docs_link = page.locator(".VPNavBarMenuLink", has_text="Docs")
+        docs_link = page.locator(".docs-nav-link")
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible")
         href = docs_link.get_attribute("href")
         assert href == "/docs/getting-started/what-is-hive", (
-            f"Docs nav link href {href!r} — expected '/docs/getting-started/what-is-hive'. "
-            "Check config.mjs nav link value."
+            f"Docs nav link href {href!r} — expected '/docs/getting-started/what-is-hive'."
         )
-        assert "/docs/docs" not in href, f"Docs nav link has double prefix: {href!r}."
 
     def test_docs_nav_link_click(self, docs_page):
         """Clicking Docs nav link navigates to what-is-hive.
 
-        Start from quick-start so the click triggers a real navigation (VitePress
-        SPA routing doesn't fire expect_navigation on same-page clicks).
+        Start from quick-start so the click triggers a real navigation.
         """
         page = docs_page
         page.goto(
@@ -322,7 +313,7 @@ class TestDocsNavbar:
             timeout=30_000,
             wait_until="networkidle",
         )
-        docs_link = page.locator(".VPNavBarMenuLink", has_text="Docs")
+        docs_link = page.locator(".docs-nav-link")
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible")
         with page.expect_navigation(timeout=15_000):
@@ -331,9 +322,7 @@ class TestDocsNavbar:
         assert "getting-started/what-is-hive" in page.url, (
             f"Docs link navigated to {page.url!r} — expected what-is-hive page."
         )
-        assert page.locator("h1").first.is_visible(), (
-            "Expected doc page h1 after clicking Docs link."
-        )
+        assert page.locator("h1").first.is_visible()
 
     def test_logo_click_navigates_to_marketing(self, docs_page):
         """Clicking the Hive logo performs a full page navigation to the marketing root.
@@ -447,7 +436,7 @@ class TestDocsNavbar:
         """Docs nav link color and font-size match the marketing site header."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        docs_link = page.locator(".VPNavBarMenuLink", has_text="Docs")
+        docs_link = page.locator(".docs-nav-link")
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible (may be mobile viewport)")
 
@@ -455,8 +444,6 @@ class TestDocsNavbar:
 
         color = page.evaluate("el => window.getComputedStyle(el).color", el)
         r, g, b, _ = _parse_rgb(color)
-        # rgba(255,255,255,0.75) resolves to ~rgb(191,191,191) on a dark bg in
-        # Chromium, or may be returned as rgba.  Either way all channels > 150.
         assert r > 150 and g > 150 and b > 150, (
             f"Docs link color {color!r} is too dark — expected ~rgba(255,255,255,0.75)."
         )
