@@ -328,56 +328,94 @@ class TestDocsNavbar:
         )
 
     def test_signin_nav_link_click(self, docs_page):
-        """Clicking Sign in nav link loads the React login page at /app.
+        """Clicking the Sign in button loads the React login page at /app.
 
-        VitePress's Vue Router would intercept href='/docs/app' as a client-side
-        route. The theme's enhanceApp override intercepts the click and calls
-        window.location.href='/app' directly to force a real page load.
+        Sign in is injected as a plain <a href="/app"> via a VitePress layout
+        slot (nav-bar-content-after) so Vue Router never handles it.  This
+        avoids Vue Router pushing /docs/app onto the browser history stack.
         """
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        signin_link = page.locator(".VPNavBarMenuLink", has_text="Sign in")
-        if not signin_link.is_visible():
-            pytest.skip("Sign in nav link not visible")
+        signin_btn = page.locator(".docs-signin-btn")
+        if not signin_btn.is_visible():
+            pytest.skip("Sign in button not visible")
         with page.expect_navigation(timeout=15_000):
-            signin_link.click()
-        # Wait for the React app to fully mount — VPNavBar must be gone
+            signin_btn.click()
         page.locator(".VPNavBar").wait_for(state="hidden", timeout=15_000)
         assert page.url.rstrip("/").endswith("/app"), (
-            f"Sign in link navigated to {page.url!r} — expected URL ending in '/app'."
+            f"Sign in button navigated to {page.url!r} — expected URL ending in '/app'."
+        )
+
+    def test_signin_back_button_returns_to_docs(self, docs_page):
+        """Pressing Back after Sign in returns to the docs page — not a /docs/app 404.
+
+        The old approach used a RouterLink (href=/docs/app) with a JS click
+        interceptor.  Vue Router pushed /docs/app onto the history stack before
+        the interceptor fired, so Back landed on /docs/app (404).  The fix is
+        a plain <a href="/app"> that Vue Router never sees.
+        """
+        page = docs_page
+        origin_url = f"{UI_URL}/docs/getting-started/what-is-hive"
+        page.goto(origin_url, timeout=30_000, wait_until="networkidle")
+        signin_btn = page.locator(".docs-signin-btn")
+        if not signin_btn.is_visible():
+            pytest.skip("Sign in button not visible")
+        with page.expect_navigation(timeout=15_000):
+            signin_btn.click()
+        page.locator(".VPNavBar").wait_for(state="hidden", timeout=15_000)
+        # Go back
+        with page.expect_navigation(timeout=15_000):
+            page.go_back()
+        page.wait_for_load_state("networkidle", timeout=15_000)
+        assert "/docs/app" not in page.url, (
+            f"Back button landed on {page.url!r} — /docs/app 404 regression detected."
+        )
+        # Should be back on a valid docs page, not the React app
+        assert page.locator(".VPNavBar").is_visible(), (
+            f"Back button left the docs site entirely ({page.url!r})."
         )
 
     def test_signin_link_has_button_style(self, docs_page):
-        """Sign in nav link is styled as a bordered button matching the marketing site.
+        """Sign in button styling matches the marketing site header button exactly.
 
-        The CSS targets .VPNavBarMenuLink[href="/docs/app"] — VitePress prepends
-        the base path, so the rendered href is /docs/app, not /app.  If the
-        selector is wrong the link will look like plain text with no border.
+        Rendered as .docs-signin-btn via a layout slot — a plain <a> with no
+        VitePress/Vue Router involvement.  Padding, border, and radius must
+        match the marketing site: padding 6px 16px, border solid rgba(255,255,255,.3),
+        border-radius 6px.
         """
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        signin_link = page.locator(".VPNavBarMenuLink", has_text="Sign in")
-        if not signin_link.is_visible():
-            pytest.skip("Sign in nav link not visible (may be mobile viewport)")
+        signin_btn = page.locator(".docs-signin-btn")
+        if not signin_btn.is_visible():
+            pytest.skip("Sign in button not visible (may be mobile viewport)")
 
-        el = signin_link.element_handle()
+        el = signin_btn.element_handle()
+
+        # href must be /app — never /docs/app (which would cause Back → 404)
+        href = signin_btn.get_attribute("href")
+        assert href == "/app", (
+            f"Sign in button href {href!r} — expected '/app'. "
+            "A /docs/app href means Vue Router is still involved and Back will 404."
+        )
 
         border_style = page.evaluate("el => window.getComputedStyle(el).borderTopStyle", el)
         assert border_style == "solid", (
-            f"Sign in link borderTopStyle {border_style!r} — expected 'solid'. "
-            "Check .VPNavBarMenuLink[href='/docs/app'] border rule."
+            f"Sign in button borderTopStyle {border_style!r} — expected 'solid'."
         )
 
         border_radius = page.evaluate("el => window.getComputedStyle(el).borderTopLeftRadius", el)
         assert border_radius == "6px", (
-            f"Sign in link border-radius {border_radius!r} — expected '6px'."
+            f"Sign in button border-radius {border_radius!r} — expected '6px'."
         )
 
         border_color = page.evaluate("el => window.getComputedStyle(el).borderTopColor", el)
         _, _, _, alpha = _parse_rgb(border_color)
-        assert alpha > 0, (
-            f"Sign in link border is transparent ({border_color!r}). "
-            "Check the CSS selector — VitePress renders the href as '/docs/app'."
+        assert alpha > 0, f"Sign in button border is transparent ({border_color!r})."
+
+        padding = page.evaluate("el => window.getComputedStyle(el).padding", el)
+        assert padding == "6px 16px", (
+            f"Sign in button padding {padding!r} — expected '6px 16px' to match "
+            "the marketing site header button."
         )
 
     def test_docs_link_style_matches_marketing(self, docs_page):
