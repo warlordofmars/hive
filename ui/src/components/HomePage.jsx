@@ -3,6 +3,7 @@ import React from "react";
 import { BrainCircuit, Plug, ShieldCheck, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import PageLayout from "@/components/PageLayout";
 
 const FEATURES = [
   {
@@ -49,28 +50,7 @@ export default function HomePage() {
   const navigate = useNavigate();
 
   return (
-    <div className="font-[system-ui,sans-serif] text-[var(--text)]">
-      {/* Nav */}
-      <header className="bg-navy text-white">
-        <div className="max-w-[1100px] mx-auto px-8 h-14 flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            <img src="/logo.svg" alt="Hive" className="h-7 w-auto" />
-            <span className="font-bold text-xl tracking-[1px]">Hive</span>
-          </span>
-          <div className="flex items-center gap-3">
-            <a
-              href="/docs/"
-              className="text-white/75 text-sm no-underline hover:text-white transition-colors"
-            >
-              Docs
-            </a>
-            <Button variant="outline" size="sm" onClick={() => navigate("/app")}>
-              Sign in
-            </Button>
-          </div>
-        </div>
-      </header>
-
+    <PageLayout>
       {/* Hero */}
       <section
         className="text-white py-24 px-8 text-center"
@@ -142,13 +122,6 @@ export default function HomePage() {
           </div>
         </div>
       </section>
-
-      {/* Footer */}
-      <footer className="border-t border-[var(--border)]">
-        <div className="max-w-[1100px] mx-auto px-8 py-8 text-center text-[13px] text-[var(--text-muted)]">
-          © 2026 Hive. Free to use.
-        </div>
-      </footer>
-    </div>
+    </PageLayout>
   );
 }
