@@ -73,24 +73,26 @@ export default function HomePage() {
 
       {/* Hero */}
       <section
-        className="text-white py-24 px-8 text-center"
+        className="text-white py-24 px-8"
         style={{
           background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%)",
         }}
       >
-        <h1 className="text-[clamp(2rem,5vw,3.5rem)] font-extrabold mb-6 leading-[1.15]">
-          Persistent memory
-          <br />
-          for AI agents
-        </h1>
-        <p className="text-[clamp(1rem,2vw,1.25rem)] text-white/75 max-w-[560px] mx-auto mb-10 leading-relaxed">
-          Hive gives your AI agents a shared, durable memory store via the Model Context
-          Protocol — works with Claude Code, Cursor, Continue, and any MCP-compatible client.
-        </p>
-        <Button variant="brand" size="lg" onClick={() => navigate("/app")}>
-          Get started free →
-        </Button>
-        <p className="mt-4 text-white/45 text-[13px]">No credit card required</p>
+        <div className="max-w-[1100px] mx-auto text-center">
+          <h1 className="text-[clamp(2rem,5vw,3.5rem)] font-extrabold mb-6 leading-[1.15]">
+            Persistent memory
+            <br />
+            for AI agents
+          </h1>
+          <p className="text-[clamp(1rem,2vw,1.25rem)] text-white/75 max-w-[560px] mx-auto mb-10 leading-relaxed">
+            Hive gives your AI agents a shared, durable memory store via the Model Context
+            Protocol — works with Claude Code, Cursor, Continue, and any MCP-compatible client.
+          </p>
+          <Button variant="brand" size="lg" onClick={() => navigate("/app")}>
+            Get started free →
+          </Button>
+          <p className="mt-4 text-white/45 text-[13px]">No credit card required</p>
+        </div>
       </section>
 
       {/* Features */}
