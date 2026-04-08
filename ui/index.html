@@ -8,6 +8,19 @@
     <meta property="og:title" content="Hive — Shared Memory for Claude Agents" />
     <meta property="og:description" content="Persistent, shared memory for Claude agents and teams. Free hosted service." />
     <meta property="og:image" content="https://hive.warlordofmars.net/social-preview.png" />
+    <!-- Set theme before first paint to prevent flash of wrong background colour -->
+    <script>
+      (function () {
+        var stored = localStorage.getItem("hive_theme");
+        var theme =
+          stored === "dark" || stored === "light"
+            ? stored
+            : window.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
