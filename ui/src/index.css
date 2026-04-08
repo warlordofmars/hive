@@ -43,7 +43,9 @@
   --radius: 6px;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* box-sizing / margin / padding reset is handled by Tailwind's @layer base preflight.
+   Duplicating it here as unlayered CSS overrides @layer utilities (CSS Cascade Level 5),
+   breaking mx-auto, padding utilities, and margin utilities across the app. */
 
 body {
   background: var(--bg);
