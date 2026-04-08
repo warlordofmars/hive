@@ -6,8 +6,10 @@ import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import Dashboard from "./components/Dashboard.jsx";
+import FaqPage from "./components/FaqPage.jsx";
 import HomePage from "./components/HomePage.jsx";
 import LoginPage from "./components/LoginPage.jsx";
+import PricingPage from "./components/PricingPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import SetupPanel from "./components/SetupPanel.jsx";
 import UsersPanel from "./components/UsersPanel.jsx";
@@ -198,6 +200,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<HomeRoute />} />
+        <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/faq" element={<FaqPage />} />
         <Route path="/app" element={<AppShell />} />
         <Route path="/oauth/callback" element={<AuthCallback />} />
         <Route path="*" element={<Navigate to="/" replace />} />
