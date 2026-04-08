@@ -468,6 +468,6 @@ class TestDocsNavbar:
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
         hamburger = page.locator(".VPNavBarHamburger")
         hamburger.click()
-        page.wait_for_timeout(300)
         screen = page.locator(".VPNavScreen")
+        screen.wait_for(state="visible", timeout=5_000)
         assert screen.is_visible(), "Mobile nav screen did not open after hamburger click"
