@@ -34,6 +34,8 @@ describe("PageLayout", () => {
     await act(async () =>
       renderInRouter(<PageLayout><span /></PageLayout>)
     );
+    expect(screen.getAllByText("Use cases").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Clients").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Pricing").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("FAQ").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Docs").length).toBeGreaterThanOrEqual(1);
@@ -74,9 +76,9 @@ describe("PageLayout", () => {
     await act(async () =>
       renderInRouter(<PageLayout><span /></PageLayout>)
     );
-    const pricingLinks = screen.getAllByText("Pricing");
-    expect(pricingLinks.length).toBeGreaterThanOrEqual(1);
-    const faqLinks = screen.getAllByText("FAQ");
-    expect(faqLinks.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Pricing").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("FAQ").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Use cases").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Clients").length).toBeGreaterThanOrEqual(1);
   });
 });
