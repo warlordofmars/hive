@@ -19,6 +19,8 @@ export default function PageLayout({ children }) {
             <span className="font-bold text-xl tracking-[1px]">Hive</span>
           </span>
           <div className="flex items-center gap-6">
+            <a href="/use-cases" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Use cases</a>
+            <a href="/clients" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Clients</a>
             <a href="/pricing" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Pricing</a>
             <a href="/faq" className="text-white/75 text-sm no-underline hover:text-white transition-colors">FAQ</a>
             <a href="/docs/" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Docs</a>
@@ -43,6 +45,8 @@ export default function PageLayout({ children }) {
               <span className="font-bold text-sm tracking-[1px] text-[var(--text-muted)]">Hive</span>
             </div>
             <div className="flex gap-8 text-sm text-[var(--text-muted)]">
+              <a href="/use-cases" className="no-underline hover:text-[var(--text)] transition-colors">Use cases</a>
+              <a href="/clients" className="no-underline hover:text-[var(--text)] transition-colors">Clients</a>
               <a href="/pricing" className="no-underline hover:text-[var(--text)] transition-colors">Pricing</a>
               <a href="/faq" className="no-underline hover:text-[var(--text)] transition-colors">FAQ</a>
               <a href="/docs/" className="no-underline hover:text-[var(--text)] transition-colors">Docs</a>
