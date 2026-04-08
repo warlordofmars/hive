@@ -6,11 +6,13 @@ import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import Dashboard from "./components/Dashboard.jsx";
+import ChangelogPage from "./components/ChangelogPage.jsx";
 import FaqPage from "./components/FaqPage.jsx";
 import HomePage from "./components/HomePage.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import McpClientsPage from "./components/McpClientsPage.jsx";
 import PricingPage from "./components/PricingPage.jsx";
+import StatusPage from "./components/StatusPage.jsx";
 import UseCasesPage from "./components/UseCasesPage.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import SetupPanel from "./components/SetupPanel.jsx";
@@ -206,6 +208,8 @@ export default function App() {
         <Route path="/faq" element={<FaqPage />} />
         <Route path="/use-cases" element={<UseCasesPage />} />
         <Route path="/clients" element={<McpClientsPage />} />
+        <Route path="/changelog" element={<ChangelogPage />} />
+        <Route path="/status" element={<StatusPage />} />
         <Route path="/app" element={<AppShell />} />
         <Route path="/oauth/callback" element={<AuthCallback />} />
         <Route path="*" element={<Navigate to="/" replace />} />

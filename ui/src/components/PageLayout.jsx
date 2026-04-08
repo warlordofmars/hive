@@ -44,12 +44,14 @@ export default function PageLayout({ children }) {
               <img src="/logo.svg" alt="Hive" className="h-5 w-auto opacity-60" />
               <span className="font-bold text-sm tracking-[1px] text-[var(--text-muted)]">Hive</span>
             </div>
-            <div className="flex gap-8 text-sm text-[var(--text-muted)]">
+            <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm text-[var(--text-muted)]">
               <a href="/use-cases" className="no-underline hover:text-[var(--text)] transition-colors">Use cases</a>
               <a href="/clients" className="no-underline hover:text-[var(--text)] transition-colors">Clients</a>
               <a href="/pricing" className="no-underline hover:text-[var(--text)] transition-colors">Pricing</a>
               <a href="/faq" className="no-underline hover:text-[var(--text)] transition-colors">FAQ</a>
               <a href="/docs/" className="no-underline hover:text-[var(--text)] transition-colors">Docs</a>
+              <a href="/changelog" className="no-underline hover:text-[var(--text)] transition-colors">Changelog</a>
+              <a href="/status" className="no-underline hover:text-[var(--text)] transition-colors">Status</a>
             </div>
           </div>
           <p className="mt-6 text-[13px] text-[var(--text-muted)]">© 2026 Hive. Free to use.</p>
