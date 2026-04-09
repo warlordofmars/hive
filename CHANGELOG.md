@@ -4,6 +4,12 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.16.1 — 2026-04-08
+
+### Fixed
+
+- Upgrade `cryptography` 46.0.6 → 46.0.7 to address CVE-2026-39892 (#237)
+
 ## v0.16.0 — 2026-04-08
 
 ### Added
