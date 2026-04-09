@@ -1,6 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { trackEvent, trackPageView } from "./analytics.js";
 import { api } from "./api.js";
 import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
@@ -52,6 +53,11 @@ function signOut() {
 
 function AppShell() {
   const [tab, setTab] = useState("memories");
+
+  function switchTab(id) {
+    setTab(id);
+    trackEvent("tab_view", { tab_name: id });
+  }
   const [version, setVersion] = useState(null);
   const navigate = useNavigate();
   const { theme, toggle } = useTheme();
@@ -107,7 +113,7 @@ function AppShell() {
           {tabs.map((t) => (
             <button
               key={t.id}
-              onClick={() => setTab(t.id)}
+              onClick={() => switchTab(t.id)}
               style={{
                 background: tab === t.id ? "rgba(255,255,255,.15)" : "transparent",
                 color: "#fff",
@@ -198,10 +204,19 @@ function HomeRoute() {
   return <HomePage />;
 }
 
+function RouteTracker() {
+  const location = useLocation();
+  useEffect(() => {
+    trackPageView(location.pathname);
+  }, [location.pathname]);
+  return null;
+}
+
 export default function App() {
   useTheme(); // apply data-theme to <html> for all routes
   return (
     <BrowserRouter>
+      <RouteTracker />
       <Routes>
         <Route path="/" element={<HomeRoute />} />
         <Route path="/pricing" element={<PricingPage />} />
