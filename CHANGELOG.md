@@ -4,6 +4,22 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.16.0 — 2026-04-08
+
+### Added
+
+- Marketing site expanded with Pricing, FAQ, Use Cases, MCP Client Compatibility, Changelog, and Status pages (#231, #232, #234)
+- Shared `PageLayout` component with consistent header/footer nav across all marketing pages (#231)
+- `ChangelogPage` parses `CHANGELOG.md` at build time and renders versioned sections with color-coded change groups (#234)
+- `StatusPage` performs a live health check against `GET /health` with refresh and checked-at time display (#234)
+- shadcn/ui component foundation with Tailwind v4 design tokens matching VitePress docs site branding (#228)
+
+### Fixed
+
+- Tailwind utility classes (`mx-auto`) overridden by unlayered CSS reset — moved reset into `@layer base` (#229)
+- Flash of light background on dark-mode page load — synchronous inline theme script applied before first paint (#230)
+- E2e mobile menu toggle test replaced fixed 300ms wait with condition-based `wait_for` (#235)
+
 ## v0.15.0 — 2026-04-07
 
 ### Added
