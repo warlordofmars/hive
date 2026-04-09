@@ -485,6 +485,8 @@ jobs:
 
       - name: Build React UI
         working-directory: ui
+        env:
+          VITE_GA_MEASUREMENT_ID: ${{ secrets.VITE_GA_MEASUREMENT_ID }}
         run: npm install && npm run build
 
       - name: Build docs site
@@ -673,6 +675,8 @@ jobs:
 
       - name: Build React UI
         working-directory: ui
+        env:
+          VITE_GA_MEASUREMENT_ID: ${{ secrets.VITE_GA_MEASUREMENT_ID }}
         run: npm install && npm run build
 
       - name: Build docs site

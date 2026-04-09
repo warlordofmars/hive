@@ -4,6 +4,7 @@ import { BrainCircuit, Plug, ShieldCheck, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import PageLayout from "@/components/PageLayout";
+import { trackEvent } from "@/analytics.js";
 
 const FEATURES = [
   {
@@ -49,6 +50,11 @@ const HOW_IT_WORKS = [
 export default function HomePage() {
   const navigate = useNavigate();
 
+  function handleCta(location) {
+    trackEvent("cta_click", { cta_location: location });
+    navigate("/app");
+  }
+
   return (
     <PageLayout>
       {/* Hero */}
@@ -67,7 +73,7 @@ export default function HomePage() {
           Hive gives your AI agents a shared, durable memory store via the Model Context
           Protocol — works with Claude Code, Cursor, Continue, and any MCP-compatible client.
         </p>
-        <Button variant="brand" size="lg" onClick={() => navigate("/app")}>
+        <Button variant="brand" size="lg" onClick={() => handleCta("hero")}>
           Get started free →
         </Button>
         <p className="mt-4 text-white/45 text-[13px]">No credit card required</p>
@@ -116,7 +122,7 @@ export default function HomePage() {
             ))}
           </div>
           <div className="text-center mt-14">
-            <Button variant="brand" size="lg" onClick={() => navigate("/app")}>
+            <Button variant="brand" size="lg" onClick={() => handleCta("how_it_works")}>
               Get started free →
             </Button>
           </div>
