@@ -361,15 +361,18 @@ class TestDocsNavbar:
             f"Sign in button navigated to {page.url!r} — expected URL ending in '/app'."
         )
 
-    def test_signin_back_button_returns_to_docs(self, docs_page):
+    def test_signin_back_button_returns_to_docs(self, _browser):
         """Pressing Back after Sign in returns to the docs page — not a /docs/app 404.
 
         The old approach used a RouterLink (href=/docs/app) with a JS click
         interceptor.  Vue Router pushed /docs/app onto the history stack before
         the interceptor fired, so Back landed on /docs/app (404).  The fix is
         a plain <a href="/app"> that Vue Router never sees.
+
+        Uses a fresh page (not the module-scoped docs_page) so that accumulated
+        history from prior tests doesn't affect the go_back() destination.
         """
-        page = docs_page
+        page = _browser.new_page()
         origin_url = f"{UI_URL}/docs/getting-started/what-is-hive"
         page.goto(origin_url, timeout=30_000, wait_until="networkidle")
         signin_btn = page.locator(".docs-signin-btn")
@@ -388,6 +391,7 @@ class TestDocsNavbar:
         assert page.locator(".VPNavBar").is_visible(), (
             f"Back button left the docs site entirely ({page.url!r})."
         )
+        page.close()
 
     def test_signin_link_has_button_style(self, docs_page):
         """Sign in button styling matches the marketing site header button exactly.
@@ -464,6 +468,6 @@ class TestDocsNavbar:
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
         hamburger = page.locator(".VPNavBarHamburger")
         hamburger.click()
-        page.wait_for_timeout(300)
         screen = page.locator(".VPNavScreen")
+        screen.wait_for(state="visible", timeout=5_000)
         assert screen.is_visible(), "Mobile nav screen did not open after hamburger click"
