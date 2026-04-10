@@ -19,7 +19,7 @@ vi.mock("../api.js", () => ({
 }));
 
 import { api } from "../api.js";
-import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip } from "./Dashboard.jsx";
+import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip, CustomDailyCostTooltip } from "./Dashboard.jsx";
 
 const STATS = {
   total_memories: 42,
@@ -90,6 +90,25 @@ describe("CustomTooltip", () => {
     expect(screen.getByText("2026-04-01 12:00")).toBeTruthy();
     expect(screen.getByText("remember:")).toBeTruthy();
     expect(screen.getByText("5")).toBeTruthy();
+  });
+});
+
+describe("CustomDailyCostTooltip", () => {
+  it("returns null when not active", () => {
+    const { container } = render(<CustomDailyCostTooltip active={false} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("returns null when payload is empty", () => {
+    const { container } = render(<CustomDailyCostTooltip active={true} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders date and formatted cost when active", () => {
+    const payload = [{ value: 0.02 }];
+    render(<CustomDailyCostTooltip active={true} payload={payload} label="2026-04-01" />);
+    expect(screen.getByText("2026-04-01")).toBeTruthy();
+    expect(screen.getByText("$0.0200")).toBeTruthy();
   });
 });
 

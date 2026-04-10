@@ -71,7 +71,7 @@ function buildCostSeries(monthly) {
 }
 
 function buildDailyCostSeries(daily) {
-  return (daily ?? []).map((d) => ({ date: d.date, total: d.total }));
+  return daily.map((d) => ({ date: d.date, total: d.total }));
 }
 
 function collectServices(monthly) {
@@ -114,6 +114,16 @@ export function CustomTooltip({ active, payload, label }) {
           <span style={{ fontWeight: 600 }}>{p.value}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+export function CustomDailyCostTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "var(--text)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-muted)" }}>{label}</div>
+      <div style={{ fontWeight: 600 }}>{formatCostTooltip(payload[0].value)}</div>
     </div>
   );
 }
@@ -499,17 +509,7 @@ export default function Dashboard() {
               height={40}
             />
             <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
-            <Tooltip
-              content={({ active, payload, label }) => {
-                if (!active || !payload?.length) return null;
-                return (
-                  <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "var(--text)" }}>
-                    <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-muted)" }}>{label}</div>
-                    <div style={{ fontWeight: 600 }}>{formatCostTooltip(payload[0].value)}</div>
-                  </div>
-                );
-              }}
-            />
+            <Tooltip content={<CustomDailyCostTooltip />} />
             <Area
               type="monotone"
               dataKey="total"
