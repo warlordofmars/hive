@@ -4,6 +4,13 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.17.0 — 2026-04-09
+
+### Added
+
+- Google Analytics 4 integration: `page_view` on route changes, `tab_view` on app tab switches, `cta_click` on "Get started" buttons (#240)
+- GA4 is disabled in local dev and when `VITE_GA_MEASUREMENT_ID` is unset — no tracking in development
+
 ## v0.16.1 — 2026-04-08
 
 ### Fixed
