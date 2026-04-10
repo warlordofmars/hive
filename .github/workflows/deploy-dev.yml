@@ -46,4 +46,6 @@ jobs:
         run: npm install && npm run build
 
       - name: Deploy
+        env:
+          VITE_GA_MEASUREMENT_ID: ${{ secrets.VITE_GA_MEASUREMENT_ID }}
         run: uv run inv deploy --env dev
