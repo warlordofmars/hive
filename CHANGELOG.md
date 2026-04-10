@@ -4,6 +4,12 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.17.1 — 2026-04-10
+
+### Fixed
+
+- Pass `VITE_GA_MEASUREMENT_ID` to `inv deploy` steps so GA4 tag is correctly substituted in deployed `index.html` (#243)
+
 ## v0.17.0 — 2026-04-09
 
 ### Added
