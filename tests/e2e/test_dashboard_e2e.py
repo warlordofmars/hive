@@ -65,7 +65,7 @@ class TestDashboardE2E:
         page.locator("nav button:has-text('Dashboard')").click()
         page.wait_for_load_state("networkidle")
         # Switch through all period options — none should trigger an error banner
-        for period in ("1h", "7d", "24h"):
+        for period in ("1h", "7d", "30d", "24h"):
             page.locator(f"button:has-text('{period}')").click()
             page.wait_for_load_state("networkidle")
             assert not page.locator("text=Failed to load metrics").is_visible(), (

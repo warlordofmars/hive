@@ -24,12 +24,14 @@ _PERIOD_SECONDS = {
     "1h": 3600,
     "24h": 86400,
     "7d": 7 * 86400,
+    "30d": 30 * 86400,
 }
 # CloudWatch resolution per period (stat window size in seconds)
 _STAT_PERIOD = {
     "1h": 300,  # 5-min buckets
     "24h": 3600,  # 1-hour buckets
     "7d": 86400,  # 1-day buckets
+    "30d": 86400,  # 1-day buckets
 }
 
 # Cost cache: store results in a module-level dict keyed by env to avoid
@@ -220,12 +222,12 @@ def _get_cost_data() -> dict[str, Any]:
 
 @router.get("/metrics")
 async def get_metrics(
-    period: str = Query("24h", pattern="^(1h|24h|7d)$"),
+    period: str = Query("24h", pattern="^(1h|24h|7d|30d)$"),
     _claims: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Return CloudWatch metric time-series for the current environment.
 
-    Admin-only. Period: 1h | 24h | 7d.
+    Admin-only. Period: 1h | 24h | 7d | 30d.
     """
     return {
         "period": period,

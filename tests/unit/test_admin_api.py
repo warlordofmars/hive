@@ -194,6 +194,17 @@ class TestAdminMetrics:
         assert resp.status_code == 200
         assert resp.json()["period"] == "7d"
 
+    def test_returns_metrics_for_30d(self, admin_tc):
+        with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
+            mock_cw = MagicMock()
+            mock_cw.get_metric_data.return_value = {"MetricDataResults": []}
+            mock_cw_factory.return_value = mock_cw
+
+            resp = admin_tc.get("/api/admin/metrics?period=30d")
+
+        assert resp.status_code == 200
+        assert resp.json()["period"] == "30d"
+
     def test_invalid_period_returns_422(self, admin_tc):
         resp = admin_tc.get("/api/admin/metrics?period=99d")
         assert resp.status_code == 422
