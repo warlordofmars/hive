@@ -444,7 +444,10 @@ class TestStats:
         tc, *_ = admin_client
         resp = tc.get("/api/stats")
         assert resp.status_code == 200
-        assert "total_memories" in resp.json()
+        data = resp.json()
+        assert "total_memories" in data
+        assert "total_users" in data
+        assert isinstance(data["total_users"], int)
 
     def test_get_activity_default(self, client):
         tc, *_ = client

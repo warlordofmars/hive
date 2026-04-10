@@ -15,7 +15,6 @@ vi.mock("../api.js", () => ({
     getStats: vi.fn(),
     getMetrics: vi.fn(),
     getCosts: vi.fn(),
-    listUsers: vi.fn(),
   },
 }));
 
@@ -25,6 +24,7 @@ import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip } f
 const STATS = {
   total_memories: 42,
   total_clients: 3,
+  total_users: 7,
   events_today: 10,
   events_last_7_days: 88,
 };
@@ -67,9 +67,11 @@ const COSTS = {
       by_service: { "AWS Lambda": 0.5, "Amazon DynamoDB": 0.12 },
     },
   ],
+  daily: [
+    { date: "2026-04-01", total: 0.02 },
+    { date: "2026-04-02", total: 0.03 },
+  ],
 };
-
-const USERS = { total: 7, items: [], next_cursor: null };
 
 describe("CustomTooltip", () => {
   it("returns null when not active", () => {
@@ -128,7 +130,6 @@ describe("Dashboard", () => {
     api.getStats.mockResolvedValue(STATS);
     api.getMetrics.mockResolvedValue(METRICS);
     api.getCosts.mockResolvedValue(COSTS);
-    api.listUsers.mockResolvedValue(USERS);
   });
 
   afterEach(() => {
@@ -148,6 +149,12 @@ describe("Dashboard", () => {
     expect(screen.getByText("30d")).toBeTruthy();
   });
 
+  it("selected period button has orange background", async () => {
+    await act(async () => render(<Dashboard />));
+    const btn = screen.getByText("24h");
+    expect(btn.style.background).toBe("rgb(232, 160, 32)");
+  });
+
   it("renders summary stat cards after load", async () => {
     await act(async () => render(<Dashboard />));
     await waitFor(() => expect(screen.getByText("42")).toBeTruthy());
@@ -160,9 +167,18 @@ describe("Dashboard", () => {
     expect(screen.getByText("Events (7d)")).toBeTruthy();
   });
 
-  it("renders Total Users stat card", async () => {
+  it("renders Total Users stat card from stats.total_users", async () => {
     await act(async () => render(<Dashboard />));
     await waitFor(() => expect(screen.getByText("Total Users")).toBeTruthy());
+    // total_users = 7 appears multiple times (also tokens_issued); confirm at least one
+    expect(screen.getAllByText("7").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders — for Total Users when total_users is null", async () => {
+    api.getStats.mockResolvedValue({ ...STATS, total_users: null });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Total Users")).toBeTruthy());
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders MTD cost stat card", async () => {
@@ -172,16 +188,17 @@ describe("Dashboard", () => {
   });
 
   it("does not render MTD cost card when no cost data", async () => {
-    api.getCosts.mockResolvedValue({ environment: "dev", currency: "USD", note: "x", monthly: [] });
+    api.getCosts.mockResolvedValue({ environment: "dev", currency: "USD", note: "x", monthly: [], daily: [] });
     await act(async () => render(<Dashboard />));
     await waitFor(() => expect(screen.queryByText("AWS Cost (MTD)")).toBeFalsy());
   });
 
-  it("renders section headers with renamed latency title", async () => {
+  it("renders section headers", async () => {
     await act(async () => render(<Dashboard />));
     expect(screen.getByText("Tool Invocations")).toBeTruthy();
     expect(screen.getByText("Tool Latency p99 (ms)")).toBeTruthy();
     expect(screen.getByText("Auth Events")).toBeTruthy();
+    expect(screen.getByText("Daily AWS Spend (Last 30 Days)")).toBeTruthy();
     expect(screen.getByText("Monthly AWS Spend")).toBeTruthy();
   });
 
@@ -244,16 +261,31 @@ describe("Dashboard", () => {
     expect(screen.getByText("No latency data for this period.")).toBeTruthy();
   });
 
-  it("shows empty state when no cost data", async () => {
+  it("shows empty state when no monthly cost data", async () => {
     api.getCosts.mockResolvedValue({
       environment: "dev",
       currency: "USD",
       note: "Cost data lags ~24 h.",
       monthly: [],
+      daily: [],
     });
     await act(async () => render(<Dashboard />));
     await waitFor(() =>
       expect(screen.getByText("No cost data available yet.")).toBeTruthy()
+    );
+  });
+
+  it("shows empty state when no daily cost data", async () => {
+    api.getCosts.mockResolvedValue({
+      environment: "dev",
+      currency: "USD",
+      note: "Cost data lags ~24 h.",
+      monthly: [{ period: "2026-03-01", total: 0.62, by_service: { "AWS Lambda": 0.62 } }],
+      daily: [],
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() =>
+      expect(screen.getByText("No daily cost data available yet.")).toBeTruthy()
     );
   });
 
@@ -294,7 +326,6 @@ describe("Dashboard", () => {
     api.getStats.mockReturnValue(new Promise((r) => { resolve = r; }));
     api.getMetrics.mockReturnValue(new Promise(() => {}));
     api.getCosts.mockReturnValue(new Promise(() => {}));
-    api.listUsers.mockReturnValue(new Promise(() => {}));
 
     await act(async () => render(<Dashboard />));
     expect(screen.getByText("Loading…")).toBeTruthy();
@@ -305,11 +336,12 @@ describe("Dashboard", () => {
     api.getStats.mockResolvedValue({
       total_memories: null,
       total_clients: 3,
+      total_users: null,
       events_today: 10,
       events_last_7_days: 88,
     });
     await act(async () => render(<Dashboard />));
-    await waitFor(() => expect(screen.getByText("—")).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1));
   });
 
   it("handles metrics response missing metrics key", async () => {
@@ -328,6 +360,19 @@ describe("Dashboard", () => {
     );
   });
 
+  it("handles costs response missing daily key", async () => {
+    api.getCosts.mockResolvedValue({
+      environment: "dev",
+      currency: "USD",
+      note: "Cost data lags ~24 h.",
+      monthly: [{ period: "2026-03-01", total: 0.62, by_service: { "AWS Lambda": 0.62 } }],
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() =>
+      expect(screen.getByText("No daily cost data available yet.")).toBeTruthy()
+    );
+  });
+
   it("handles sparse values array (values[i] undefined)", async () => {
     api.getMetrics.mockResolvedValue({
       period: "24h",
@@ -341,20 +386,5 @@ describe("Dashboard", () => {
     });
     await act(async () => render(<Dashboard />));
     expect(screen.getByText("Tool Invocations")).toBeTruthy();
-  });
-
-  it("handles listUsers rejection gracefully", async () => {
-    api.listUsers.mockRejectedValue(new Error("forbidden"));
-    await act(async () => render(<Dashboard />));
-    await waitFor(() => expect(screen.getByText("Total Users")).toBeTruthy());
-    // value should be — when listUsers fails
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("handles listUsers response missing total field", async () => {
-    api.listUsers.mockResolvedValue({ items: [] });
-    await act(async () => render(<Dashboard />));
-    await waitFor(() => expect(screen.getByText("Total Users")).toBeTruthy());
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
   });
 });
