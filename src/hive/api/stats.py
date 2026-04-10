@@ -36,9 +36,11 @@ async def get_stats(
     events_today = storage.get_events_for_date(today.isoformat())
     events_7 = storage.get_events_for_dates(last_7, limit=10000)
 
+    is_admin = claims.get("role") == "admin"
     return StatsResponse(
         total_memories=storage.count_memories(owner_user_id=owner_user_id),
         total_clients=storage.count_clients(owner_user_id=owner_user_id),
+        total_users=storage.count_users() if is_admin else None,
         events_today=len(events_today),
         events_last_7_days=len(events_7),
     )

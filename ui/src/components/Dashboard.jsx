@@ -70,6 +70,10 @@ function buildCostSeries(monthly) {
   return monthly.map((m) => ({ month: m.period.slice(0, 7), ...m.by_service }));
 }
 
+function buildDailyCostSeries(daily) {
+  return daily.map((d) => ({ date: d.date, total: d.total }));
+}
+
 function collectServices(monthly) {
   const set = new Set();
   for (const m of monthly) Object.keys(m.by_service).forEach((s) => set.add(s));
@@ -85,7 +89,7 @@ export function formatCostTooltip(v) {
 }
 
 // ------------------------------------------------------------------
-// Custom Tooltip
+// Custom Tooltips
 // ------------------------------------------------------------------
 
 export function CustomTooltip({ active, payload, label }) {
@@ -110,6 +114,16 @@ export function CustomTooltip({ active, payload, label }) {
           <span style={{ fontWeight: 600 }}>{p.value}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+export function CustomDailyCostTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "var(--text)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-muted)" }}>{label}</div>
+      <div style={{ fontWeight: 600 }}>{formatCostTooltip(payload[0].value)}</div>
     </div>
   );
 }
@@ -242,7 +256,6 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [costs, setCosts] = useState(null);
-  const [userCount, setUserCount] = useState(null);
   const [metricsError, setMetricsError] = useState("");
   const [costsError, setCostsError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -256,11 +269,10 @@ export default function Dashboard() {
     setMetricsError("");
     setCostsError("");
 
-    const [statsRes, metricsRes, costsRes, usersRes] = await Promise.allSettled([
+    const [statsRes, metricsRes, costsRes] = await Promise.allSettled([
       api.getStats(),
       api.getMetrics(period),
       api.getCosts(),
-      api.listUsers({ limit: 1 }),
     ]);
 
     if (statsRes.status === "fulfilled") setStats(statsRes.value);
@@ -268,7 +280,6 @@ export default function Dashboard() {
     else setMetricsError(metricsRes.reason?.message ?? "Failed to load metrics");
     if (costsRes.status === "fulfilled") setCosts(costsRes.value);
     else setCostsError(costsRes.reason?.message ?? "Failed to load costs");
-    if (usersRes.status === "fulfilled") setUserCount(usersRes.value?.total ?? null);
 
     setLastRefreshed(new Date());
     setLoading(false);
@@ -283,6 +294,7 @@ export default function Dashboard() {
   const invData = metrics ? buildInvocationSeries(metrics.metrics ?? {}, TOOLS) : [];
   const latData = metrics ? buildLatencySeries(metrics.metrics ?? {}, TOOLS) : [];
   const costData = costs ? buildCostSeries(costs.monthly ?? []) : [];
+  const dailyCostData = costs ? buildDailyCostSeries(costs.daily ?? []) : [];
   const services = costs ? collectServices(costs.monthly ?? []) : [];
 
   const mtdCost = costs?.monthly?.length
@@ -323,12 +335,13 @@ export default function Dashboard() {
               key={p}
               onClick={() => setPeriod(p)}
               style={{
-                background: period === p ? "#1a1a2e" : "var(--surface)",
-                color: period === p ? "#fff" : "var(--text)",
-                border: "1px solid var(--border)",
+                background: period === p ? "#e8a020" : "var(--surface)",
+                color: period === p ? "#1a1a2e" : "var(--text)",
+                border: period === p ? "1px solid #e8a020" : "1px solid var(--border)",
                 borderRadius: 6,
                 padding: "4px 12px",
                 fontSize: 13,
+                fontWeight: period === p ? 700 : 400,
                 cursor: "pointer",
               }}
             >
@@ -374,7 +387,7 @@ export default function Dashboard() {
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
           <StatCard label="Total Memories" value={stats.total_memories} />
           <StatCard label="Total Clients" value={stats.total_clients} />
-          <StatCard label="Total Users" value={userCount} />
+          <StatCard label="Total Users" value={stats.total_users} />
           <StatCard label="Events Today" value={stats.events_today} />
           <StatCard label="Events (7d)" value={stats.events_last_7_days} />
           {mtdCost !== null && (
@@ -390,45 +403,12 @@ export default function Dashboard() {
         <SkeletonBlock height={260} />
       ) : invData.length > 0 ? (
         <ResponsiveContainer width="100%" height={260}>
-          <LineChart data={invData} margin={{ bottom: 10 }}>
-            <defs>
-              <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-            </defs>
-            <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-            <XAxis {...xAxisProps} />
-            <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
-            {TOOLS.map((t) => (
-              <Line
-                key={t}
-                type="monotone"
-                dataKey={t}
-                stroke={TOOL_COLORS[t]}
-                dot={false}
-                strokeWidth={2}
-                animationDuration={400}
-                activeDot={{ r: 5, strokeWidth: 2 }}
-              />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-      ) : !metricsError && (
-        <EmptyState icon={TrendingUp} message="No invocation data for this period." />
-      )}
-
-      {/* Tool Latency p99 */}
-      <SectionHeader title="Tool Latency p99 (ms)" />
-      {loading && !metrics ? (
-        <SkeletonBlock height={220} />
-      ) : latData.length > 0 ? (
-        <ResponsiveContainer width="100%" height={220}>
-          <AreaChart data={latData} margin={{ bottom: 10 }}>
+          <AreaChart data={invData} margin={{ bottom: 10 }}>
             <defs>
               {TOOLS.map((t) => (
-                <linearGradient key={t} id={`grad_${t}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.2} />
-                  <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0} />
+                <linearGradient key={t} id={`inv_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
+                  <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
                 </linearGradient>
               ))}
             </defs>
@@ -443,7 +423,46 @@ export default function Dashboard() {
                 type="monotone"
                 dataKey={t}
                 stroke={TOOL_COLORS[t]}
-                fill={`url(#grad_${t})`}
+                fill={`url(#inv_grad_${t})`}
+                strokeWidth={2}
+                dot={false}
+                animationDuration={400}
+                activeDot={{ r: 5, strokeWidth: 2 }}
+              />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      ) : !metricsError && (
+        <EmptyState icon={TrendingUp} message="No invocation data for this period." />
+      )}
+
+      {/* Tool Latency p99 */}
+      <SectionHeader title="Tool Latency p99 (ms)" />
+      {loading && !metrics ? (
+        <SkeletonBlock height={220} />
+      ) : latData.length > 0 ? (
+        <ResponsiveContainer width="100%" height={220}>
+          <AreaChart data={latData} margin={{ bottom: 10 }}>
+            <defs>
+              {TOOLS.map((t) => (
+                <linearGradient key={t} id={`lat_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
+                  <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
+            <XAxis {...xAxisProps} />
+            <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+            <Tooltip content={<CustomTooltip />} />
+            <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
+            {TOOLS.map((t) => (
+              <Area
+                key={t}
+                type="monotone"
+                dataKey={t}
+                stroke={TOOL_COLORS[t]}
+                fill={`url(#lat_grad_${t})`}
                 strokeWidth={2}
                 dot={false}
                 animationDuration={400}
@@ -466,9 +485,48 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Daily AWS Spend */}
+      <SectionHeader title="Daily AWS Spend (Last 30 Days)" />
+      <ErrorBanner msg={costsError} />
+      {loading && !costs ? (
+        <SkeletonBlock height={200} />
+      ) : dailyCostData.length > 0 ? (
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart data={dailyCostData} margin={{ bottom: 10 }}>
+            <defs>
+              <linearGradient id="daily_cost_grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#e8a020" stopOpacity={0.4} />
+                <stop offset="95%" stopColor="#e8a020" stopOpacity={0.04} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+              interval="preserveStartEnd"
+              angle={-25}
+              textAnchor="end"
+              height={40}
+            />
+            <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
+            <Tooltip content={<CustomDailyCostTooltip />} />
+            <Area
+              type="monotone"
+              dataKey="total"
+              stroke="#e8a020"
+              fill="url(#daily_cost_grad)"
+              strokeWidth={2}
+              dot={false}
+              animationDuration={400}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      ) : !costsError && (
+        <EmptyState icon={BarChart2} message="No daily cost data available yet." />
+      )}
+
       {/* Monthly AWS Spend */}
       <SectionHeader title="Monthly AWS Spend" />
-      <ErrorBanner msg={costsError} />
       {costs && (
         <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
           {costs.note}

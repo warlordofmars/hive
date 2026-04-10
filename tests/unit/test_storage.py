@@ -341,6 +341,14 @@ class TestListAllAndCounts:
         storage.put_client(OAuthClient(client_name="B"))
         assert storage.count_clients() == 2
 
+    def test_count_users(self, storage):
+        assert storage.count_users() == 0
+        from hive.models import User
+
+        storage.put_user(User(email="a@x.com", display_name="A"))
+        storage.put_user(User(email="b@x.com", display_name="B"))
+        assert storage.count_users() == 2
+
 
 # ---------------------------------------------------------------------------
 # Pagination

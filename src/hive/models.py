@@ -545,6 +545,7 @@ class TokenResponse(BaseModel):
 class StatsResponse(BaseModel):
     total_memories: int
     total_clients: int
+    total_users: int | None = None  # admin only
     events_today: int
     events_last_7_days: int
 

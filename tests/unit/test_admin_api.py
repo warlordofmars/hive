@@ -84,8 +84,8 @@ def _make_cw_response(metric_ids: list[str]) -> dict:
     }
 
 
-def _make_ce_response() -> dict:
-    """Build a minimal Cost Explorer GetCostAndUsage response."""
+def _make_ce_monthly_response() -> dict:
+    """Build a minimal Cost Explorer monthly GetCostAndUsage response."""
     return {
         "ResultsByTime": [
             {
@@ -103,6 +103,28 @@ def _make_ce_response() -> dict:
             }
         ]
     }
+
+
+def _make_ce_daily_response() -> dict:
+    """Build a minimal Cost Explorer daily GetCostAndUsage response."""
+    return {
+        "ResultsByTime": [
+            {
+                "TimePeriod": {"Start": "2026-04-01", "End": "2026-04-02"},
+                "Groups": [
+                    {
+                        "Keys": ["AWS Lambda"],
+                        "Metrics": {"UnblendedCost": {"Amount": "0.0200", "Unit": "USD"}},
+                    },
+                ],
+            }
+        ]
+    }
+
+
+def _make_ce_response() -> dict:
+    """Back-compat alias — returns monthly response (used by CW tests that don't check costs)."""
+    return _make_ce_monthly_response()
 
 
 @pytest.fixture()
@@ -236,10 +258,18 @@ class TestAdminCosts:
 
         admin_mod._cost_cache.clear()
 
+    def _mock_ce(self, mock_ce, repeats=1):
+        """Set side_effect to return monthly then daily responses, repeated N times."""
+        responses = []
+        for _ in range(repeats):
+            responses.append(_make_ce_monthly_response())
+            responses.append(_make_ce_daily_response())
+        mock_ce.get_cost_and_usage.side_effect = responses
+
     def test_returns_cost_data(self, admin_tc):
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
-            mock_ce.get_cost_and_usage.return_value = _make_ce_response()
+            self._mock_ce(mock_ce)
             mock_ce_factory.return_value = mock_ce
 
             resp = admin_tc.get("/api/admin/costs")
@@ -251,6 +281,10 @@ class TestAdminCosts:
         assert body["monthly"][0]["period"] == "2026-03-01"
         assert body["monthly"][0]["total"] == pytest.approx(0.62, abs=0.01)
         assert "AWS Lambda" in body["monthly"][0]["by_service"]
+        assert "daily" in body
+        assert len(body["daily"]) == 1
+        assert body["daily"][0]["date"] == "2026-04-01"
+        assert body["daily"][0]["total"] == pytest.approx(0.02, abs=0.001)
 
     def test_non_admin_gets_403(self, user_tc):
         resp = user_tc.get("/api/admin/costs")
@@ -259,19 +293,19 @@ class TestAdminCosts:
     def test_cache_is_used_on_second_call(self, admin_tc):
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
-            mock_ce.get_cost_and_usage.return_value = _make_ce_response()
+            self._mock_ce(mock_ce)
             mock_ce_factory.return_value = mock_ce
 
             admin_tc.get("/api/admin/costs")
             admin_tc.get("/api/admin/costs")
 
-            # CE should only be called once — second hit uses cache
-            assert mock_ce.get_cost_and_usage.call_count == 1
+            # CE makes 2 calls (monthly + daily) on first request; second uses cache
+            assert mock_ce.get_cost_and_usage.call_count == 2
 
     def test_cache_expires_after_ttl(self, admin_tc):
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
-            mock_ce.get_cost_and_usage.return_value = _make_ce_response()
+            self._mock_ce(mock_ce, repeats=2)
             mock_ce_factory.return_value = mock_ce
 
             admin_tc.get("/api/admin/costs")
@@ -284,12 +318,13 @@ class TestAdminCosts:
             admin_mod._cost_cache[env] = (ts - admin_mod._COST_CACHE_TTL - 1, data)
 
             admin_tc.get("/api/admin/costs")
-            assert mock_ce.get_cost_and_usage.call_count == 2
+            # 2 CE calls per request × 2 requests = 4
+            assert mock_ce.get_cost_and_usage.call_count == 4
 
     def test_note_and_environment_in_response(self, admin_tc):
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
-            mock_ce.get_cost_and_usage.return_value = _make_ce_response()
+            self._mock_ce(mock_ce)
             mock_ce_factory.return_value = mock_ce
 
             resp = admin_tc.get("/api/admin/costs")
