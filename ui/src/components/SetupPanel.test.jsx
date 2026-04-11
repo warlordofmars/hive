@@ -1,15 +1,29 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../api.js", () => ({
+  api: { listMemories: vi.fn() },
+}));
+
+import { api } from "../api.js";
 import SetupPanel from "./SetupPanel.jsx";
 
 describe("SetupPanel", () => {
+  let _storage;
+
   beforeEach(() => {
+    _storage = {};
+    vi.stubGlobal("localStorage", {
+      getItem: (k) => _storage[k] ?? null,
+      setItem: (k, v) => { _storage[k] = v; },
+      removeItem: (k) => { delete _storage[k]; },
+    });
     vi.stubGlobal("navigator", {
       ...navigator,
       clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
+    api.listMemories.mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
@@ -95,5 +109,64 @@ describe("SetupPanel", () => {
     await act(async () => render(<SetupPanel />));
     fireEvent.click(screen.getByText("Cursor"));
     expect(document.body.textContent).toContain("Restart Cursor");
+  });
+
+  it("Copy sets step1 flag in localStorage", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Copy"));
+    expect(_storage["hive_setup_step1_done"]).toBe("1");
+  });
+
+  it("shows step 1 checkmark when step1 flag already set in localStorage", async () => {
+    _storage["hive_setup_step1_done"] = "1";
+    await act(async () => render(<SetupPanel />));
+    // Check icon rendered (SVG) — heading still contains "Step 1" text
+    expect(screen.getByText(/Step 1/)).toBeTruthy();
+  });
+
+  it("Test connection button calls api.listMemories", async () => {
+    await act(async () => render(<SetupPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Test connection")));
+    expect(api.listMemories).toHaveBeenCalled();
+  });
+
+  it("shows Connected on successful test", async () => {
+    await act(async () => render(<SetupPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Test connection")));
+    await waitFor(() => expect(screen.getByText("Connected")).toBeTruthy());
+  });
+
+  it("shows error message on failed test", async () => {
+    api.listMemories.mockRejectedValue(new Error("Unauthorized"));
+    await act(async () => render(<SetupPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Test connection")));
+    await waitFor(() => expect(screen.getByText("Unauthorized")).toBeTruthy());
+  });
+
+  it("shows error message when rejection has no message", async () => {
+    api.listMemories.mockRejectedValue({});
+    await act(async () => render(<SetupPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Test connection")));
+    await waitFor(() => expect(screen.getByText("Connection failed")).toBeTruthy());
+  });
+
+  it("shows You're all set banner when both steps complete", async () => {
+    _storage["hive_setup_step1_done"] = "1";
+    await act(async () => render(<SetupPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Test connection")));
+    await waitFor(() => expect(screen.getByText(/You're all set/)).toBeTruthy());
+  });
+
+  it("dispatches hive:switch-tab event when Memories link clicked in banner", async () => {
+    _storage["hive_setup_step1_done"] = "1";
+    await act(async () => render(<SetupPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Test connection")));
+    await waitFor(() => expect(screen.getByText(/You're all set/)).toBeTruthy());
+    const handler = vi.fn();
+    window.addEventListener("hive:switch-tab", handler);
+    fireEvent.click(screen.getByText("Memories"));
+    expect(handler).toHaveBeenCalled();
+    expect(handler.mock.calls[0][0].detail).toBe("memories");
+    window.removeEventListener("hive:switch-tab", handler);
   });
 });

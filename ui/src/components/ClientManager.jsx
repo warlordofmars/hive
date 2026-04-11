@@ -1,5 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import { api } from "../api.js";
 
 export default function ClientManager() {
@@ -14,6 +15,13 @@ export default function ClientManager() {
     token_endpoint_auth_method: "none",
   });
   const [newClient, setNewClient] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+
+  function handleCopyId(id) {
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -158,7 +166,18 @@ export default function ClientManager() {
             {clients.map((c) => (
               <tr key={c.client_id}>
                 <td><strong>{c.client_name}</strong></td>
-                <td><code style={{ fontSize: 12 }}>{c.client_id}</code></td>
+                <td>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <code style={{ fontSize: 12 }}>{c.client_id}</code>
+                    <button
+                      onClick={() => handleCopyId(c.client_id)}
+                      style={{ background: "transparent", padding: "2px 4px", color: "var(--text-muted)" }}
+                      aria-label="Copy client ID"
+                    >
+                      {copiedId === c.client_id ? <Check size={13} /> : <Copy size={13} />}
+                    </button>
+                  </span>
+                </td>
                 <td>{c.token_endpoint_auth_method === "none" ? "public" : "confidential"}</td>
                 <td>{c.scope}</td>
                 <td>{new Date(c.client_id_issued_at * 1000).toLocaleDateString()}</td>

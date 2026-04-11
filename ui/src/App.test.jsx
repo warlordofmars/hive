@@ -358,6 +358,13 @@ describe("AppShell", () => {
     expect(link.getAttribute("href")).toBe("/changelog");
   });
 
+  it("hive:switch-tab event switches the active tab", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    act(() => window.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "clients" })));
+    expect(screen.getByTestId("client-manager")).toBeTruthy();
+  });
+
   it("footer changelog link underlines on hover and resets on mouse out", async () => {
     await act(async () => render(<App />));
     await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
