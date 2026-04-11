@@ -28,10 +28,16 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 ENVIRONMENT = os.environ.get("HIVE_ENV", os.environ.get("ENV", "local"))
 
-# Log group names are injected by CDK so we use the real (CDK-generated) Lambda
-# function names rather than guessing them at runtime.
+# MCP log group is injected by CDK (mcp_fn.function_name has no cycle).
+# API log group is derived from AWS_LAMBDA_FUNCTION_NAME, which the Lambda
+# runtime injects automatically — avoids a CDK self-reference circular dep.
 _MCP_LOG_GROUP = os.environ.get("HIVE_MCP_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-mcp")
-_API_LOG_GROUP = os.environ.get("HIVE_API_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-api")
+_AWS_FUNCTION_NAME = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "")
+_API_LOG_GROUP = (
+    f"/aws/lambda/{_AWS_FUNCTION_NAME}"
+    if _AWS_FUNCTION_NAME
+    else f"/aws/lambda/hive-{ENVIRONMENT}-api"
+)
 
 # Map human window labels → milliseconds
 _WINDOW_MS: dict[str, int] = {
