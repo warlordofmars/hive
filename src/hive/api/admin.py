@@ -39,6 +39,10 @@ _STAT_PERIOD = {
 _cost_cache: dict[str, tuple[float, Any]] = {}
 _COST_CACHE_TTL = 86400  # 24 hours
 
+# Alarm cache: alarm state changes infrequently; cache for 5 min.
+_alarm_cache: dict[str, tuple[float, Any]] = {}
+_ALARM_CACHE_TTL = 300  # 5 minutes
+
 
 def _cloudwatch_client():  # pragma: no cover
     return boto3.client("cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1"))
@@ -270,3 +274,56 @@ async def get_costs(
     Admin-only. Results cached for 24 h.
     """
     return _get_cost_data()
+
+
+def _get_alarm_data() -> dict[str, Any]:
+    """Fetch CloudWatch alarm states for all Hive alarms, cached for 5 min."""
+    cached = _alarm_cache.get(ENVIRONMENT)
+    if cached and time.time() - cached[0] < _ALARM_CACHE_TTL:
+        return cached[1]
+
+    cw = _cloudwatch_client()
+    try:
+        resp = cw.describe_alarms(
+            AlarmNamePrefix=f"Hive-{ENVIRONMENT}-",
+            AlarmTypes=["MetricAlarm"],
+        )
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=502, detail=f"CloudWatch error: {exc}") from exc
+
+    alarms = []
+    for a in resp.get("MetricAlarms", []):
+        alarms.append(
+            {
+                "name": a["AlarmName"],
+                "description": a.get("AlarmDescription", ""),
+                "state": a["StateValue"],
+                "state_updated_at": a["StateUpdatedTimestamp"].isoformat(),
+                "threshold": a.get("Threshold"),
+                "comparison_operator": a.get("ComparisonOperator", ""),
+                "metric_name": a.get("MetricName", ""),
+                "namespace": a.get("Namespace", ""),
+            }
+        )
+
+    data: dict[str, Any] = {"environment": ENVIRONMENT, "alarms": alarms}
+    _alarm_cache[ENVIRONMENT] = (time.time(), data)
+    return data
+
+
+@router.get(
+    "/alarms",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        502: {"description": "CloudWatch error"},
+    },
+)
+async def get_alarms(
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
+) -> dict[str, Any]:
+    """Return CloudWatch alarm states for all Hive-prefixed alarms.
+
+    Admin-only. Results cached for 5 min.
+    """
+    return _get_alarm_data()

@@ -361,7 +361,7 @@ class HiveStack(cdk.Stack):
         origin_verify_param.grant_read(api_role)
         api_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["cloudwatch:GetMetricData"],
+                actions=["cloudwatch:GetMetricData", "cloudwatch:DescribeAlarms"],
                 resources=["*"],
             )
         )
@@ -957,6 +957,7 @@ function handler(event) {
             alarm = cw.Alarm(
                 self,
                 construct_id,
+                alarm_name=f"Hive-{env_name}-{construct_id.removesuffix('Alarm')}",
                 metric=error_rate,
                 threshold=5,
                 evaluation_periods=2,
@@ -976,6 +977,7 @@ function handler(event) {
         mcp_p99_alarm = cw.Alarm(
             self,
             "McpP99DurationAlarm",
+            alarm_name=f"Hive-{env_name}-McpP99Duration",
             metric=mcp_fn.metric_duration(
                 period=cdk.Duration.minutes(5), statistic="p99"
             ),
@@ -993,6 +995,7 @@ function handler(event) {
         ddb_throttle_alarm = cw.Alarm(
             self,
             "DdbThrottleAlarm",
+            alarm_name=f"Hive-{env_name}-DdbThrottles",
             metric=cw.Metric(
                 namespace="AWS/DynamoDB",
                 metric_name="ThrottledRequests",
@@ -1013,6 +1016,7 @@ function handler(event) {
         cf_5xx_alarm = cw.Alarm(
             self,
             "CloudFront5xxAlarm",
+            alarm_name=f"Hive-{env_name}-CloudFront5xx",
             metric=cw.Metric(
                 namespace="AWS/CloudFront",
                 metric_name="5xxErrorRate",
@@ -1031,6 +1035,49 @@ function handler(event) {
         )
         if is_prod:
             cf_5xx_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # Custom EMF metric alarms
+        tool_errors_alarm = cw.Alarm(
+            self,
+            "ToolErrorsAlarm",
+            alarm_name=f"Hive-{env_name}-ToolErrors",
+            metric=cw.Metric(
+                namespace="Hive",
+                metric_name="ToolErrors",
+                dimensions_map={"Environment": env_name},
+                period=cdk.Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=10,
+            evaluation_periods=2,
+            datapoints_to_alarm=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive tool errors > 10 in 5 min ({env_name})",
+        )
+        if is_prod:
+            tool_errors_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        storage_latency_alarm = cw.Alarm(
+            self,
+            "StorageLatencyAlarm",
+            alarm_name=f"Hive-{env_name}-StorageLatencyHigh",
+            metric=cw.Metric(
+                namespace="Hive",
+                metric_name="StorageLatencyMs",
+                dimensions_map={"Environment": env_name},
+                period=cdk.Duration.minutes(5),
+                statistic="p99",
+            ),
+            threshold=2000,
+            evaluation_periods=2,
+            datapoints_to_alarm=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive storage latency p99 > 2000ms ({env_name})",
+        )
+        if is_prod:
+            storage_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
 
         # Dashboard
         dashboard = cw.Dashboard(
