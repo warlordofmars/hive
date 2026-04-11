@@ -413,11 +413,17 @@ class HiveStack(cdk.Stack):
 
         # Pass the actual CloudWatch log group names to the API Lambda so it can
         # query them without guessing CDK-generated function names at runtime.
-        mcp_log_group_name = f"/aws/lambda/{mcp_fn.function_name}"
-        api_log_group_name = f"/aws/lambda/{api_fn.function_name}"
-        api_fn.add_environment("HIVE_MCP_LOG_GROUP", mcp_log_group_name)
-        api_fn.add_environment("HIVE_API_LOG_GROUP", api_log_group_name)
+        # NOTE: api_fn.function_name is a CloudFormation token — it cannot appear
+        # in api_role's IAM policy (api_fn depends on api_role → circular).
+        # We use it only in add_environment (self-reference is permitted) and
+        # scope the IAM policy to the stack-name prefix, which is a plain string.
+        api_fn.add_environment("HIVE_MCP_LOG_GROUP", f"/aws/lambda/{mcp_fn.function_name}")
+        api_fn.add_environment("HIVE_API_LOG_GROUP", f"/aws/lambda/{api_fn.function_name}")
 
+        # CDK names functions "{StackId}-{LogicalId}-{RandomSuffix}".
+        # The stack construct_id is the first segment, so "/aws/lambda/HiveStack*"
+        # matches all Lambdas in this stack without creating a token dependency.
+        _stack_prefix = construct_id  # e.g. "HiveStack-dev"
         api_role.add_to_policy(
             iam.PolicyStatement(
                 actions=[
@@ -425,10 +431,8 @@ class HiveStack(cdk.Stack):
                     "logs:DescribeLogGroups",
                 ],
                 resources=[
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{mcp_log_group_name}",
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{mcp_log_group_name}:*",
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{api_log_group_name}",
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{api_log_group_name}:*",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{_stack_prefix}-*",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{_stack_prefix}-*:*",
                 ],
             )
         )
