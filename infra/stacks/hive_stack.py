@@ -371,6 +371,18 @@ class HiveStack(cdk.Stack):
                 resources=["*"],
             )
         )
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "logs:FilterLogEvents",
+                    "logs:DescribeLogGroups",
+                ],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/hive-*",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/hive-*:*",
+                ],
+            )
+        )
         # S3 Vectors + Bedrock Titan Embeddings V2 for API Lambda
         api_role.add_to_policy(
             iam.PolicyStatement(

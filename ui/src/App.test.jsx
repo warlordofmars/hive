@@ -30,6 +30,9 @@ vi.mock("./components/HomePage.jsx", () => ({
 vi.mock("./components/Dashboard.jsx", () => ({
   default: () => <div data-testid="dashboard" />,
 }));
+vi.mock("./components/LogViewer.jsx", () => ({
+  default: () => <div data-testid="log-viewer" />,
+}));
 
 /** Build a syntactically-valid mgmt JWT with given claims. */
 function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
@@ -234,6 +237,14 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     fireEvent.click(screen.getByText("Dashboard"));
     expect(screen.getByTestId("dashboard")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("switches to LogViewer when Logs tab is clicked (admin only)", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ role: "admin" });
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Logs"));
+    expect(screen.getByTestId("log-viewer")).toBeTruthy();
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 

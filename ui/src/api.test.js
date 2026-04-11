@@ -284,6 +284,32 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/api/admin/costs");
   });
 
+  it("getLogs with defaults calls correct endpoint", async () => {
+    mockOk({ events: [], next_token: null });
+    await api.getLogs();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/admin/logs");
+    expect(fetchMock.mock.calls[0][0]).toContain("group=all");
+    expect(fetchMock.mock.calls[0][0]).toContain("window=1h");
+  });
+
+  it("getLogs with filter appends filter param", async () => {
+    mockOk({ events: [], next_token: null });
+    await api.getLogs({ group: "mcp", window: "3h", filter: "ERROR" });
+    expect(fetchMock.mock.calls[0][0]).toContain("filter=ERROR");
+  });
+
+  it("getLogs omits filter when empty", async () => {
+    mockOk({ events: [], next_token: null });
+    await api.getLogs({ group: "mcp", window: "1h", filter: "" });
+    expect(fetchMock.mock.calls[0][0]).not.toContain("filter=");
+  });
+
+  it("getLogs with nextToken appends next_token param", async () => {
+    mockOk({ events: [], next_token: null });
+    await api.getLogs({ nextToken: "tok123" });
+    expect(fetchMock.mock.calls[0][0]).toContain("next_token=tok123");
+  });
+
   // ---------------------------------------------------------------------------
   // 401 handling — clears token and redirects
   // ---------------------------------------------------------------------------

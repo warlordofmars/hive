@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from hive.api.admin import router as admin_router
 from hive.api.clients import router as clients_router
+from hive.api.logs import router as logs_router
 from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
 from hive.api.users import router as users_router
@@ -125,6 +126,7 @@ app.include_router(clients_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+app.include_router(logs_router, prefix="/api")
 
 
 @app.get("/health", include_in_schema=False)

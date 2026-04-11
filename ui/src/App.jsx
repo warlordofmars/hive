@@ -8,6 +8,7 @@ import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import Dashboard from "./components/Dashboard.jsx";
+import LogViewer from "./components/LogViewer.jsx";
 import ChangelogPage from "./components/ChangelogPage.jsx";
 import FaqPage from "./components/FaqPage.jsx";
 import HomePage from "./components/HomePage.jsx";
@@ -31,6 +32,7 @@ const ADMIN_TABS = [
   ...BASE_TABS,
   { id: "users", label: "Users" },
   { id: "dashboard", label: "Dashboard" },
+  { id: "logs", label: "Logs" },
 ];
 
 function parseToken(token) {
@@ -187,6 +189,7 @@ function AppShell() {
         {tab === "users" && isAdmin && <UsersPanel />}
         {tab === "setup" && <SetupPanel />}
         {tab === "dashboard" && isAdmin && <Dashboard />}
+        {tab === "logs" && isAdmin && <LogViewer />}
       </main>
 
       {version && (
