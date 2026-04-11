@@ -3,4 +3,4 @@ import "@testing-library/jest-dom";
 
 // jsdom does not implement scrollIntoView; stub it so components that call it
 // do not throw and coverage branches are reachable.
-window.HTMLElement.prototype.scrollIntoView = function () {};
+globalThis.HTMLElement.prototype.scrollIntoView = function () {};

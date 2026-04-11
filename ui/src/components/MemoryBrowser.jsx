@@ -1,5 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import PropTypes from "prop-types";
 import { X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
@@ -113,6 +114,7 @@ export function TagPicker({ knownTags, value, onSelect }) {
         // Input
         <input
           id="tag-filter-input"
+          role="combobox"
           style={{ width: "100%" }}
           placeholder="Filter by tag"
           value={inputValue}
@@ -129,7 +131,7 @@ export function TagPicker({ knownTags, value, onSelect }) {
       )}
 
       {open && suggestions.length > 0 && (
-        <ul
+        <div
           id="tag-suggestions"
           ref={listRef}
           role="listbox"
@@ -147,11 +149,10 @@ export function TagPicker({ knownTags, value, onSelect }) {
             zIndex: 100,
             margin: 0,
             padding: "4px 0",
-            listStyle: "none",
           }}
         >
           {suggestions.map((t, i) => (
-            <li
+            <div
               key={t}
               id={`tag-opt-${i}`}
               role="option"
@@ -166,13 +167,19 @@ export function TagPicker({ knownTags, value, onSelect }) {
               }}
             >
               {t}
-            </li>
+            </div>
           ))}
-        </ul>
+        </div>
       )}
     </div>
   );
 }
+
+TagPicker.propTypes = {
+  knownTags: PropTypes.arrayOf(PropTypes.string).isRequired,
+  value: PropTypes.string.isRequired,
+  onSelect: PropTypes.func.isRequired,
+};
 
 // ------------------------------------------------------------------
 // MemoryBrowser
@@ -237,7 +244,7 @@ export default function MemoryBrowser() {
   }, [searchQuery, runSearch]);
 
   // Collect distinct tags from loaded memories for suggestions
-  const knownTags = [...new Set(memories.flatMap((m) => m.tags))].sort();
+  const knownTags = [...new Set(memories.flatMap((m) => m.tags))].sort((a, b) => a.localeCompare(b));
 
   function handleTagSelect(tag) {
     setTagFilter(tag);
