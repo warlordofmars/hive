@@ -9,7 +9,7 @@ DELETE /users/{user_id} — admin only.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -29,8 +29,8 @@ def _storage() -> HiveStorage:
 
 @router.get("/users/me")
 async def get_me(
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> UserResponse:
     user = storage.get_user_by_id(claims["sub"])
     if user is None:
@@ -40,10 +40,10 @@ async def get_me(
 
 @router.get("/users")
 async def list_users(
-    limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
-    cursor: str | None = Query(None),
-    claims: dict[str, Any] = Depends(require_admin),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_admin)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    limit: Annotated[int, Query(ge=1, le=_LIMIT_MAX)] = _LIMIT_DEFAULT,
+    cursor: Annotated[str | None, Query()] = None,
 ) -> PagedResponse:
     users, next_cursor = storage.list_users(limit=limit, cursor=cursor)
     return PagedResponse(
@@ -57,8 +57,8 @@ async def list_users(
 @router.delete("/users/{user_id}", status_code=204)
 async def delete_user(
     user_id: str,
-    claims: dict[str, Any] = Depends(require_admin),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_admin)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> None:
     deleted = storage.delete_user(user_id)
     if not deleted:

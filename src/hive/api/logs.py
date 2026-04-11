@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Annotated, Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -116,11 +116,11 @@ def _fetch_log_events(
 
 @router.get("/logs")
 async def get_logs(
-    group: str = Query("all", pattern="^(all|mcp|api)$"),
-    window: str = Query("1h", pattern="^(15m|1h|3h|24h)$"),
-    filter_pattern: str = Query("", alias="filter"),
-    next_token: str | None = Query(None),
-    _claims: dict[str, Any] = Depends(require_admin),
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
+    group: Annotated[str, Query(pattern="^(all|mcp|api)$")] = "all",
+    window: Annotated[str, Query(pattern="^(15m|1h|3h|24h)$")] = "1h",
+    filter_pattern: Annotated[str, Query(alias="filter")] = "",
+    next_token: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     """Return recent CloudWatch log events. Admin-only.
 

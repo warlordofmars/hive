@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Annotated, Any
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -233,8 +233,8 @@ def _get_cost_data() -> dict[str, Any]:
 
 @router.get("/metrics")
 async def get_metrics(
-    period: str = Query("24h", pattern="^(1h|24h|7d|30d)$"),
-    _claims: dict[str, Any] = Depends(require_admin),
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
+    period: Annotated[str, Query(pattern="^(1h|24h|7d|30d)$")] = "24h",
 ) -> dict[str, Any]:
     """Return CloudWatch metric time-series for the current environment.
 
@@ -249,7 +249,7 @@ async def get_metrics(
 
 @router.get("/costs")
 async def get_costs(
-    _claims: dict[str, Any] = Depends(require_admin),
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
 ) -> dict[str, Any]:
     """Return AWS Cost Explorer monthly spend breakdown.
 
