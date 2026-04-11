@@ -413,6 +413,100 @@ describe("MemoryBrowser", () => {
     expect(screen.queryByText("Edit: test-key")).toBeNull();
   });
 
+  // ---------------------------------------------------------------------------
+  // List keyboard navigation (#257)
+  // ---------------------------------------------------------------------------
+
+  it("ArrowDown moves focus to next card", async () => {
+    const m1 = makeMemory({ memory_id: "m1", key: "key1" });
+    const m2 = makeMemory({ memory_id: "m2", key: "key2" });
+    api.listMemories.mockResolvedValue({ items: [m1, m2], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("key1"));
+
+    const card1 = screen.getByText("key1").closest(".card");
+    const card2 = screen.getByText("key2").closest(".card");
+
+    // Focus card1 then press ArrowDown → card2 gets focus
+    await act(async () => fireEvent.focus(card1));
+    await act(async () => fireEvent.keyDown(card1, { key: "ArrowDown" }));
+    await waitFor(() => expect(card2).toHaveFocus());
+  });
+
+  it("ArrowUp moves focus to previous card", async () => {
+    const m1 = makeMemory({ memory_id: "m1", key: "key1" });
+    const m2 = makeMemory({ memory_id: "m2", key: "key2" });
+    api.listMemories.mockResolvedValue({ items: [m1, m2], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("key2"));
+
+    const card1 = screen.getByText("key1").closest(".card");
+    const card2 = screen.getByText("key2").closest(".card");
+
+    // Focus card2 then press ArrowUp → card1 gets focus
+    await act(async () => fireEvent.focus(card2));
+    await act(async () => fireEvent.keyDown(card2, { key: "ArrowUp" }));
+    await waitFor(() => expect(card1).toHaveFocus());
+  });
+
+  it("Delete key on focused card triggers delete", async () => {
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null })
+      .mockResolvedValue({ items: [], next_cursor: null });
+    api.deleteMemory.mockResolvedValue(null);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    const card = screen.getByText("test-key").closest(".card");
+    await act(async () => fireEvent.keyDown(card, { key: "Delete" }));
+    expect(api.deleteMemory).toHaveBeenCalledWith("m1");
+  });
+
+  it("Backspace key on focused card triggers delete", async () => {
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null })
+      .mockResolvedValue({ items: [], next_cursor: null });
+    api.deleteMemory.mockResolvedValue(null);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    const card = screen.getByText("test-key").closest(".card");
+    await act(async () => fireEvent.keyDown(card, { key: "Backspace" }));
+    expect(api.deleteMemory).toHaveBeenCalledWith("m1");
+  });
+
+  it("Escape key on card closes the edit panel", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+
+    // Open edit panel
+    fireEvent.click(screen.getByText("test-key").closest(".card"));
+    expect(screen.getByText("Edit: test-key")).toBeTruthy();
+
+    // Escape closes it
+    const card = screen.getByText("test-key").closest(".card");
+    await act(async () => fireEvent.keyDown(card, { key: "Escape" }));
+    expect(screen.queryByText("Edit: test-key")).toBeNull();
+  });
+
+  it("onFocus on card tracks focusedIndex (ArrowDown starts from focused card)", async () => {
+    const m1 = makeMemory({ memory_id: "m1", key: "key1" });
+    const m2 = makeMemory({ memory_id: "m2", key: "key2" });
+    const m3 = makeMemory({ memory_id: "m3", key: "key3" });
+    api.listMemories.mockResolvedValue({ items: [m1, m2, m3], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("key2"));
+
+    const card2 = screen.getByText("key2").closest(".card");
+    const card3 = screen.getByText("key3").closest(".card");
+
+    // Focus card2 (index 1) then ArrowDown → card3 (index 2)
+    await act(async () => fireEvent.focus(card2));
+    await act(async () => fireEvent.keyDown(card2, { key: "ArrowDown" }));
+    await waitFor(() => expect(card3).toHaveFocus());
+  });
+
   it("updates memory and closes form on success", async () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
     api.updateMemory.mockResolvedValue({});

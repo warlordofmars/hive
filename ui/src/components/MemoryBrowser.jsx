@@ -197,7 +197,9 @@ export default function MemoryBrowser() {
   const [editing, setEditing] = useState(null); // memory object or null
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ key: "", value: "", tags: "" });
+  const [focusedIndex, setFocusedIndex] = useState(-1);
   const searchDebounceRef = useRef(null);
+  const listRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -337,6 +339,41 @@ export default function MemoryBrowser() {
     setForm({ key: "", value: "", tags: "" });
   }
 
+  function closePanel() {
+    setEditing(null);
+    setCreating(false);
+  }
+
+  // Programmatically focus the card at focusedIndex when it changes
+  useEffect(() => {
+    if (focusedIndex >= 0 && listRef.current) {
+      const card = listRef.current.children[focusedIndex];
+      card?.focus();
+    }
+  }, [focusedIndex]);
+
+  function handleListKeyDown(e) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setFocusedIndex((i) => Math.min(i + 1, memories.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setFocusedIndex((i) => Math.max(i - 1, 0));
+    }
+  }
+
+  function handleCardKeyDown(e, m) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openEdit(m);
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      handleDelete(m.memory_id);
+    } else if (e.key === "Escape") {
+      closePanel();
+    }
+  }
+
   return (
     <div style={{ display: "flex", gap: 20 }}>
       {/* List */}
@@ -369,8 +406,12 @@ export default function MemoryBrowser() {
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {memories.map((m) => (
+        <div
+          ref={listRef}
+          style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          onKeyDown={handleListKeyDown}
+        >
+          {memories.map((m, i) => (
             <div
               key={m.memory_id}
               className="card"
@@ -378,7 +419,8 @@ export default function MemoryBrowser() {
               tabIndex={0}
               style={{ cursor: "pointer", borderLeft: "4px solid var(--accent)" }}
               onClick={() => openEdit(m)}
-              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && openEdit(m)}
+              onFocus={() => setFocusedIndex(i)}
+              onKeyDown={(e) => handleCardKeyDown(e, m)}
             >
               <div
                 style={{
@@ -492,10 +534,7 @@ export default function MemoryBrowser() {
                 <button
                   className="secondary"
                   type="button"
-                  onClick={() => {
-                    setCreating(false);
-                    setEditing(null);
-                  }}
+                  onClick={closePanel}
                 >
                   Cancel
                 </button>

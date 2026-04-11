@@ -232,9 +232,9 @@ describe("Dashboard", () => {
     await waitFor(() => expect(screen.getByText(/Cost data lags/)).toBeTruthy());
   });
 
-  it("shows last refreshed time after load", async () => {
+  it("shows relative refresh time after load", async () => {
     await act(async () => render(<Dashboard />));
-    await waitFor(() => expect(screen.getByText(/Checked at/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("just now")).toBeTruthy());
   });
 
   it("switches period when a period button is clicked", async () => {
