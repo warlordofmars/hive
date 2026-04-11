@@ -90,7 +90,8 @@ class TestUIE2E:
         # Filter by the unique tag — type to open the combobox dropdown, then
         # click the matching suggestion to commit the filter.
         page.locator("input[placeholder='Filter by tag']").fill(unique_tag)
-        page.get_by_role("option", name=unique_tag).click()
+        page.wait_for_selector(f"[role='option']:has-text('{unique_tag}')", timeout=10_000)
+        page.locator("[role='option']", has_text=unique_tag).click()
 
         page.wait_for_selector(f"text={memory_key}", timeout=30_000)
         assert page.locator(f"text={memory_key}").first.is_visible()

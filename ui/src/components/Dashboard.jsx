@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { BarChart2, TrendingUp } from "lucide-react";
+import { AlertTriangle, BarChart2, CheckCircle, TrendingUp, XCircle } from "lucide-react";
 import { api } from "../api.js";
 
 // Brand-aligned tool colors: navy/orange palette + complementary tones
@@ -247,6 +247,56 @@ function EmptyState({ icon: Icon, message }) {
 }
 
 // ------------------------------------------------------------------
+// Alarm status
+// ------------------------------------------------------------------
+
+export const ALARM_STATE_STYLE = {
+  OK:               { icon: CheckCircle,  color: "var(--success)" },
+  ALARM:            { icon: XCircle,      color: "var(--danger)" },
+  INSUFFICIENT_DATA:{ icon: AlertTriangle, color: "var(--text-muted)" },
+};
+
+export function AlarmBadge({ alarm }) {
+  const style = ALARM_STATE_STYLE[alarm.state] ?? ALARM_STATE_STYLE.INSUFFICIENT_DATA;
+  const Icon = style.icon;
+  const label = alarm.description || alarm.name.replace(/^Hive-[^-]+-/, "");
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        padding: "7px 12px",
+        fontSize: 13,
+      }}
+    >
+      <Icon size={14} style={{ color: style.color, flexShrink: 0 }} />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function AlarmStatusRow({ alarms, loading, error }) {
+  if (loading && !alarms) {
+    return (
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        {[1, 2, 3, 4].map((i) => <SkeletonBlock key={i} height={36} width={160} />)}
+      </div>
+    );
+  }
+  if (error) return <ErrorBanner msg={error} />;
+  if (!alarms?.alarms?.length) return null;
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+      {alarms.alarms.map((a) => <AlarmBadge key={a.name} alarm={a} />)}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
 // Chart sections (extracted to reduce cognitive complexity)
 // ------------------------------------------------------------------
 
@@ -327,8 +377,10 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [costs, setCosts] = useState(null);
+  const [alarms, setAlarms] = useState(null);
   const [metricsError, setMetricsError] = useState("");
   const [costsError, setCostsError] = useState("");
+  const [alarmsError, setAlarmsError] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const relativeTime = useRelativeTime(lastRefreshed);
@@ -340,11 +392,13 @@ export default function Dashboard() {
     setLoading(true);
     setMetricsError("");
     setCostsError("");
+    setAlarmsError("");
 
-    const [statsRes, metricsRes, costsRes] = await Promise.allSettled([
+    const [statsRes, metricsRes, costsRes, alarmsRes] = await Promise.allSettled([
       api.getStats(),
       api.getMetrics(period),
       api.getCosts(),
+      api.getAlarms(),
     ]);
 
     if (statsRes.status === "fulfilled") setStats(statsRes.value);
@@ -352,6 +406,8 @@ export default function Dashboard() {
     else setMetricsError(metricsRes.reason?.message ?? "Failed to load metrics");
     if (costsRes.status === "fulfilled") setCosts(costsRes.value);
     else setCostsError(costsRes.reason?.message ?? "Failed to load costs");
+    if (alarmsRes.status === "fulfilled") setAlarms(alarmsRes.value);
+    else setAlarmsError(alarmsRes.reason?.message ?? "Failed to load alarms");
 
     setLastRefreshed(new Date());
     setLoading(false);
@@ -447,6 +503,9 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* Alarm status */}
+      <AlarmStatusRow alarms={alarms} loading={loading} error={alarmsError} />
 
       {/* Summary stats */}
       {loading && !stats ? (

@@ -15,11 +15,12 @@ vi.mock("../api.js", () => ({
     getStats: vi.fn(),
     getMetrics: vi.fn(),
     getCosts: vi.fn(),
+    getAlarms: vi.fn(),
   },
 }));
 
 import { api } from "../api.js";
-import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip, CustomDailyCostTooltip } from "./Dashboard.jsx";
+import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip, CustomDailyCostTooltip, AlarmBadge, ALARM_STATE_STYLE } from "./Dashboard.jsx";
 
 const STATS = {
   total_memories: 42,
@@ -72,6 +73,53 @@ const COSTS = {
     { date: "2026-04-02", total: 0.03 },
   ],
 };
+
+const ALARMS = {
+  environment: "test",
+  alarms: [
+    {
+      name: "Hive-test-McpErrorRate",
+      description: "MCP error rate > 5%",
+      state: "OK",
+      state_updated_at: "2026-04-11T12:00:00+00:00",
+      threshold: 5.0,
+      comparison_operator: "GreaterThanThreshold",
+      metric_name: "ErrorRate",
+      namespace: "AWS/Lambda",
+    },
+  ],
+};
+
+describe("AlarmBadge", () => {
+  it("renders OK state with description as label", () => {
+    const { container } = render(
+      <AlarmBadge alarm={{ name: "Hive-test-McpErrorRate", description: "MCP error rate > 5%", state: "OK" }} />
+    );
+    expect(screen.getByText("MCP error rate > 5%")).toBeTruthy();
+    expect(container.querySelector("svg")).toBeTruthy();
+  });
+
+  it("renders ALARM state", () => {
+    render(<AlarmBadge alarm={{ name: "Hive-test-ToolErrors", description: "Tool errors high", state: "ALARM" }} />);
+    expect(screen.getByText("Tool errors high")).toBeTruthy();
+  });
+
+  it("renders INSUFFICIENT_DATA state", () => {
+    render(<AlarmBadge alarm={{ name: "Hive-test-Foo", description: "Foo alarm", state: "INSUFFICIENT_DATA" }} />);
+    expect(screen.getByText("Foo alarm")).toBeTruthy();
+  });
+
+  it("falls back to INSUFFICIENT_DATA style for unknown state", () => {
+    render(<AlarmBadge alarm={{ name: "Hive-test-X", description: "", state: "UNKNOWN_STATE" }} />);
+    // Falls back: icon is AlertTriangle (same as INSUFFICIENT_DATA)
+    expect(ALARM_STATE_STYLE.INSUFFICIENT_DATA).toBeTruthy();
+  });
+
+  it("strips env prefix from name when description is empty", () => {
+    render(<AlarmBadge alarm={{ name: "Hive-dev-McpErrorRate", description: "", state: "OK" }} />);
+    expect(screen.getByText("McpErrorRate")).toBeTruthy();
+  });
+});
 
 describe("CustomTooltip", () => {
   it("returns null when not active", () => {
@@ -149,6 +197,7 @@ describe("Dashboard", () => {
     api.getStats.mockResolvedValue(STATS);
     api.getMetrics.mockResolvedValue(METRICS);
     api.getCosts.mockResolvedValue(COSTS);
+    api.getAlarms.mockResolvedValue(ALARMS);
   });
 
   afterEach(() => {
@@ -405,5 +454,36 @@ describe("Dashboard", () => {
     });
     await act(async () => render(<Dashboard />));
     expect(screen.getByText("Tool Invocations")).toBeTruthy();
+  });
+
+  it("shows alarm badge with description after load", async () => {
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("MCP error rate > 5%")).toBeTruthy());
+  });
+
+  it("shows alarm skeleton while loading", async () => {
+    let resolve;
+    api.getAlarms.mockReturnValue(new Promise((r) => { resolve = r; }));
+    await act(async () => render(<Dashboard />));
+    // Four skeleton blocks rendered for alarms (no alarms data yet)
+    resolve(ALARMS);
+  });
+
+  it("shows alarms error banner when getAlarms rejects", async () => {
+    api.getAlarms.mockRejectedValue(new Error("CloudWatch unavailable"));
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("CloudWatch unavailable")).toBeTruthy());
+  });
+
+  it("handles getAlarms rejection with no message", async () => {
+    api.getAlarms.mockRejectedValue({});
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Failed to load alarms")).toBeTruthy());
+  });
+
+  it("renders nothing for alarm row when alarms list is empty", async () => {
+    api.getAlarms.mockResolvedValue({ environment: "test", alarms: [] });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.queryByText("MCP error rate > 5%")).toBeNull());
   });
 });

@@ -332,3 +332,118 @@ class TestAdminCosts:
         body = resp.json()
         assert "note" in body
         assert "environment" in body
+
+
+# ---------------------------------------------------------------------------
+# /admin/alarms
+# ---------------------------------------------------------------------------
+
+
+class TestAdminAlarms:
+    def setup_method(self):
+        import hive.api.admin as admin_mod
+
+        admin_mod._alarm_cache.clear()
+
+    def _make_describe_alarms_response(self, state: str = "OK") -> dict:
+        ts = datetime.datetime(2026, 4, 11, 12, 0, tzinfo=datetime.timezone.utc)
+        return {
+            "MetricAlarms": [
+                {
+                    "AlarmName": "Hive-local-McpErrorRate",
+                    "AlarmDescription": "MCP error rate > 5%",
+                    "StateValue": state,
+                    "StateUpdatedTimestamp": ts,
+                    "Threshold": 5.0,
+                    "ComparisonOperator": "GreaterThanThreshold",
+                    "MetricName": "ErrorRate",
+                    "Namespace": "AWS/Lambda",
+                }
+            ]
+        }
+
+    def test_returns_alarm_data(self, admin_tc):
+        with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
+            mock_cw = MagicMock()
+            mock_cw.describe_alarms.return_value = self._make_describe_alarms_response()
+            mock_cw_factory.return_value = mock_cw
+
+            resp = admin_tc.get("/api/admin/alarms")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "alarms" in body
+        assert len(body["alarms"]) == 1
+        alarm = body["alarms"][0]
+        assert alarm["name"] == "Hive-local-McpErrorRate"
+        assert alarm["state"] == "OK"
+        assert alarm["description"] == "MCP error rate > 5%"
+        assert alarm["threshold"] == 5.0
+        assert alarm["metric_name"] == "ErrorRate"
+        assert alarm["state_updated_at"] == "2026-04-11T12:00:00+00:00"
+
+    def test_non_admin_gets_403(self, user_tc):
+        resp = user_tc.get("/api/admin/alarms")
+        assert resp.status_code == 403
+
+    def test_cache_is_used_on_second_call(self, admin_tc):
+        with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
+            mock_cw = MagicMock()
+            mock_cw.describe_alarms.return_value = self._make_describe_alarms_response()
+            mock_cw_factory.return_value = mock_cw
+
+            admin_tc.get("/api/admin/alarms")
+            admin_tc.get("/api/admin/alarms")
+
+            assert mock_cw.describe_alarms.call_count == 1
+
+    def test_cache_expires_after_ttl(self, admin_tc):
+        with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
+            mock_cw = MagicMock()
+            mock_cw.describe_alarms.return_value = self._make_describe_alarms_response()
+            mock_cw_factory.return_value = mock_cw
+
+            admin_tc.get("/api/admin/alarms")
+
+            import hive.api.admin as admin_mod
+
+            env = admin_mod.ENVIRONMENT
+            ts, data = admin_mod._alarm_cache[env]
+            admin_mod._alarm_cache[env] = (ts - admin_mod._ALARM_CACHE_TTL - 1, data)
+
+            admin_tc.get("/api/admin/alarms")
+            assert mock_cw.describe_alarms.call_count == 2
+
+    def test_empty_when_no_alarms(self, admin_tc):
+        with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
+            mock_cw = MagicMock()
+            mock_cw.describe_alarms.return_value = {"MetricAlarms": []}
+            mock_cw_factory.return_value = mock_cw
+
+            resp = admin_tc.get("/api/admin/alarms")
+
+        assert resp.json()["alarms"] == []
+
+    def test_environment_in_response(self, admin_tc):
+        with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
+            mock_cw = MagicMock()
+            mock_cw.describe_alarms.return_value = self._make_describe_alarms_response()
+            mock_cw_factory.return_value = mock_cw
+
+            resp = admin_tc.get("/api/admin/alarms")
+
+        assert "environment" in resp.json()
+
+    def test_alarm_state_values(self, admin_tc):
+        for state in ("OK", "ALARM", "INSUFFICIENT_DATA"):
+            import hive.api.admin as admin_mod
+
+            admin_mod._alarm_cache.clear()
+            with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
+                mock_cw = MagicMock()
+                mock_cw.describe_alarms.return_value = self._make_describe_alarms_response(state)
+                mock_cw_factory.return_value = mock_cw
+
+                resp = admin_tc.get("/api/admin/alarms")
+
+            assert resp.json()["alarms"][0]["state"] == state
