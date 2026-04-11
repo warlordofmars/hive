@@ -49,7 +49,7 @@ describe("ActivityLog", () => {
 
   it("shows empty state when no events", async () => {
     await act(async () => render(<ActivityLog />));
-    await waitFor(() => expect(screen.getByText("No activity in this period.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No activity in this period")).toBeTruthy());
   });
 
   it("renders event rows", async () => {

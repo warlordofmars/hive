@@ -2,6 +2,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { api } from "../api.js";
+import EmptyState from "./EmptyState.jsx";
 
 export default function ClientManager() {
   const [clients, setClients] = useState([]);
@@ -158,8 +159,12 @@ export default function ClientManager() {
           <tbody>
             {clients.length === 0 && !loading && (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: 30 }}>
-                  No clients registered.
+                <td colSpan={6} style={{ padding: 0 }}>
+                  <EmptyState
+                    variant="clients"
+                    title="No clients registered"
+                    description="Register an OAuth client to connect your MCP agent to Hive."
+                  />
                 </td>
               </tr>
             )}

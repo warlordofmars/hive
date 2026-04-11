@@ -1,6 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
+import EmptyState from "./EmptyState.jsx";
 
 const EVENT_COLORS = {
   memory_created: "#34a853",
@@ -100,8 +101,12 @@ export default function ActivityLog() {
           <tbody>
             {events.length === 0 && !loading && (
               <tr>
-                <td colSpan={4} style={{ textAlign: "center", color: "var(--text-muted)", padding: 30 }}>
-                  No activity in this period.
+                <td colSpan={4} style={{ padding: 0 }}>
+                  <EmptyState
+                    variant="activity"
+                    title="No activity in this period"
+                    description="Events will appear here as your MCP clients use Hive tools."
+                  />
                 </td>
               </tr>
             )}

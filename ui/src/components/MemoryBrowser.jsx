@@ -1,6 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
+import EmptyState from "./EmptyState.jsx";
 
 export default function MemoryBrowser() {
   const [memories, setMemories] = useState([]);
@@ -178,8 +179,13 @@ export default function MemoryBrowser() {
         {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
 
         {!loading && memories.length === 0 && (
-          <div className="card" style={{ textAlign: "center", color: "var(--text-muted)", padding: 40 }}>
-            No memories found.
+          <div className="card" style={{ padding: 0 }}>
+            <EmptyState
+              variant="memories"
+              title="No memories yet"
+              description="Use the remember tool in your MCP client to store your first memory."
+              action={<button className="primary" onClick={openCreate}>+ New Memory</button>}
+            />
           </div>
         )}
 

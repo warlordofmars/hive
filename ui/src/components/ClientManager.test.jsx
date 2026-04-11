@@ -41,7 +41,7 @@ describe("ClientManager", () => {
 
   it("shows empty state when no clients", async () => {
     await act(async () => render(<ClientManager />));
-    await waitFor(() => expect(screen.getByText("No clients registered.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No clients registered")).toBeTruthy());
   });
 
   it("renders loaded clients in table", async () => {
@@ -161,7 +161,7 @@ describe("ClientManager", () => {
   it("handles API returning no items key gracefully", async () => {
     api.listClients.mockResolvedValue({});
     await act(async () => render(<ClientManager />));
-    await waitFor(() => expect(screen.getByText("No clients registered.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No clients registered")).toBeTruthy());
   });
 
   it("shows error when createClient fails", async () => {
