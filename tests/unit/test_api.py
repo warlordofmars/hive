@@ -702,7 +702,7 @@ class TestRequireTokenPath:
         from hive.api._auth import require_admin
 
         claims = {"sub": "u1", "role": "admin"}
-        result = await require_admin(claims=claims)
+        result = require_admin(claims=claims)
         assert result == claims
 
 

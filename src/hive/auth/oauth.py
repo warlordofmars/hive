@@ -253,7 +253,7 @@ async def google_callback(
         params["state"] = pending.original_state
     return RedirectResponse(
         f"{pending.redirect_uri}?{urlencode(params)}", status_code=302
-    )  # redirect_uri validated at authorize, line 126. NOSONAR
+    )  # NOSONAR — redirect_uri validated at authorize
 
 
 # ---------------------------------------------------------------------------
@@ -274,15 +274,15 @@ def _verify_pkce(code_verifier: str, stored_challenge: str) -> bool:
         401: {"description": "Invalid client credentials"},
     },
 )
-async def token(
+async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
     storage: Annotated[HiveStorage, Depends(get_storage)],
-    grant_type: str = Form(...),
-    code: str | None = Form(None),
-    redirect_uri: str | None = Form(None),
-    client_id: str | None = Form(None),
-    client_secret: str | None = Form(None),
-    code_verifier: str | None = Form(None),
-    refresh_token: str | None = Form(None),
+    grant_type: Annotated[str, Form(...)],
+    code: Annotated[str | None, Form()] = None,
+    redirect_uri: Annotated[str | None, Form()] = None,
+    client_id: Annotated[str | None, Form()] = None,
+    client_secret: Annotated[str | None, Form()] = None,
+    code_verifier: Annotated[str | None, Form()] = None,
+    refresh_token: Annotated[str | None, Form()] = None,
     request: Request = None,  # type: ignore[assignment]  # FastAPI injects this; None satisfies Python's default-after-default rule
 ) -> JSONResponse:
     # --- Client authentication ---
@@ -397,7 +397,7 @@ async def token(
 @router.post("/oauth/revoke")
 async def revoke(
     storage: Annotated[HiveStorage, Depends(get_storage)],
-    token: str = Form(...),
+    token: Annotated[str, Form(...)],
 ) -> Response:
     from jose import JWTError
 

@@ -26,6 +26,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+_DEFAULT_SCOPE = "memories:read memories:write"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -132,7 +134,7 @@ class OAuthClient(BaseModel):
     redirect_uris: list[str] = Field(default_factory=list)
     grant_types: list[str] = Field(default_factory=lambda: ["authorization_code"])
     response_types: list[str] = Field(default_factory=lambda: ["code"])
-    scope: str = "memories:read memories:write"
+    scope: str = _DEFAULT_SCOPE
     token_endpoint_auth_method: str = (
         "none"  # public clients: none; confidential: client_secret_post
     )
@@ -177,7 +179,7 @@ class OAuthClient(BaseModel):
             redirect_uris=item.get("redirect_uris", []),
             grant_types=item.get("grant_types", ["authorization_code"]),
             response_types=item.get("response_types", ["code"]),
-            scope=item.get("scope", "memories:read memories:write"),
+            scope=item.get("scope", _DEFAULT_SCOPE),
             token_endpoint_auth_method=item.get("token_endpoint_auth_method", "none"),
             created_at=datetime.fromisoformat(item["created_at"]),
             owner_user_id=item.get("owner_user_id"),
@@ -500,7 +502,7 @@ class ClientRegistrationRequest(BaseModel):
     redirect_uris: list[str] = Field(default_factory=list)
     grant_types: list[str] = Field(default_factory=lambda: ["authorization_code"])
     response_types: list[str] = Field(default_factory=lambda: ["code"])
-    scope: str = "memories:read memories:write"
+    scope: str = _DEFAULT_SCOPE
     token_endpoint_auth_method: str = "none"
 
 

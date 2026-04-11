@@ -69,7 +69,7 @@ require_clients_write = require_scope("clients:write")
 # ---------------------------------------------------------------------------
 
 
-async def require_mgmt_user(
+def require_mgmt_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict[str, Any]:
     """Validate a management JWT and return its claims.
@@ -85,7 +85,7 @@ async def require_mgmt_user(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
-async def require_admin(
+def require_admin(
     claims: dict[str, Any] = Depends(require_mgmt_user),
 ) -> dict[str, Any]:
     """Require admin role on top of a valid management JWT."""

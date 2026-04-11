@@ -38,6 +38,11 @@ TABLE_NAME = os.environ.get("HIVE_TABLE_NAME", "hive")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
+# Reusable DynamoDB filter expression fragments
+_UID_FILTER = " AND owner_user_id = :uid"
+_PK_PREFIX_KEY = ":prefix"
+_SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
+
 # Token lifetimes
 ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
 REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
@@ -198,7 +203,7 @@ class HiveStorage:
             filter_expr += " AND owner_client_id = :cid"
             expr_vals[":cid"] = client_id
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
 
         start_key = _decode_cursor(cursor) if cursor else None
@@ -253,9 +258,9 @@ class HiveStorage:
         cursor: str | None = None,
     ) -> tuple[list[OAuthClient], str | None]:
         filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
-        expr_vals: dict[str, Any] = {":prefix": "CLIENT#", ":sk": "META"}
+        expr_vals: dict[str, Any] = {_PK_PREFIX_KEY: "CLIENT#", ":sk": "META"}
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
 
         start_key = _decode_cursor(cursor) if cursor else None
@@ -437,7 +442,7 @@ class HiveStorage:
         cursor: str | None = None,
     ) -> tuple[list[User], str | None]:
         filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
-        expr_vals: dict[str, Any] = {":prefix": "USER#", ":sk": "META"}
+        expr_vals: dict[str, Any] = {_PK_PREFIX_KEY: "USER#", ":sk": "META"}
 
         start_key = _decode_cursor(cursor) if cursor else None
         users: list[User] = []
@@ -537,9 +542,9 @@ class HiveStorage:
 
     def count_memories(self, owner_user_id: str | None = None) -> int:
         filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
-        expr_vals: dict[str, Any] = {":sk": "META", ":prefix": "MEMORY#"}
+        expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "MEMORY#"}
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
         resp = self.table.scan(
             Select="COUNT",
@@ -550,9 +555,9 @@ class HiveStorage:
 
     def count_clients(self, owner_user_id: str | None = None) -> int:
         filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
-        expr_vals: dict[str, Any] = {":sk": "META", ":prefix": "CLIENT#"}
+        expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "CLIENT#"}
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
         resp = self.table.scan(
             Select="COUNT",
@@ -565,7 +570,7 @@ class HiveStorage:
         resp = self.table.scan(
             Select="COUNT",
             FilterExpression="SK = :sk AND begins_with(PK, :prefix)",
-            ExpressionAttributeValues={":sk": "META", ":prefix": "USER#"},
+            ExpressionAttributeValues={":sk": "META", _PK_PREFIX_KEY: "USER#"},
         )
         return resp.get("Count", 0)
 

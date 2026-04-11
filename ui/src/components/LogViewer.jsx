@@ -53,9 +53,8 @@ function LogRow({ event }) {
         fontFamily: "ui-monospace, monospace",
       }}
     >
-      <div
-        role="button"
-        tabIndex={0}
+      <button
+        type="button"
         onClick={() => setExpanded((v) => !v)}
         onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpanded((v) => !v)}
         style={{
@@ -65,6 +64,9 @@ function LogRow({ event }) {
           padding: "6px 10px",
           cursor: "pointer",
           background: expanded ? "var(--surface)" : "transparent",
+          width: "100%",
+          border: "none",
+          textAlign: "left",
         }}
       >
         <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -91,7 +93,7 @@ function LogRow({ event }) {
         <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
-      </div>
+      </button>
       {expanded && (
         <pre
           style={{
@@ -303,7 +305,7 @@ export default function LogViewer() {
       </div>
 
       <p style={{ marginTop: 8, fontSize: 11, color: "var(--text-muted)" }}>
-        {visibleEvents.length} event{visibleEvents.length !== 1 ? "s" : ""} shown
+        {visibleEvents.length} event{visibleEvents.length === 1 ? "" : "s"} shown
         {paused ? " · paused" : " · live (10 s)"}
       </p>
     </div>

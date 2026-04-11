@@ -38,7 +38,7 @@ const ADMIN_TABS = [
 function parseToken(token) {
   if (!token) return null;
   try {
-    return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return JSON.parse(atob(token.split(".")[1].replaceAll("-", "+").replaceAll("_", "/")));
   } catch {
     return null;
   }
@@ -79,7 +79,7 @@ function AppShell() {
     if (!authenticated) return;
     api.listClients()
       .then((data) => {
-        if (data && data.items.length === 0) setTab("setup");
+        if (data?.items.length === 0) setTab("setup");
       })
       .catch(() => {});
   }, [authenticated]);

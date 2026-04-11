@@ -81,7 +81,11 @@ async def mgmt_login(request: Request) -> RedirectResponse:
     return RedirectResponse(url, status_code=302)
 
 
-@router.get("/auth/callback", include_in_schema=False)
+@router.get(
+    "/auth/callback",
+    include_in_schema=False,
+    responses={400: {"description": "Invalid Google OAuth callback"}},
+)
 async def mgmt_callback(
     request: Request,
     code: str | None = None,

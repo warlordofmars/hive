@@ -81,9 +81,13 @@ export default function SetupPanel() {
             <strong>You're all set!</strong>
             <p style={{ margin: "2px 0 0", fontSize: 13, color: "var(--text-muted)" }}>
               Hive is connected and working. Head to the{" "}
-              <a href="#" onClick={(e) => { e.preventDefault(); globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" })); }}>
+              <button
+                type="button"
+                onClick={() => globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" }))}
+                style={{ background: "none", border: "none", padding: 0, color: "var(--accent)", cursor: "pointer", font: "inherit", textDecoration: "underline" }}
+              >
                 Memories
-              </a>{" "}
+              </button>{" "}
               tab to get started.
             </p>
           </div>
