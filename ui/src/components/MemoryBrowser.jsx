@@ -56,9 +56,13 @@ export function TagPicker({ knownTags, value, onSelect }) {
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setActiveIndex((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter" && activeIndex >= 0) {
+    } else if (e.key === "Enter") {
       e.preventDefault();
-      selectTag(suggestions[activeIndex]);
+      if (activeIndex >= 0) {
+        selectTag(suggestions[activeIndex]);
+      } else if (e.target.value.trim()) {
+        selectTag(e.target.value.trim());
+      }
     } else if (e.key === "Escape") {
       setOpen(false);
       setActiveIndex(-1);
