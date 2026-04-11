@@ -66,16 +66,16 @@ export default function ClientManager() {
         </button>
       </div>
 
-      {error && <p style={{ color: "red", marginBottom: 12 }}>{error}</p>}
+      {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
 
       {newClient && (
-        <div className="card" style={{ marginBottom: 16, borderLeft: "4px solid #34a853" }}>
+        <div className="card" style={{ marginBottom: 16, borderLeft: "4px solid var(--success)" }}>
           <strong>Client registered successfully.</strong>
           <p style={{ marginTop: 8, fontSize: 13 }}>
             <b>Client ID:</b> <code>{newClient.client_id}</code>
           </p>
           {newClient.client_secret && (
-            <p style={{ marginTop: 4, fontSize: 13, color: "#d93025" }}>
+            <p style={{ marginTop: 4, fontSize: 13, color: "var(--danger)" }}>
               <b>Client Secret (save now, not shown again):</b>{" "}
               <code>{newClient.client_secret}</code>
             </p>
@@ -133,7 +133,7 @@ export default function ClientManager() {
         </div>
       )}
 
-      {loading && <p style={{ color: "#888" }}>Loading…</p>}
+      {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
 
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
         <table>
@@ -150,7 +150,7 @@ export default function ClientManager() {
           <tbody>
             {clients.length === 0 && !loading && (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", color: "#888", padding: 30 }}>
+                <td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", padding: 30 }}>
                   No clients registered.
                 </td>
               </tr>
