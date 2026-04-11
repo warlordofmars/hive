@@ -1,7 +1,182 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+
+// ------------------------------------------------------------------
+// TagPicker — combobox that shows suggestions from known tags,
+// renders the selected tag as a removable chip, and calls
+// onSelect(tag | "") when the filter changes.
+// ------------------------------------------------------------------
+
+export function TagPicker({ knownTags, value, onSelect }) {
+  const [inputValue, setInputValue] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const listRef = useRef(null);
+
+  const suggestions = knownTags.filter(
+    (t) => t.toLowerCase().includes(inputValue.toLowerCase()) && t !== value,
+  );
+
+  function selectTag(tag) {
+    onSelect(tag);
+    setInputValue("");
+    setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  function clearTag() {
+    onSelect("");
+    setInputValue("");
+    setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  function handleInputChange(e) {
+    setInputValue(e.target.value);
+    setOpen(true);
+    setActiveIndex(-1);
+  }
+
+  function handleKeyDown(e) {
+    if (!open || suggestions.length === 0) {
+      if (e.key === "Escape") setOpen(false);
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, suggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter" && activeIndex >= 0) {
+      e.preventDefault();
+      selectTag(suggestions[activeIndex]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+      setActiveIndex(-1);
+    }
+  }
+
+  // Scroll active item into view
+  useEffect(() => {
+    if (activeIndex >= 0 && listRef.current) {
+      const item = listRef.current.children[activeIndex];
+      item?.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [activeIndex]);
+
+  return (
+    <div style={{ position: "relative", width: 160 }}>
+      {value ? (
+        // Selected chip
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "4px 8px",
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 999,
+            fontSize: 12,
+            fontWeight: 600,
+            color: "var(--text)",
+            width: "100%",
+            boxSizing: "border-box",
+          }}
+        >
+          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {value}
+          </span>
+          <button
+            type="button"
+            aria-label="Clear tag filter"
+            onClick={clearTag}
+            style={{
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              color: "var(--text-muted)",
+              flexShrink: 0,
+            }}
+          >
+            <X size={11} />
+          </button>
+        </div>
+      ) : (
+        // Input
+        <input
+          id="tag-filter-input"
+          style={{ width: "100%" }}
+          placeholder="Filter by tag"
+          value={inputValue}
+          autoComplete="off"
+          onChange={handleInputChange}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onKeyDown={handleKeyDown}
+          aria-autocomplete="list"
+          aria-expanded={open && suggestions.length > 0}
+          aria-controls="tag-suggestions"
+          aria-activedescendant={activeIndex >= 0 ? `tag-opt-${activeIndex}` : undefined}
+        />
+      )}
+
+      {open && suggestions.length > 0 && (
+        <ul
+          id="tag-suggestions"
+          ref={listRef}
+          role="listbox"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            boxShadow: "0 4px 12px rgba(0,0,0,.12)",
+            maxHeight: 200,
+            overflowY: "auto",
+            zIndex: 100,
+            margin: 0,
+            padding: "4px 0",
+            listStyle: "none",
+          }}
+        >
+          {suggestions.map((t, i) => (
+            <li
+              key={t}
+              id={`tag-opt-${i}`}
+              role="option"
+              aria-selected={i === activeIndex}
+              onMouseDown={() => selectTag(t)}
+              style={{
+                padding: "6px 12px",
+                fontSize: 13,
+                cursor: "pointer",
+                background: i === activeIndex ? "var(--accent)" : "transparent",
+                color: i === activeIndex ? "var(--accent-fg)" : "var(--text)",
+              }}
+            >
+              {t}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
+// MemoryBrowser
+// ------------------------------------------------------------------
 
 export default function MemoryBrowser() {
   const [memories, setMemories] = useState([]);
@@ -61,9 +236,12 @@ export default function MemoryBrowser() {
     return () => clearTimeout(searchDebounceRef.current);
   }, [searchQuery, runSearch]);
 
-  function handleTagFilterChange(e) {
-    setTagFilter(e.target.value);
-    if (e.target.value) {
+  // Collect distinct tags from loaded memories for suggestions
+  const knownTags = [...new Set(memories.flatMap((m) => m.tags))].sort();
+
+  function handleTagSelect(tag) {
+    setTagFilter(tag);
+    if (tag) {
       setSearchQuery("");
       setIsSearchMode(false);
     }
@@ -164,12 +342,7 @@ export default function MemoryBrowser() {
             value={searchQuery}
             onChange={handleSearchQueryChange}
           />
-          <input
-            style={{ width: 150 }}
-            placeholder="Filter by tag"
-            value={tagFilter}
-            onChange={handleTagFilterChange}
-          />
+          <TagPicker knownTags={knownTags} value={tagFilter} onSelect={handleTagSelect} />
           <button className="primary" onClick={openCreate}>
             + New
           </button>
