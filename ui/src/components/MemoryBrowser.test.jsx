@@ -47,7 +47,7 @@ describe("MemoryBrowser", () => {
 
   it("renders empty state after load", async () => {
     await act(async () => render(<MemoryBrowser />));
-    await waitFor(() => expect(screen.getByText("No memories found.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No memories yet")).toBeTruthy());
   });
 
   it("renders loaded memories", async () => {

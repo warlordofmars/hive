@@ -1,6 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
+import EmptyState from "./EmptyState.jsx";
 
 export default function UsersPanel() {
   const [users, setUsers] = useState([]);
@@ -41,7 +42,11 @@ export default function UsersPanel() {
     <div>
       <h2 style={{ marginBottom: 16 }}>Users</h2>
       {users.length === 0 ? (
-        <p style={{ color: "var(--text-muted)" }}>No users found.</p>
+        <EmptyState
+          variant="users"
+          title="No users found"
+          description="Users appear here after they sign in for the first time via Google OAuth."
+        />
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
