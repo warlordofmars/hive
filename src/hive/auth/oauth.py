@@ -17,6 +17,7 @@ import hashlib
 import os
 import secrets
 from datetime import datetime, timezone
+from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
@@ -86,7 +87,7 @@ async def oauth_metadata(request: Request) -> JSONResponse:
 @router.post("/oauth/register", status_code=201)
 async def register(
     req: ClientRegistrationRequest,
-    storage: HiveStorage = Depends(get_storage),
+    storage: Annotated[HiveStorage, Depends(get_storage)],
 ) -> JSONResponse:
     try:
         resp = register_client(req, storage)
@@ -110,6 +111,7 @@ async def register(
 
 @router.get("/oauth/authorize")
 async def authorize(
+    storage: Annotated[HiveStorage, Depends(get_storage)],
     response_type: str,
     client_id: str,
     redirect_uri: str,
@@ -117,7 +119,6 @@ async def authorize(
     scope: str = "memories:read memories:write",
     code_challenge: str = "",
     code_challenge_method: str = "S256",
-    storage: HiveStorage = Depends(get_storage),
 ) -> RedirectResponse:
     # Validate client
     client = storage.get_client(client_id)
@@ -181,10 +182,10 @@ async def authorize(
 
 @router.get("/oauth/google/callback")
 async def google_callback(
+    storage: Annotated[HiveStorage, Depends(get_storage)],
     code: str = "",
     state: str = "",
     error: str = "",
-    storage: HiveStorage = Depends(get_storage),
 ) -> RedirectResponse:
     """Handle the redirect from Google after user authentication."""
     from hive.auth.google import exchange_google_code, is_email_allowed, verify_google_id_token
@@ -257,6 +258,7 @@ def _verify_pkce(code_verifier: str, stored_challenge: str) -> bool:
 
 @router.post("/oauth/token")
 async def token(
+    storage: Annotated[HiveStorage, Depends(get_storage)],
     grant_type: str = Form(...),
     code: str | None = Form(None),
     redirect_uri: str | None = Form(None),
@@ -265,7 +267,6 @@ async def token(
     code_verifier: str | None = Form(None),
     refresh_token: str | None = Form(None),
     request: Request = None,  # type: ignore[assignment]  # FastAPI injects this; None satisfies Python's default-after-default rule
-    storage: HiveStorage = Depends(get_storage),
 ) -> JSONResponse:
     # --- Client authentication ---
     # Try HTTP Basic first, then form params
@@ -378,8 +379,8 @@ async def token(
 
 @router.post("/oauth/revoke")
 async def revoke(
+    storage: Annotated[HiveStorage, Depends(get_storage)],
     token: str = Form(...),
-    storage: HiveStorage = Depends(get_storage),
 ) -> Response:
     from jose import JWTError
 

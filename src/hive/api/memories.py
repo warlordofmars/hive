@@ -10,7 +10,7 @@ Admins can access all memories.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
@@ -49,13 +49,17 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
 
 @router.get("/memories")
 async def list_memories(
-    tag: str | None = Query(None, description="Filter by tag"),
-    search: str | None = Query(None, description="Semantic search query"),
-    limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX, description="Max items to return"),
-    cursor: str | None = Query(None, description="Pagination cursor from previous response"),
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
-    vs: VectorStore = Depends(_vector_store),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    vs: Annotated[VectorStore, Depends(_vector_store)],
+    tag: Annotated[str | None, Query(description="Filter by tag")] = None,
+    search: Annotated[str | None, Query(description="Semantic search query")] = None,
+    limit: Annotated[
+        int, Query(ge=1, le=_LIMIT_MAX, description="Max items to return")
+    ] = _LIMIT_DEFAULT,
+    cursor: Annotated[
+        str | None, Query(description="Pagination cursor from previous response")
+    ] = None,
 ) -> PagedResponse:
     owner_user_id = _user_filter(claims)
 
@@ -99,8 +103,8 @@ async def list_memories(
 async def create_memory(
     body: MemoryCreate,
     response: Response,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> MemoryResponse:
     owner_user_id: str = claims["sub"]
 
@@ -156,8 +160,8 @@ async def create_memory(
 @router.get("/memories/{memory_id}")
 async def get_memory(
     memory_id: str,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> MemoryResponse:
     memory = storage.get_memory_by_id(memory_id)
     if memory is None:
@@ -172,8 +176,8 @@ async def get_memory(
 async def update_memory(
     memory_id: str,
     body: MemoryUpdate,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> MemoryResponse:
     memory = storage.get_memory_by_id(memory_id)
     if memory is None:
@@ -205,8 +209,8 @@ async def update_memory(
 @router.delete("/memories/{memory_id}", status_code=204)
 async def delete_memory(
     memory_id: str,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> None:
     memory = storage.get_memory_by_id(memory_id)
     if memory is None:

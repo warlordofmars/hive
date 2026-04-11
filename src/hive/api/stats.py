@@ -6,7 +6,7 @@ Usage stats and activity log endpoints for the Hive management API.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 
@@ -26,8 +26,8 @@ def _storage() -> HiveStorage:
 
 @router.get("/stats")
 async def get_stats(
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> StatsResponse:
     owner_user_id = None if claims.get("role") == "admin" else claims["sub"]
     today = date.today()
@@ -48,15 +48,12 @@ async def get_stats(
 
 @router.get("/activity")
 async def get_activity(
-    days: int = Query(7, ge=1, le=90, description="Number of days of history to return"),
-    limit: int = Query(
-        _ACTIVITY_LIMIT_DEFAULT,
-        ge=1,
-        le=_ACTIVITY_LIMIT_MAX,
-        description="Max events to return",
-    ),
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    days: Annotated[int, Query(ge=1, le=90, description="Number of days of history to return")] = 7,
+    limit: Annotated[
+        int, Query(ge=1, le=_ACTIVITY_LIMIT_MAX, description="Max events to return")
+    ] = _ACTIVITY_LIMIT_DEFAULT,
 ) -> PagedResponse:
     today = date.today()
     # `days` is bounded by FastAPI Query(ge=1, le=90) above. NOSONAR

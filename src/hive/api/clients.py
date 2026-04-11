@@ -8,7 +8,7 @@ Non-admins see only their own clients; admins see all.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -39,10 +39,10 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
 
 @router.get("/clients")
 async def list_clients(
-    limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
-    cursor: str | None = Query(None),
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    limit: Annotated[int, Query(ge=1, le=_LIMIT_MAX)] = _LIMIT_DEFAULT,
+    cursor: Annotated[str | None, Query()] = None,
 ) -> PagedResponse:
     owner_user_id = _user_filter(claims)
     clients, next_cursor = storage.list_clients(
@@ -59,8 +59,8 @@ async def list_clients(
 @router.post("/clients", status_code=201)
 async def create_client(
     body: ClientRegistrationRequest,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> ClientRegistrationResponse:
     owner_user_id: str = claims["sub"]
     try:
@@ -87,8 +87,8 @@ async def create_client(
 @router.get("/clients/{client_id}")
 async def get_client(
     client_id: str,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> ClientRegistrationResponse:
     client = storage.get_client(client_id)
     if client is None:
@@ -102,8 +102,8 @@ async def get_client(
 @router.delete("/clients/{client_id}", status_code=204)
 async def delete_client(
     client_id: str,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> None:
     client = storage.get_client(client_id)
     if client is None:
