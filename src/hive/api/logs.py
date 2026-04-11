@@ -30,12 +30,8 @@ ENVIRONMENT = os.environ.get("HIVE_ENV", os.environ.get("ENV", "local"))
 
 # Log group names are injected by CDK so we use the real (CDK-generated) Lambda
 # function names rather than guessing them at runtime.
-_MCP_LOG_GROUP = os.environ.get(
-    "HIVE_MCP_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-mcp"
-)
-_API_LOG_GROUP = os.environ.get(
-    "HIVE_API_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-api"
-)
+_MCP_LOG_GROUP = os.environ.get("HIVE_MCP_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-mcp")
+_API_LOG_GROUP = os.environ.get("HIVE_API_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-api")
 
 # Map human window labels → milliseconds
 _WINDOW_MS: dict[str, int] = {
