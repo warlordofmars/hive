@@ -357,4 +357,14 @@ describe("AppShell", () => {
     expect(link).toBeTruthy();
     expect(link.getAttribute("href")).toBe("/changelog");
   });
+
+  it("footer changelog link underlines on hover and resets on mouse out", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
+    const link = screen.getByText("Hive 1.2.3").closest("a");
+    fireEvent.mouseOver(link);
+    expect(link.style.textDecoration).toBe("underline");
+    fireEvent.mouseOut(link);
+    expect(link.style.textDecoration).toBe("none");
+  });
 });
