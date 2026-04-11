@@ -278,6 +278,9 @@ def dynamo_stop(ctx):
 def dev(ctx):
     """Start DynamoDB Local + MCP server + management API + UI dev server (Ctrl-C to stop all)"""
     jwt_secret = os.environ.get("HIVE_JWT_SECRET", "dev-secret")
+    # Allow all localhost Vite ports (5173–5179) so CORS doesn't break when
+    # 5173 is already occupied by another project and Vite picks the next port.
+    cors_origins = ",".join(f"http://localhost:{p}" for p in range(5173, 5180))
     dev_env = {
         **os.environ,
         "HIVE_JWT_SECRET": jwt_secret,
@@ -286,6 +289,10 @@ def dev(ctx):
         "AWS_ACCESS_KEY_ID": "local",
         "AWS_SECRET_ACCESS_KEY": "local",
         "AWS_DEFAULT_REGION": "us-east-1",
+        "CORS_ORIGINS": cors_origins,
+        # Prevents VectorStore instantiation from crashing on every request;
+        # semantic search will still fail locally (no real S3 Vectors bucket).
+        "HIVE_VECTORS_BUCKET": os.environ.get("HIVE_VECTORS_BUCKET", "local-dev"),
     }
     ui_env = {
         **os.environ,
