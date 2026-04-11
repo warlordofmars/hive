@@ -84,14 +84,15 @@ class TestUIE2E:
             page.locator("button:has-text('Save')").click()
         assert resp_info.value.ok, f"POST /api/memories failed: {resp_info.value.status}"
 
-        # Wait for the list to reload after save so knownTags is populated.
+        # Wait for the list to reload after save.
         page.wait_for_load_state("networkidle")
 
-        # Filter by the unique tag — type to open the combobox dropdown, then
-        # click the matching suggestion to commit the filter.
-        page.locator("input[placeholder='Filter by tag']").fill(unique_tag)
-        page.wait_for_selector(f"[role='option']:has-text('{unique_tag}')", timeout=10_000)
-        page.locator("[role='option']", has_text=unique_tag).click()
+        # Filter by the unique tag — type and press Enter.  Enter now commits
+        # any typed value even when the suggestion dropdown is empty (e.g. the
+        # new memory isn't on page 1 of an accumulated dev list).
+        tag_input = page.locator("input[placeholder='Filter by tag']")
+        tag_input.fill(unique_tag)
+        tag_input.press("Enter")
 
         page.wait_for_selector(f"text={memory_key}", timeout=30_000)
         assert page.locator(f"text={memory_key}").first.is_visible()

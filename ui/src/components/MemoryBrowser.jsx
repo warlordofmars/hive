@@ -44,6 +44,10 @@ export function TagPicker({ knownTags, value, onSelect }) {
   function handleKeyDown(e) {
     if (!open || suggestions.length === 0) {
       if (e.key === "Escape") setOpen(false);
+      else if (e.key === "Enter" && inputValue.trim()) {
+        e.preventDefault();
+        selectTag(inputValue.trim());
+      }
       return;
     }
     if (e.key === "ArrowDown") {

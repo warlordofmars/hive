@@ -132,6 +132,25 @@ describe("TagPicker", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("Enter with typed value and no suggestions commits the typed value", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.change(input, { target: { value: "new-tag" } }); // no matches → no suggestions
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("new-tag");
+  });
+
+  it("Enter with empty input and no suggestions does nothing", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.change(input, { target: { value: "zzz" } }); // no matches → no suggestions
+    fireEvent.change(input, { target: { value: "" } }); // clear
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("Escape when suggestions are open closes the dropdown", async () => {
     render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
     const input = screen.getByPlaceholderText("Filter by tag");
