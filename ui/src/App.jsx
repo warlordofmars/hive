@@ -89,6 +89,12 @@ function AppShell() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    function onSwitchTab(e) { switchTab(e.detail); }
+    window.addEventListener("hive:switch-tab", onSwitchTab);
+    return () => window.removeEventListener("hive:switch-tab", onSwitchTab);
+  }, []);
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <header
