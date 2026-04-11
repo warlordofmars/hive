@@ -349,8 +349,7 @@ export default function MemoryBrowser() {
   useEffect(() => {
     if (focusedIndex >= 0 && listRef.current) {
       const li = listRef.current.children[focusedIndex];
-      const card = li?.querySelector("button.card") ?? li;
-      card?.focus();
+      li?.querySelector("button.card")?.focus();
     }
   }, [focusedIndex]);
 
