@@ -1,10 +1,21 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+
+const NAV_LINK_BASE = "text-sm no-underline hover:text-white transition-colors";
 
 export default function PageLayout({ children }) {
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+
+  function navLinkStyle(href) {
+    const active = pathname === href;
+    return {
+      borderBottom: active ? "2px solid #e8a020" : "2px solid transparent",
+      paddingBottom: 2,
+    };
+  }
 
   return (
     <div className="font-[system-ui,sans-serif] text-[var(--text)] flex flex-col min-h-screen">
@@ -19,12 +30,12 @@ export default function PageLayout({ children }) {
             <span className="font-bold text-xl tracking-[1px]">Hive</span>
           </button>
           <div className="flex items-center gap-6">
-            <a href="/use-cases" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Use cases</a>
-            <a href="/clients" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Clients</a>
-            <a href="/pricing" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Pricing</a>
-            <a href="/faq" className="text-white/75 text-sm no-underline hover:text-white transition-colors">FAQ</a>
-            <a href="/docs/" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Docs</a>
-            <Button variant="outline" size="sm" onClick={() => navigate("/app")}>
+            <a href="/use-cases" className={`text-white/75 ${NAV_LINK_BASE}`} style={navLinkStyle("/use-cases")}>Use cases</a>
+            <a href="/clients" className={`text-white/75 ${NAV_LINK_BASE}`} style={navLinkStyle("/clients")}>Clients</a>
+            <a href="/pricing" className={`text-white/75 ${NAV_LINK_BASE}`} style={navLinkStyle("/pricing")}>Pricing</a>
+            <a href="/faq" className={`text-white/75 ${NAV_LINK_BASE}`} style={navLinkStyle("/faq")}>FAQ</a>
+            <a href="/docs/" className={`text-white/75 ${NAV_LINK_BASE}`} style={{ borderBottom: "2px solid transparent", paddingBottom: 2 }}>Docs</a>
+            <Button variant="outline" size="sm" className="border-white/60 hover:border-white" onClick={() => navigate("/app")}>
               Sign in
             </Button>
           </div>
