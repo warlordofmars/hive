@@ -1,5 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useRelativeTime } from "../hooks/useRelativeTime.js";
 import {
   Area,
   AreaChart,
@@ -330,6 +331,7 @@ export default function Dashboard() {
   const [costsError, setCostsError] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const relativeTime = useRelativeTime(lastRefreshed);
   const intervalRef = useRef(null);
 
   const TOOLS = ["remember", "recall", "forget", "list_memories", "summarize_context", "search_memories"];
@@ -421,9 +423,12 @@ export default function Dashboard() {
         </div>
         {loading && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading…</span>}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          {lastRefreshed && !loading && (
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              Checked at {lastRefreshed.toLocaleTimeString()}
+          {relativeTime && !loading && (
+            <span
+              title={lastRefreshed.toLocaleTimeString()}
+              style={{ fontSize: 12, color: "var(--text-muted)", cursor: "default" }}
+            >
+              {relativeTime}
             </span>
           )}
           <button
