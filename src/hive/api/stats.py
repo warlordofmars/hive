@@ -59,6 +59,7 @@ async def get_activity(
     storage: HiveStorage = Depends(_storage),
 ) -> PagedResponse:
     today = date.today()
+    # `days` is bounded by FastAPI Query(ge=1, le=90) above. NOSONAR
     dates = [(today - timedelta(days=i)).isoformat() for i in range(days)]
     events = storage.get_events_for_dates(dates, limit=limit + 1)
 
