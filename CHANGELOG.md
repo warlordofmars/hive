@@ -4,6 +4,22 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.18.0 — 2026-04-11
+
+### Added
+
+- Live CloudWatch log viewer in admin UI: group/window/filter controls, level badge toggles, expandable rows, 10 s polling with pause/resume (#291, #295, #296, #297, #298)
+- Tag picker with autocomplete suggestions for memory filter in MemoryBrowser (#292)
+- Relative timestamps on Dashboard last-refreshed indicator (#294)
+- Keyboard navigation for memory card list (Arrow keys, Enter, Escape) (#294)
+
+### Fixed
+
+- Docs site visual design unified with marketing site navbar (#289)
+- Accessibility and JS quality improvements across admin UI (#288)
+- Conditional hooks and chart legend overlap in AppShell/Dashboard (#285)
+- Empty state guard for unauthenticated AppShell renders (#286)
+
 ## v0.17.1 — 2026-04-10
 
 ### Fixed
