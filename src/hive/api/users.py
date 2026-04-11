@@ -27,7 +27,7 @@ def _storage() -> HiveStorage:
     return HiveStorage()
 
 
-@router.get("/users/me", response_model=UserResponse)
+@router.get("/users/me")
 async def get_me(
     claims: dict[str, Any] = Depends(require_mgmt_user),
     storage: HiveStorage = Depends(_storage),
@@ -38,7 +38,7 @@ async def get_me(
     return UserResponse.from_user(user)
 
 
-@router.get("/users", response_model=PagedResponse)
+@router.get("/users")
 async def list_users(
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
     cursor: str | None = Query(None),

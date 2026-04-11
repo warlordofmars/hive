@@ -37,7 +37,7 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
     return None if claims.get("role") == "admin" else claims["sub"]
 
 
-@router.get("/clients", response_model=PagedResponse)
+@router.get("/clients")
 async def list_clients(
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
     cursor: str | None = Query(None),
@@ -56,7 +56,7 @@ async def list_clients(
     )
 
 
-@router.post("/clients", response_model=ClientRegistrationResponse, status_code=201)
+@router.post("/clients", status_code=201)
 async def create_client(
     body: ClientRegistrationRequest,
     claims: dict[str, Any] = Depends(require_mgmt_user),
@@ -84,7 +84,7 @@ async def create_client(
     return resp
 
 
-@router.get("/clients/{client_id}", response_model=ClientRegistrationResponse)
+@router.get("/clients/{client_id}")
 async def get_client(
     client_id: str,
     claims: dict[str, Any] = Depends(require_mgmt_user),
