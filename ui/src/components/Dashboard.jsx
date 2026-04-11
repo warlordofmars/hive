@@ -200,10 +200,10 @@ function ErrorBanner({ msg }) {
     <div
       style={{
         background: "var(--surface)",
-        border: "1px solid #fcc",
+        border: "1px solid var(--danger)",
         borderRadius: 6,
         padding: "8px 14px",
-        color: "#c00",
+        color: "var(--danger)",
         fontSize: 13,
         marginBottom: 12,
       }}

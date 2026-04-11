@@ -187,8 +187,8 @@ function AppShell() {
             textAlign: "center",
             padding: "8px 0",
             fontSize: 12,
-            color: "#888",
-            borderTop: "1px solid #eee",
+            color: "var(--text-muted)",
+            borderTop: "1px solid var(--border)",
           }}
         >
           <a

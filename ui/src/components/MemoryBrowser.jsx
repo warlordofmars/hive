@@ -174,11 +174,11 @@ export default function MemoryBrowser() {
           </button>
         </div>
 
-        {error && <p style={{ color: "red", marginBottom: 12 }}>{error}</p>}
-        {loading && <p style={{ color: "#888" }}>Loading…</p>}
+        {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
+        {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
 
         {!loading && memories.length === 0 && (
-          <div className="card" style={{ textAlign: "center", color: "#888", padding: 40 }}>
+          <div className="card" style={{ textAlign: "center", color: "var(--text-muted)", padding: 40 }}>
             No memories found.
           </div>
         )}
@@ -188,7 +188,7 @@ export default function MemoryBrowser() {
             <div
               key={m.memory_id}
               className="card"
-              style={{ cursor: "pointer", borderLeft: "4px solid #1a73e8" }}
+              style={{ cursor: "pointer", borderLeft: "4px solid var(--accent)" }}
               onClick={() => openEdit(m)}
             >
               <div
@@ -205,8 +205,9 @@ export default function MemoryBrowser() {
                       <span
                         className="badge"
                         style={{
-                          background: `hsl(${Math.round(m.score * 120)}, 60%, 88%)`,
-                          color: "#333",
+                          background: "var(--surface)",
+                          color: "var(--text)",
+                          border: "1px solid var(--border)",
                         }}
                       >
                         {Math.round(m.score * 100)}% match
@@ -216,7 +217,7 @@ export default function MemoryBrowser() {
                   <p
                     style={{
                       marginTop: 4,
-                      color: "#555",
+                      color: "var(--text-muted)",
                       fontSize: 13,
                       whiteSpace: "pre-wrap",
                     }}
