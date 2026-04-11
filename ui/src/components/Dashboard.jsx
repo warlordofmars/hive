@@ -416,7 +416,7 @@ export default function Dashboard() {
             <XAxis {...xAxisProps} />
             <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
             <Tooltip content={<CustomTooltip />} />
-            <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
+            <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
             {TOOLS.map((t) => (
               <Area
                 key={t}
@@ -455,7 +455,7 @@ export default function Dashboard() {
             <XAxis {...xAxisProps} />
             <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
             <Tooltip content={<CustomTooltip />} />
-            <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
+            <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
             {TOOLS.map((t) => (
               <Area
                 key={t}
@@ -541,7 +541,7 @@ export default function Dashboard() {
             <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
             <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
             <Tooltip content={<CustomCostTooltip />} />
-            <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
+            <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
             {services.map((svc, i) => (
               <Bar
                 key={svc}
