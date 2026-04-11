@@ -24,7 +24,7 @@ def _storage() -> HiveStorage:
     return HiveStorage()
 
 
-@router.get("/stats")
+@router.get("/stats", responses={401: {"description": "Unauthorized"}})
 async def get_stats(
     claims: dict[str, Any] = Depends(require_mgmt_user),
     storage: HiveStorage = Depends(_storage),
@@ -46,7 +46,7 @@ async def get_stats(
     )
 
 
-@router.get("/activity")
+@router.get("/activity", responses={401: {"description": "Unauthorized"}})
 async def get_activity(
     days: int = Query(7, ge=1, le=90, description="Number of days of history to return"),
     limit: int = Query(

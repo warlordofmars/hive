@@ -83,7 +83,11 @@ async def oauth_metadata(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/oauth/register", status_code=201)
+@router.post(
+    "/oauth/register",
+    status_code=201,
+    responses={400: {"description": "Invalid client registration request"}},
+)
 async def register(
     req: ClientRegistrationRequest,
     storage: HiveStorage = Depends(get_storage),
@@ -108,7 +112,7 @@ async def register(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/oauth/authorize")
+@router.get("/oauth/authorize", responses={400: {"description": "Invalid authorization request"}})
 async def authorize(
     response_type: str,
     client_id: str,
@@ -179,7 +183,13 @@ async def authorize(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/oauth/google/callback")
+@router.get(
+    "/oauth/google/callback",
+    responses={
+        400: {"description": "Invalid or expired Google OAuth callback"},
+        403: {"description": "Email not authorised"},
+    },
+)
 async def google_callback(
     code: str = "",
     state: str = "",
@@ -255,7 +265,13 @@ def _verify_pkce(code_verifier: str, stored_challenge: str) -> bool:
     return secrets.compare_digest(computed, stored_challenge)
 
 
-@router.post("/oauth/token")
+@router.post(
+    "/oauth/token",
+    responses={
+        400: {"description": "Invalid grant request"},
+        401: {"description": "Invalid client credentials"},
+    },
+)
 async def token(
     grant_type: str = Form(...),
     code: str | None = Form(None),

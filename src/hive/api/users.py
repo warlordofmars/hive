@@ -27,7 +27,13 @@ def _storage() -> HiveStorage:
     return HiveStorage()
 
 
-@router.get("/users/me")
+@router.get(
+    "/users/me",
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "User not found"},
+    },
+)
 async def get_me(
     claims: dict[str, Any] = Depends(require_mgmt_user),
     storage: HiveStorage = Depends(_storage),
@@ -38,7 +44,13 @@ async def get_me(
     return UserResponse.from_user(user)
 
 
-@router.get("/users")
+@router.get(
+    "/users",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+    },
+)
 async def list_users(
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
     cursor: str | None = Query(None),
@@ -54,7 +66,15 @@ async def list_users(
     )
 
 
-@router.delete("/users/{user_id}", status_code=204)
+@router.delete(
+    "/users/{user_id}",
+    status_code=204,
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+    },
+)
 async def delete_user(
     user_id: str,
     claims: dict[str, Any] = Depends(require_admin),

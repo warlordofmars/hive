@@ -37,7 +37,7 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
     return None if claims.get("role") == "admin" else claims["sub"]
 
 
-@router.get("/clients")
+@router.get("/clients", responses={401: {"description": "Unauthorized"}})
 async def list_clients(
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
     cursor: str | None = Query(None),
@@ -56,7 +56,14 @@ async def list_clients(
     )
 
 
-@router.post("/clients", status_code=201)
+@router.post(
+    "/clients",
+    status_code=201,
+    responses={
+        400: {"description": "Invalid client registration request"},
+        401: {"description": "Unauthorized"},
+    },
+)
 async def create_client(
     body: ClientRegistrationRequest,
     claims: dict[str, Any] = Depends(require_mgmt_user),
@@ -84,7 +91,13 @@ async def create_client(
     return resp
 
 
-@router.get("/clients/{client_id}")
+@router.get(
+    "/clients/{client_id}",
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "Client not found"},
+    },
+)
 async def get_client(
     client_id: str,
     claims: dict[str, Any] = Depends(require_mgmt_user),
@@ -99,7 +112,14 @@ async def get_client(
     return ClientRegistrationResponse.from_client(client)
 
 
-@router.delete("/clients/{client_id}", status_code=204)
+@router.delete(
+    "/clients/{client_id}",
+    status_code=204,
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "Client not found"},
+    },
+)
 async def delete_client(
     client_id: str,
     claims: dict[str, Any] = Depends(require_mgmt_user),
