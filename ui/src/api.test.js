@@ -284,6 +284,12 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/api/admin/costs");
   });
 
+  it("getAlarms calls GET /api/admin/alarms", async () => {
+    mockOk({ alarms: [] });
+    await api.getAlarms();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/admin/alarms");
+  });
+
   it("getLogs with defaults calls correct endpoint", async () => {
     mockOk({ events: [], next_token: null });
     await api.getLogs();
