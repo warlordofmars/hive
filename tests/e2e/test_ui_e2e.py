@@ -84,8 +84,14 @@ class TestUIE2E:
             page.locator("button:has-text('Save')").click()
         assert resp_info.value.ok, f"POST /api/memories failed: {resp_info.value.status}"
 
-        # Filter by the unique tag so only this memory is in the list.
+        # Wait for the list to reload after save so knownTags is populated.
+        page.wait_for_load_state("networkidle")
+
+        # Filter by the unique tag — type to open the combobox dropdown, then
+        # click the matching suggestion to commit the filter.
         page.locator("input[placeholder='Filter by tag']").fill(unique_tag)
+        page.get_by_role("option", name=unique_tag).click()
+
         page.wait_for_selector(f"text={memory_key}", timeout=30_000)
         assert page.locator(f"text={memory_key}").first.is_visible()
 
