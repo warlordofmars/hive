@@ -46,7 +46,7 @@ export default function LoginPage() {
             width: "100%",
           }}
         >
-          <img src="/logo.svg" alt="Hive" style={{ width: 64, height: 64, marginBottom: 16 }} />
+          <img src="/logo.svg" alt="Hive" style={{ width: 96, height: 96, display: "block", margin: "0 auto 20px" }} />
           <p style={{ color: "var(--text-muted)", marginBottom: 32 }}>
             Shared persistent memory for AI agents
           </p>
