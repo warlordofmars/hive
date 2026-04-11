@@ -41,7 +41,7 @@ export function parseChangelog(raw) {
     const itemMatch = line.match(/^- (.+)/);
     if (itemMatch && currentGroup) {
       // Strip PR refs like (#123, #456) from item text
-      currentGroup.items.push(itemMatch[1].replace(/\s*\(#[\d, #]+\)/g, "").trim());
+      currentGroup.items.push(itemMatch[1].replace(/\s*\(#[\d, #]+\)/g, "").trim()); // NOSONAR — input is a static changelog file, not user-supplied
     }
   }
 
