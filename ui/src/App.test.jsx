@@ -374,4 +374,14 @@ describe("AppShell", () => {
     fireEvent.mouseOut(link);
     expect(link.style.textDecoration).toBe("none");
   });
+
+  it("footer changelog link underlines on focus and resets on blur", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
+    const link = screen.getByText("Hive 1.2.3").closest("a");
+    fireEvent.focus(link);
+    expect(link.style.textDecoration).toBe("underline");
+    fireEvent.blur(link);
+    expect(link.style.textDecoration).toBe("none");
+  });
 });

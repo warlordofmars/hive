@@ -26,7 +26,7 @@ export default function UsersPanel() {
   }, [load]);
 
   async function handleDelete(userId) {
-    if (!window.confirm("Delete this user?")) return;
+    if (!globalThis.confirm("Delete this user?")) return;
     try {
       await api.deleteUser(userId);
       setUsers((prev) => prev.filter((u) => u.user_id !== userId));

@@ -100,8 +100,9 @@ export default function ClientManager() {
           <h3 style={{ marginBottom: 16, fontSize: 15 }}>Register New Client (RFC 7591)</h3>
           <form onSubmit={handleCreate}>
             <div style={{ marginBottom: 10 }}>
-              <label>Client Name</label>
+              <label htmlFor="client-name">Client Name</label>
               <input
+                id="client-name"
                 required
                 value={form.client_name}
                 onChange={(e) => setForm({ ...form, client_name: e.target.value })}
@@ -109,23 +110,26 @@ export default function ClientManager() {
               />
             </div>
             <div style={{ marginBottom: 10 }}>
-              <label>Redirect URIs (comma-separated)</label>
+              <label htmlFor="client-redirect-uris">Redirect URIs (comma-separated)</label>
               <input
+                id="client-redirect-uris"
                 value={form.redirect_uris}
                 onChange={(e) => setForm({ ...form, redirect_uris: e.target.value })}
                 placeholder="http://localhost:3000/callback"
               />
             </div>
             <div style={{ marginBottom: 10 }}>
-              <label>Scope</label>
+              <label htmlFor="client-scope">Scope</label>
               <input
+                id="client-scope"
                 value={form.scope}
                 onChange={(e) => setForm({ ...form, scope: e.target.value })}
               />
             </div>
             <div style={{ marginBottom: 16 }}>
-              <label>Auth Method</label>
+              <label htmlFor="client-auth-method">Auth Method</label>
               <select
+                id="client-auth-method"
                 value={form.token_endpoint_auth_method}
                 onChange={(e) => setForm({ ...form, token_endpoint_auth_method: e.target.value })}
               >

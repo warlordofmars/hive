@@ -213,6 +213,24 @@ describe("MemoryBrowser", () => {
     expect(screen.queryByPlaceholderText("unique-key")).toBeNull(); // key field hidden in edit
   });
 
+  it("opens edit form when memory card is activated via keyboard Enter or Space", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    const card = screen.getByText("test-key").closest(".card");
+    // Enter opens the form
+    fireEvent.keyDown(card, { key: "Enter" });
+    expect(screen.getByText("Edit: test-key")).toBeTruthy();
+    // Close form; Space also opens it
+    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.keyDown(card, { key: " " });
+    expect(screen.getByText("Edit: test-key")).toBeTruthy();
+    // Other keys are ignored
+    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.keyDown(card, { key: "Tab" });
+    expect(screen.queryByText("Edit: test-key")).toBeNull();
+  });
+
   it("updates memory and closes form on success", async () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
     api.updateMemory.mockResolvedValue({});

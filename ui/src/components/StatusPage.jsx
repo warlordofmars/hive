@@ -41,6 +41,14 @@ export default function StatusPage() {
   const isOk = status === "ok";
   const isLoading = status === "loading";
 
+  const statusIcon = isLoading
+    ? <RefreshCw size={32} className="text-[var(--text-muted)] animate-spin" />
+    : isOk
+    ? <CheckCircle size={32} className="text-green-500" />
+    : <AlertCircle size={32} className="text-red-500" />;
+
+  const statusText = isLoading ? "Checking…" : isOk ? "All systems operational" : "Service unavailable";
+
   return (
     <PageLayout>
       {/* Header */}
@@ -58,16 +66,10 @@ export default function StatusPage() {
         <div className="max-w-[480px] mx-auto">
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-8">
             <div className="flex items-center gap-4 mb-6">
-              {isLoading ? (
-                <RefreshCw size={32} className="text-[var(--text-muted)] animate-spin" />
-              ) : isOk ? (
-                <CheckCircle size={32} className="text-green-500" />
-              ) : (
-                <AlertCircle size={32} className="text-red-500" />
-              )}
+              {statusIcon}
               <div>
                 <p className="font-bold text-lg">
-                  {isLoading ? "Checking…" : isOk ? "All systems operational" : "Service unavailable"}
+                  {statusText}
                 </p>
                 {version && (
                   <p className="text-sm text-[var(--text-muted)]">Version {version}</p>

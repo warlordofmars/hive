@@ -194,8 +194,11 @@ export default function MemoryBrowser() {
             <div
               key={m.memory_id}
               className="card"
+              role="button"
+              tabIndex={0}
               style={{ cursor: "pointer", borderLeft: "4px solid var(--accent)" }}
               onClick={() => openEdit(m)}
+              onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && openEdit(m)}
             >
               <div
                 style={{
@@ -272,8 +275,9 @@ export default function MemoryBrowser() {
             <form onSubmit={creating ? handleCreate : handleUpdate}>
               {creating && (
                 <div style={{ marginBottom: 12 }}>
-                  <label>Key</label>
+                  <label htmlFor="memory-key">Key</label>
                   <input
+                    id="memory-key"
                     required
                     value={form.key}
                     onChange={(e) => setForm({ ...form, key: e.target.value })}
@@ -282,8 +286,9 @@ export default function MemoryBrowser() {
                 </div>
               )}
               <div style={{ marginBottom: 12 }}>
-                <label>Value</label>
+                <label htmlFor="memory-value">Value</label>
                 <textarea
+                  id="memory-value"
                   required
                   rows={6}
                   value={form.value}
@@ -292,8 +297,9 @@ export default function MemoryBrowser() {
                 />
               </div>
               <div style={{ marginBottom: 16 }}>
-                <label>Tags (comma-separated)</label>
+                <label htmlFor="memory-tags">Tags (comma-separated)</label>
                 <input
+                  id="memory-tags"
                   value={form.tags}
                   onChange={(e) => setForm({ ...form, tags: e.target.value })}
                   placeholder="tag1, tag2"

@@ -49,7 +49,7 @@ function isTokenValid(token) {
 
 function signOut() {
   localStorage.removeItem("hive_mgmt_token");
-  window.location.replace("/");
+  globalThis.location.replace("/");
 }
 
 function AppShell() {
@@ -84,8 +84,8 @@ function AppShell() {
 
   useEffect(() => {
     function onSwitchTab(e) { switchTab(e.detail); }
-    window.addEventListener("hive:switch-tab", onSwitchTab);
-    return () => window.removeEventListener("hive:switch-tab", onSwitchTab);
+    globalThis.addEventListener("hive:switch-tab", onSwitchTab);
+    return () => globalThis.removeEventListener("hive:switch-tab", onSwitchTab);
   }, []);
 
   if (!authenticated) {
@@ -110,13 +110,13 @@ function AppShell() {
           height: 56,
         }}
       >
-        <span
+        <button
           onClick={() => navigate("/")}
-          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", background: "transparent", border: "none", padding: 0, color: "inherit" }}
         >
           <img src="/logo.svg" alt="Hive" style={{ width: 28, height: 28 }} />
           <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
-        </span>
+        </button>
 
         <nav style={{ display: "flex", gap: 4, flex: 1 }}>
           {tabs.map((t) => (
@@ -204,6 +204,8 @@ function AppShell() {
             style={{ color: "inherit", textDecoration: "none" }}
             onMouseOver={(e) => (e.target.style.textDecoration = "underline")}
             onMouseOut={(e) => (e.target.style.textDecoration = "none")}
+            onFocus={(e) => (e.target.style.textDecoration = "underline")}
+            onBlur={(e) => (e.target.style.textDecoration = "none")}
           >
             Hive {version}
           </a>

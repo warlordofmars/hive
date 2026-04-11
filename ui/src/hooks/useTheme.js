@@ -5,11 +5,11 @@ export function useTheme() {
   const [theme, setTheme] = useState(() => {
     const stored = localStorage.getItem("hive_theme");
     if (stored === "dark" || stored === "light") return stored;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    return globalThis.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.dataset.theme = theme;
     localStorage.setItem("hive_theme", theme);
   }, [theme]);
 

@@ -6,7 +6,7 @@ export default function AuthCallback() {
 
   useEffect(() => {
     async function handleCallback() {
-      const params = new URLSearchParams(window.location.search);
+      const params = new URLSearchParams(globalThis.location.search);
       const code = params.get("code");
       const state = params.get("state");
       const errorParam = params.get("error");
@@ -28,7 +28,7 @@ export default function AuthCallback() {
 
       const verifier = sessionStorage.getItem("pkce_verifier");
       const clientId = localStorage.getItem("hive_client_id");
-      const redirectUri = `${window.location.origin}/oauth/callback`;
+      const redirectUri = `${globalThis.location.origin}/oauth/callback`;
 
       if (!verifier || !clientId) {
         setError("Missing sign-in context — please try again.");
@@ -57,7 +57,7 @@ export default function AuthCallback() {
       localStorage.setItem("hive_token", data.access_token);
       sessionStorage.removeItem("pkce_verifier");
       sessionStorage.removeItem("oauth_state");
-      window.location.replace("/");
+      globalThis.location.replace("/");
     }
 
     handleCallback();

@@ -68,14 +68,14 @@ export default function ActivityLog() {
       {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
-        <label style={{ marginBottom: 0 }}>Show last</label>
-        <select style={{ width: 80 }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+        <label htmlFor="activity-days" style={{ marginBottom: 0 }}>Show last</label>
+        <select id="activity-days" style={{ width: 80 }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
           {[1, 7, 14, 30, 90].map((d) => (
             <option key={d} value={d}>{d} days</option>
           ))}
         </select>
-        <label style={{ marginBottom: 0, marginLeft: 8 }}>Limit</label>
-        <select style={{ width: 80 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+        <label htmlFor="activity-limit" style={{ marginBottom: 0, marginLeft: 8 }}>Limit</label>
+        <select id="activity-limit" style={{ width: 80 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
           {[50, 100, 250, 500].map((l) => (
             <option key={l} value={l}>{l}</option>
           ))}
