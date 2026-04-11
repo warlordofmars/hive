@@ -155,9 +155,22 @@ describe("TagPicker", () => {
     const onSelect = vi.fn();
     render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
     const input = screen.getByPlaceholderText("Filter by tag");
-    fireEvent.change(input, { target: { value: "tag1" } }); // matches → suggestions exist, open=true
+    fireEvent.change(input, { target: { value: "new-unique-tag" } }); // no match → no suggestions, first branch
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(onSelect).toHaveBeenCalledWith("tag1");
+    expect(onSelect).toHaveBeenCalledWith("new-unique-tag");
+  });
+
+  it("Enter with typed value matching suggestions (dropdown open) commits typed value", async () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    // Wrap in act so React flushes state (open=true, suggestions populated) before keyDown
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "alpha" } });
+    });
+    // Now open=true, suggestions=["alpha"], activeIndex=-1 → second branch (line 64)
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("alpha");
   });
 
   it("Enter with empty input when suggestions are open does nothing", () => {
