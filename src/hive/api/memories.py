@@ -47,7 +47,7 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
     return None if claims.get("role") == "admin" else claims["sub"]
 
 
-@router.get("/memories", response_model=PagedResponse)
+@router.get("/memories")
 async def list_memories(
     tag: str | None = Query(None, description="Filter by tag"),
     search: str | None = Query(None, description="Semantic search query"),
@@ -95,7 +95,7 @@ async def list_memories(
     )
 
 
-@router.post("/memories", response_model=MemoryResponse)
+@router.post("/memories")
 async def create_memory(
     body: MemoryCreate,
     response: Response,
@@ -153,7 +153,7 @@ async def create_memory(
     return MemoryResponse.from_memory(memory)
 
 
-@router.get("/memories/{memory_id}", response_model=MemoryResponse)
+@router.get("/memories/{memory_id}")
 async def get_memory(
     memory_id: str,
     claims: dict[str, Any] = Depends(require_mgmt_user),
@@ -168,7 +168,7 @@ async def get_memory(
     return MemoryResponse.from_memory(memory)
 
 
-@router.patch("/memories/{memory_id}", response_model=MemoryResponse)
+@router.patch("/memories/{memory_id}")
 async def update_memory(
     memory_id: str,
     body: MemoryUpdate,
