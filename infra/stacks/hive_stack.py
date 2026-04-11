@@ -744,15 +744,20 @@ function handler(event) {
             )
 
         # Deploy built UI assets — only if ui/dist exists (built in CI before cdk deploy)
+        # prune=False: do not delete objects outside ui/dist (e.g. the docs/ prefix).
+        # Without this, CDK's default prune would delete the docs CSS/JS files from S3
+        # because they are absent from the React SPA build output, breaking the docs site.
         ui_dist_path = os.path.join(os.path.dirname(__file__), "../../ui/dist")
+        deploy_ui = None
         if os.path.exists(ui_dist_path):
-            s3deploy.BucketDeployment(
+            deploy_ui = s3deploy.BucketDeployment(
                 self,
                 "DeployUi",
                 sources=[s3deploy.Source.asset(ui_dist_path)],
                 destination_bucket=ui_bucket,
                 distribution=distribution,
                 distribution_paths=["/*"],
+                prune=False,
             )
 
         # Deploy built docs site assets — only if docs-site/.vitepress/dist exists
@@ -760,7 +765,7 @@ function handler(event) {
             os.path.dirname(__file__), "../../docs-site/.vitepress/dist"
         )
         if os.path.exists(docs_dist_path):
-            s3deploy.BucketDeployment(
+            deploy_docs = s3deploy.BucketDeployment(
                 self,
                 "DeployDocs",
                 sources=[s3deploy.Source.asset(docs_dist_path)],
@@ -769,6 +774,10 @@ function handler(event) {
                 distribution=distribution,
                 distribution_paths=["/docs/*"],
             )
+            # Ensure docs are deployed after the UI so that if DeployUi ever
+            # re-enables prune the docs files are always the final write.
+            if deploy_ui is not None:
+                deploy_docs.node.add_dependency(deploy_ui)
 
         # ----------------------------------------------------------------
         # Route53 alias records — A + AAAA → CloudFront distribution
