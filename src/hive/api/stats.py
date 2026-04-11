@@ -56,8 +56,9 @@ async def get_activity(
     ] = _ACTIVITY_LIMIT_DEFAULT,
 ) -> PagedResponse:
     today = date.today()
-    # `days` is bounded by FastAPI Query(ge=1, le=90) above. NOSONAR
-    dates = [(today - timedelta(days=i)).isoformat() for i in range(days)]
+    dates = [
+        (today - timedelta(days=i)).isoformat() for i in range(days)
+    ]  # `days` bounded by FastAPI Query(ge=1, le=90). NOSONAR
     events = storage.get_events_for_dates(dates, limit=limit + 1)
 
     has_more = len(events) > limit
