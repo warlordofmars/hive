@@ -249,15 +249,15 @@ function EmptyState({ icon: Icon, message }) {
 // Chart sections (extracted to reduce cognitive complexity)
 // ------------------------------------------------------------------
 
-function InvocationsChart({ loading, metrics, data, error, tools, xAxisProps }) {
-  if (loading && !metrics) return <SkeletonBlock height={260} />;
-  if (data.length === 0) return error ? null : <EmptyState icon={TrendingUp} message="No invocation data for this period." />;
+function ToolAreaChart({ loading, metrics, data, error, tools, xAxisProps, height, gradientPrefix, emptyMessage }) {
+  if (loading && !metrics) return <SkeletonBlock height={height} />;
+  if (data.length === 0) return error ? null : <EmptyState icon={TrendingUp} message={emptyMessage} />;
   return (
-    <ResponsiveContainer width="100%" height={260}>
+    <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data} margin={{ bottom: 10 }}>
         <defs>
           {tools.map((t) => (
-            <linearGradient key={t} id={`inv_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
+            <linearGradient key={t} id={`${gradientPrefix}_${t}`} x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
               <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
             </linearGradient>
@@ -269,34 +269,7 @@ function InvocationsChart({ loading, metrics, data, error, tools, xAxisProps }) 
         <Tooltip content={<CustomTooltip />} />
         <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
         {tools.map((t) => (
-          <Area key={t} type="monotone" dataKey={t} stroke={TOOL_COLORS[t]} fill={`url(#inv_grad_${t})`} strokeWidth={2} dot={false} animationDuration={400} activeDot={{ r: 5, strokeWidth: 2 }} />
-        ))}
-      </AreaChart>
-    </ResponsiveContainer>
-  );
-}
-
-function LatencyChart({ loading, metrics, data, error, tools, xAxisProps }) {
-  if (loading && !metrics) return <SkeletonBlock height={220} />;
-  if (data.length === 0) return error ? null : <EmptyState icon={TrendingUp} message="No latency data for this period." />;
-  return (
-    <ResponsiveContainer width="100%" height={220}>
-      <AreaChart data={data} margin={{ bottom: 10 }}>
-        <defs>
-          {tools.map((t) => (
-            <linearGradient key={t} id={`lat_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
-              <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
-            </linearGradient>
-          ))}
-        </defs>
-        <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-        <XAxis {...xAxisProps} />
-        <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
-        <Tooltip content={<CustomTooltip />} />
-        <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
-        {tools.map((t) => (
-          <Area key={t} type="monotone" dataKey={t} stroke={TOOL_COLORS[t]} fill={`url(#lat_grad_${t})`} strokeWidth={2} dot={false} animationDuration={400} activeDot={{ r: 5, strokeWidth: 2 }} />
+          <Area key={t} type="monotone" dataKey={t} stroke={TOOL_COLORS[t]} fill={`url(#${gradientPrefix}_${t})`} strokeWidth={2} dot={false} animationDuration={400} activeDot={{ r: 5, strokeWidth: 2 }} />
         ))}
       </AreaChart>
     </ResponsiveContainer>
@@ -496,11 +469,11 @@ export default function Dashboard() {
       {/* Tool Invocations */}
       <SectionHeader title="Tool Invocations" />
       <ErrorBanner msg={metricsError} />
-      <InvocationsChart loading={loading} metrics={metrics} data={invData} error={metricsError} tools={TOOLS} xAxisProps={xAxisProps} />
+      <ToolAreaChart loading={loading} metrics={metrics} data={invData} error={metricsError} tools={TOOLS} xAxisProps={xAxisProps} height={260} gradientPrefix="inv_grad" emptyMessage="No invocation data for this period." />
 
       {/* Tool Latency p99 */}
       <SectionHeader title="Tool Latency p99 (ms)" />
-      <LatencyChart loading={loading} metrics={metrics} data={latData} error={metricsError} tools={TOOLS} xAxisProps={xAxisProps} />
+      <ToolAreaChart loading={loading} metrics={metrics} data={latData} error={metricsError} tools={TOOLS} xAxisProps={xAxisProps} height={220} gradientPrefix="lat_grad" emptyMessage="No latency data for this period." />
 
       {/* Auth Events */}
       <SectionHeader title="Auth Events" />
