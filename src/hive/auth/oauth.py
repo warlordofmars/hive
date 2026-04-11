@@ -154,6 +154,7 @@ async def authorize(
         params: dict[str, str] = {"code": auth_code.code}
         if state:
             params["state"] = state
+        # redirect_uri was validated against client.redirect_uris above (line 126). NOSONAR
         return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
 
     # Production: store PKCE state, then redirect to Google for identity verification.
@@ -238,6 +239,8 @@ async def google_callback(
     params: dict[str, str] = {"code": auth_code.code}
     if pending.original_state:
         params["state"] = pending.original_state
+    # pending.redirect_uri was validated against client.redirect_uris when the pending auth
+    # was created (authorize endpoint, line 126). NOSONAR
     return RedirectResponse(f"{pending.redirect_uri}?{urlencode(params)}", status_code=302)
 
 
