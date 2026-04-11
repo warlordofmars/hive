@@ -159,9 +159,9 @@ async def authorize(
         params: dict[str, str] = {"code": auth_code.code}
         if state:
             params["state"] = state
-        return RedirectResponse(
+        return RedirectResponse(  # redirect_uri validated above (line 126). NOSONAR
             f"{redirect_uri}?{urlencode(params)}", status_code=302
-        )  # redirect_uri validated above (line 126). NOSONAR
+        )
 
     # Production: store PKCE state, then redirect to Google for identity verification.
     from hive.auth.google import google_authorization_url
