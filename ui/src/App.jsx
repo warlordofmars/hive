@@ -63,17 +63,6 @@ function AppShell() {
   const navigate = useNavigate();
   const { theme, toggle } = useTheme();
 
-  const token = localStorage.getItem("hive_mgmt_token") ?? "";
-
-  if (!isTokenValid(token)) {
-    return <LoginPage />;
-  }
-
-  const claims = parseToken(token);
-  const isAdmin = claims.role === "admin";
-  const userEmail = claims.email ?? "";
-  const tabs = isAdmin ? ADMIN_TABS : BASE_TABS;
-
   useEffect(() => {
     fetch("/health")
       .then((r) => r.json())
@@ -94,6 +83,17 @@ function AppShell() {
     window.addEventListener("hive:switch-tab", onSwitchTab);
     return () => window.removeEventListener("hive:switch-tab", onSwitchTab);
   }, []);
+
+  const token = localStorage.getItem("hive_mgmt_token") ?? "";
+
+  if (!isTokenValid(token)) {
+    return <LoginPage />;
+  }
+
+  const claims = parseToken(token);
+  const isAdmin = claims.role === "admin";
+  const userEmail = claims.email ?? "";
+  const tabs = isAdmin ? ADMIN_TABS : BASE_TABS;
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
