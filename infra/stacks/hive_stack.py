@@ -371,6 +371,7 @@ class HiveStack(cdk.Stack):
                 resources=["*"],
             )
         )
+        # CloudWatch Logs permission is scoped after mcp_fn/api_fn are defined below.
         # S3 Vectors + Bedrock Titan Embeddings V2 for API Lambda
         api_role.add_to_policy(
             iam.PolicyStatement(
@@ -408,6 +409,31 @@ class HiveStack(cdk.Stack):
             timeout=cdk.Duration.seconds(30),
             description=f"Hive management API (FastAPI) [{env_name}]",
             tracing=lambda_.Tracing.ACTIVE,
+        )
+
+        # Pass the MCP log group name so the API Lambda can query it.
+        # mcp_fn.function_name is safe here (mcp_fn has no dependency on api_fn).
+        # We do NOT pass the API log group name via CFN token — that would be a
+        # self-reference (api_fn → api_fn) and cause a circular dependency.
+        # Instead, logs.py derives it at runtime from AWS_LAMBDA_FUNCTION_NAME,
+        # which the Lambda runtime injects automatically.
+        api_fn.add_environment("HIVE_MCP_LOG_GROUP", f"/aws/lambda/{mcp_fn.function_name}")
+
+        # CDK names functions "{StackId}-{LogicalId}-{RandomSuffix}".
+        # The stack construct_id is the first segment, so "/aws/lambda/HiveStack*"
+        # matches all Lambdas in this stack without creating a token dependency.
+        _stack_prefix = construct_id  # e.g. "HiveStack-dev"
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "logs:FilterLogEvents",
+                    "logs:DescribeLogGroups",
+                ],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{_stack_prefix}-*",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/{_stack_prefix}-*:*",
+                ],
+            )
         )
 
         api_url = api_fn.add_function_url(
@@ -744,15 +770,20 @@ function handler(event) {
             )
 
         # Deploy built UI assets — only if ui/dist exists (built in CI before cdk deploy)
+        # prune=False: do not delete objects outside ui/dist (e.g. the docs/ prefix).
+        # Without this, CDK's default prune would delete the docs CSS/JS files from S3
+        # because they are absent from the React SPA build output, breaking the docs site.
         ui_dist_path = os.path.join(os.path.dirname(__file__), "../../ui/dist")
+        deploy_ui = None
         if os.path.exists(ui_dist_path):
-            s3deploy.BucketDeployment(
+            deploy_ui = s3deploy.BucketDeployment(
                 self,
                 "DeployUi",
                 sources=[s3deploy.Source.asset(ui_dist_path)],
                 destination_bucket=ui_bucket,
                 distribution=distribution,
                 distribution_paths=["/*"],
+                prune=False,
             )
 
         # Deploy built docs site assets — only if docs-site/.vitepress/dist exists
@@ -760,7 +791,7 @@ function handler(event) {
             os.path.dirname(__file__), "../../docs-site/.vitepress/dist"
         )
         if os.path.exists(docs_dist_path):
-            s3deploy.BucketDeployment(
+            deploy_docs = s3deploy.BucketDeployment(
                 self,
                 "DeployDocs",
                 sources=[s3deploy.Source.asset(docs_dist_path)],
@@ -769,6 +800,10 @@ function handler(event) {
                 distribution=distribution,
                 distribution_paths=["/docs/*"],
             )
+            # Ensure docs are deployed after the UI so that if DeployUi ever
+            # re-enables prune the docs files are always the final write.
+            if deploy_ui is not None:
+                deploy_docs.node.add_dependency(deploy_ui)
 
         # ----------------------------------------------------------------
         # Route53 alias records — A + AAAA → CloudFront distribution

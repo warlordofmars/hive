@@ -1,6 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
+import EmptyState from "./EmptyState.jsx";
 
 const EVENT_COLORS = {
   memory_created: "#34a853",
@@ -58,34 +59,34 @@ export default function ActivityLog() {
           ].map(({ label, value }) => (
             <div key={label} className="card" style={{ flex: 1, textAlign: "center" }}>
               <div style={{ fontSize: 28, fontWeight: 700 }}>{value}</div>
-              <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>{label}</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>{label}</div>
             </div>
           ))}
         </div>
       )}
 
-      {error && <p style={{ color: "red", marginBottom: 12 }}>{error}</p>}
+      {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
-        <label style={{ marginBottom: 0 }}>Show last</label>
-        <select style={{ width: 80 }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+        <label htmlFor="activity-days" style={{ marginBottom: 0 }}>Show last</label>
+        <select id="activity-days" style={{ width: 80 }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
           {[1, 7, 14, 30, 90].map((d) => (
             <option key={d} value={d}>{d} days</option>
           ))}
         </select>
-        <label style={{ marginBottom: 0, marginLeft: 8 }}>Limit</label>
-        <select style={{ width: 80 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+        <label htmlFor="activity-limit" style={{ marginBottom: 0, marginLeft: 8 }}>Limit</label>
+        <select id="activity-limit" style={{ width: 80 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
           {[50, 100, 250, 500].map((l) => (
             <option key={l} value={l}>{l}</option>
           ))}
         </select>
-        <span style={{ color: "#888", fontSize: 13 }}>
+        <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
           {events.length} events{hasMore ? " (more available)" : ""}
         </span>
         <button className="secondary" onClick={load} style={{ marginLeft: "auto" }}>Refresh</button>
       </div>
 
-      {loading && <p style={{ color: "#888" }}>Loading…</p>}
+      {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
 
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
         <table>
@@ -100,22 +101,27 @@ export default function ActivityLog() {
           <tbody>
             {events.length === 0 && !loading && (
               <tr>
-                <td colSpan={4} style={{ textAlign: "center", color: "#888", padding: 30 }}>
-                  No activity in this period.
+                <td colSpan={4} style={{ padding: 0 }}>
+                  <EmptyState
+                    variant="activity"
+                    title="No activity in this period"
+                    description="Events will appear here as your MCP clients use Hive tools."
+                  />
                 </td>
               </tr>
             )}
             {events.map((e) => (
               <tr key={e.event_id}>
-                <td style={{ whiteSpace: "nowrap", color: "#666", fontSize: 12 }}>
+                <td style={{ whiteSpace: "nowrap", color: "var(--text-muted)", fontSize: 12 }}>
                   {new Date(e.timestamp).toLocaleString()}
                 </td>
                 <td>
                   <span
                     className="badge"
                     style={{
-                      background: `${EVENT_COLORS[e.event_type] ?? "#888"}20`,
-                      color: EVENT_COLORS[e.event_type] ?? "#888",
+                      background: `${EVENT_COLORS[e.event_type] ?? "var(--text-muted)"}20`,
+                      color: EVENT_COLORS[e.event_type] ?? "var(--text-muted)",
+                      border: "none",
                     }}
                   >
                     {e.event_type}
@@ -124,7 +130,7 @@ export default function ActivityLog() {
                 <td>
                   <code style={{ fontSize: 11 }}>{e.client_id.slice(0, 8)}…</code>
                 </td>
-                <td style={{ fontSize: 12, color: "#555" }}>
+                <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   {Object.entries(e.metadata)
                     .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
                     .join(" · ")}

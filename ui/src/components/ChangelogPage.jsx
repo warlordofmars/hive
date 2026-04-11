@@ -70,7 +70,7 @@ function ChangelogSection({ version, date, groups }) {
           </h3>
           <ul className="flex flex-col gap-1.5">
             {g.items.map((item, i) => (
-              <li key={i} className="text-sm text-[var(--text)] leading-relaxed flex gap-2">
+              <li key={`${g.heading}-${i}`} className="text-sm text-[var(--text)] leading-relaxed flex gap-2">
                 <span className="text-[var(--text-muted)] shrink-0">—</span>
                 <span>{item}</span>
               </li>

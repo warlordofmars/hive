@@ -23,7 +23,7 @@ async function request(method, path, body) {
 
   if (res.status === 401) {
     localStorage.removeItem("hive_mgmt_token");
-    window.location.replace("/");
+    globalThis.location.replace("/");
     return null;
   }
 
@@ -72,6 +72,12 @@ export const api = {
   // Admin
   getMetrics: (period = "24h") => request("GET", `/api/admin/metrics?period=${period}`),
   getCosts: () => request("GET", "/api/admin/costs"),
+  getLogs: ({ group = "all", window = "1h", filter = "", nextToken } = {}) => {
+    const params = new URLSearchParams({ group, window });
+    if (filter) params.set("filter", filter);
+    if (nextToken) params.set("next_token", nextToken);
+    return request("GET", `/api/admin/logs?${params}`);
+  },
 
   // Users
   getMe: () => request("GET", "/api/users/me"),

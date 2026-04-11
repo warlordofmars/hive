@@ -19,11 +19,12 @@ vi.mock("../api.js", () => ({
 }));
 
 import { api } from "../api.js";
-import { formatCostTick, formatCostTooltip } from "./Dashboard.jsx";
+import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip, CustomDailyCostTooltip } from "./Dashboard.jsx";
 
 const STATS = {
   total_memories: 42,
   total_clients: 3,
+  total_users: 7,
   events_today: 10,
   events_last_7_days: 88,
 };
@@ -47,6 +48,9 @@ const METRICS = {
     inv_summarizecontext: { timestamps: [], values: [] },
     err_summarizecontext: { timestamps: [], values: [] },
     p99_summarizecontext: { timestamps: [], values: [] },
+    inv_searchmemories: { timestamps: [], values: [] },
+    err_searchmemories: { timestamps: [], values: [] },
+    p99_searchmemories: { timestamps: [], values: [] },
     tokens_issued: { timestamps: ["2026-04-01T12:00:00Z"], values: [7] },
     token_failures: { timestamps: ["2026-04-01T12:00:00Z"], values: [2] },
   },
@@ -63,7 +67,70 @@ const COSTS = {
       by_service: { "AWS Lambda": 0.5, "Amazon DynamoDB": 0.12 },
     },
   ],
+  daily: [
+    { date: "2026-04-01", total: 0.02 },
+    { date: "2026-04-02", total: 0.03 },
+  ],
 };
+
+describe("CustomTooltip", () => {
+  it("returns null when not active", () => {
+    const { container } = render(<CustomTooltip active={false} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("returns null when payload is empty", () => {
+    const { container } = render(<CustomTooltip active={true} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders label and payload entries when active", () => {
+    const payload = [{ dataKey: "remember", value: 5, color: "#e8a020" }];
+    render(<CustomTooltip active={true} payload={payload} label="2026-04-01 12:00" />);
+    expect(screen.getByText("2026-04-01 12:00")).toBeTruthy();
+    expect(screen.getByText("remember:")).toBeTruthy();
+    expect(screen.getByText("5")).toBeTruthy();
+  });
+});
+
+describe("CustomDailyCostTooltip", () => {
+  it("returns null when not active", () => {
+    const { container } = render(<CustomDailyCostTooltip active={false} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("returns null when payload is empty", () => {
+    const { container } = render(<CustomDailyCostTooltip active={true} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders date and formatted cost when active", () => {
+    const payload = [{ value: 0.02 }];
+    render(<CustomDailyCostTooltip active={true} payload={payload} label="2026-04-01" />);
+    expect(screen.getByText("2026-04-01")).toBeTruthy();
+    expect(screen.getByText("$0.0200")).toBeTruthy();
+  });
+});
+
+describe("CustomCostTooltip", () => {
+  it("returns null when not active", () => {
+    const { container } = render(<CustomCostTooltip active={false} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("returns null when payload is empty", () => {
+    const { container } = render(<CustomCostTooltip active={true} payload={[]} label="x" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders label and formatted cost entries when active", () => {
+    const payload = [{ dataKey: "AWS Lambda", value: 0.5, color: "#1a1a2e" }];
+    render(<CustomCostTooltip active={true} payload={payload} label="2026-03" />);
+    expect(screen.getByText("2026-03")).toBeTruthy();
+    expect(screen.getByText("AWS Lambda:")).toBeTruthy();
+    expect(screen.getByText("$0.5000")).toBeTruthy();
+  });
+});
 
 describe("formatters", () => {
   it("formatCostTick formats to 2 decimal places with $", () => {
@@ -93,11 +160,18 @@ describe("Dashboard", () => {
     expect(screen.getByText("Dashboard")).toBeTruthy();
   });
 
-  it("renders period selector buttons", async () => {
+  it("renders period selector buttons including 30d", async () => {
     await act(async () => render(<Dashboard />));
     expect(screen.getByText("1h")).toBeTruthy();
     expect(screen.getByText("24h")).toBeTruthy();
     expect(screen.getByText("7d")).toBeTruthy();
+    expect(screen.getByText("30d")).toBeTruthy();
+  });
+
+  it("selected period button has orange background", async () => {
+    await act(async () => render(<Dashboard />));
+    const btn = screen.getByText("24h");
+    expect(btn.style.background).toBe("rgb(232, 160, 32)");
   });
 
   it("renders summary stat cards after load", async () => {
@@ -112,11 +186,38 @@ describe("Dashboard", () => {
     expect(screen.getByText("Events (7d)")).toBeTruthy();
   });
 
+  it("renders Total Users stat card from stats.total_users", async () => {
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Total Users")).toBeTruthy());
+    // total_users = 7 appears multiple times (also tokens_issued); confirm at least one
+    expect(screen.getAllByText("7").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders — for Total Users when total_users is null", async () => {
+    api.getStats.mockResolvedValue({ ...STATS, total_users: null });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Total Users")).toBeTruthy());
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders MTD cost stat card", async () => {
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("AWS Cost (MTD)")).toBeTruthy());
+    expect(screen.getByText("$0.62")).toBeTruthy();
+  });
+
+  it("does not render MTD cost card when no cost data", async () => {
+    api.getCosts.mockResolvedValue({ environment: "dev", currency: "USD", note: "x", monthly: [], daily: [] });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.queryByText("AWS Cost (MTD)")).toBeFalsy());
+  });
+
   it("renders section headers", async () => {
     await act(async () => render(<Dashboard />));
     expect(screen.getByText("Tool Invocations")).toBeTruthy();
-    expect(screen.getByText("Storage Latency p99 (ms)")).toBeTruthy();
+    expect(screen.getByText("Tool Latency p99 (ms)")).toBeTruthy();
     expect(screen.getByText("Auth Events")).toBeTruthy();
+    expect(screen.getByText("Daily AWS Spend (Last 30 Days)")).toBeTruthy();
     expect(screen.getByText("Monthly AWS Spend")).toBeTruthy();
   });
 
@@ -131,6 +232,11 @@ describe("Dashboard", () => {
     await waitFor(() => expect(screen.getByText(/Cost data lags/)).toBeTruthy());
   });
 
+  it("shows relative refresh time after load", async () => {
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("just now")).toBeTruthy());
+  });
+
   it("switches period when a period button is clicked", async () => {
     await act(async () => render(<Dashboard />));
     fireEvent.click(screen.getByText("1h"));
@@ -141,6 +247,12 @@ describe("Dashboard", () => {
     await act(async () => render(<Dashboard />));
     fireEvent.click(screen.getByText("7d"));
     await waitFor(() => expect(api.getMetrics).toHaveBeenCalledWith("7d"));
+  });
+
+  it("clicking 30d calls getMetrics with 30d", async () => {
+    await act(async () => render(<Dashboard />));
+    fireEvent.click(screen.getByText("30d"));
+    await waitFor(() => expect(api.getMetrics).toHaveBeenCalledWith("30d"));
   });
 
   it("clicking Refresh reloads all data", async () => {
@@ -160,11 +272,7 @@ describe("Dashboard", () => {
   });
 
   it("shows empty state when no invocation data", async () => {
-    api.getMetrics.mockResolvedValue({
-      period: "24h",
-      environment: "test",
-      metrics: {},
-    });
+    api.getMetrics.mockResolvedValue({ period: "24h", environment: "test", metrics: {} });
     await act(async () => render(<Dashboard />));
     await waitFor(() =>
       expect(screen.getByText("No invocation data for this period.")).toBeTruthy()
@@ -172,16 +280,31 @@ describe("Dashboard", () => {
     expect(screen.getByText("No latency data for this period.")).toBeTruthy();
   });
 
-  it("shows empty state when no cost data", async () => {
+  it("shows empty state when no monthly cost data", async () => {
     api.getCosts.mockResolvedValue({
       environment: "dev",
       currency: "USD",
       note: "Cost data lags ~24 h.",
       monthly: [],
+      daily: [],
     });
     await act(async () => render(<Dashboard />));
     await waitFor(() =>
       expect(screen.getByText("No cost data available yet.")).toBeTruthy()
+    );
+  });
+
+  it("shows empty state when no daily cost data", async () => {
+    api.getCosts.mockResolvedValue({
+      environment: "dev",
+      currency: "USD",
+      note: "Cost data lags ~24 h.",
+      monthly: [{ period: "2026-03-01", total: 0.62, by_service: { "AWS Lambda": 0.62 } }],
+      daily: [],
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() =>
+      expect(screen.getByText("No daily cost data available yet.")).toBeTruthy()
     );
   });
 
@@ -225,24 +348,22 @@ describe("Dashboard", () => {
 
     await act(async () => render(<Dashboard />));
     expect(screen.getByText("Loading…")).toBeTruthy();
-    // resolve to allow cleanup
     resolve(STATS);
   });
 
   it("renders dash for undefined StatCard value", async () => {
-    // getStats returns data with a null field to hit the value ?? "—" branch
     api.getStats.mockResolvedValue({
       total_memories: null,
       total_clients: 3,
+      total_users: null,
       events_today: 10,
       events_last_7_days: 88,
     });
     await act(async () => render(<Dashboard />));
-    await waitFor(() => expect(screen.getByText("—")).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1));
   });
 
   it("handles metrics response missing metrics key", async () => {
-    // metrics.metrics is undefined — hits ?? {} branch on lines 179-180
     api.getMetrics.mockResolvedValue({ period: "24h", environment: "test" });
     await act(async () => render(<Dashboard />));
     await waitFor(() =>
@@ -251,20 +372,27 @@ describe("Dashboard", () => {
   });
 
   it("handles costs response missing monthly key", async () => {
-    // costs.monthly is undefined — hits ?? [] branch on lines 181-182
-    api.getCosts.mockResolvedValue({
-      environment: "dev",
-      currency: "USD",
-      note: "Cost data lags ~24 h.",
-    });
+    api.getCosts.mockResolvedValue({ environment: "dev", currency: "USD", note: "Cost data lags ~24 h." });
     await act(async () => render(<Dashboard />));
     await waitFor(() =>
       expect(screen.getByText("No cost data available yet.")).toBeTruthy()
     );
   });
 
+  it("handles costs response missing daily key", async () => {
+    api.getCosts.mockResolvedValue({
+      environment: "dev",
+      currency: "USD",
+      note: "Cost data lags ~24 h.",
+      monthly: [{ period: "2026-03-01", total: 0.62, by_service: { "AWS Lambda": 0.62 } }],
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() =>
+      expect(screen.getByText("No daily cost data available yet.")).toBeTruthy()
+    );
+  });
+
   it("handles sparse values array (values[i] undefined)", async () => {
-    // timestamps has more entries than values — hits ?? 0 on lines 40 and 55
     api.getMetrics.mockResolvedValue({
       period: "24h",
       environment: "test",
@@ -276,7 +404,6 @@ describe("Dashboard", () => {
       },
     });
     await act(async () => render(<Dashboard />));
-    // Just assert no crash — the sparse-values path is exercised
     expect(screen.getByText("Tool Invocations")).toBeTruthy();
   });
 });

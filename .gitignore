@@ -19,6 +19,9 @@ ui/coverage/
 coverage.xml
 .pytest_cache/
 htmlcov/
+coverage-unit/
+coverage-js/
+coverage-combined/
 
 # CDK
 infra/cdk.out/
@@ -26,6 +29,10 @@ infra/cdk.out/
 # Misc
 .mypy_cache/
 .ruff_cache/
+
+# Local env / secrets
+.env
+.env.*
 
 # Claude Code
 .claude/

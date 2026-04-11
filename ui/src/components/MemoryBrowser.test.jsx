@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import MemoryBrowser from "./MemoryBrowser.jsx";
+import MemoryBrowser, { TagPicker } from "./MemoryBrowser.jsx";
 
 vi.mock("../api.js", () => ({
   api: {
@@ -22,6 +22,173 @@ const makeMemory = (overrides = {}) => ({
   tags: ["tag1"],
   ...overrides,
 });
+
+// ------------------------------------------------------------------
+// TagPicker — isolated unit tests
+// ------------------------------------------------------------------
+
+describe("TagPicker", () => {
+  const tags = ["alpha", "beta", "gamma"];
+
+  it("renders input when no value is selected", () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    expect(screen.getByPlaceholderText("Filter by tag")).toBeTruthy();
+  });
+
+  it("renders chip when a value is selected", () => {
+    render(<TagPicker knownTags={tags} value="alpha" onSelect={vi.fn()} />);
+    expect(screen.getByText("alpha")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Filter by tag")).toBeNull();
+  });
+
+  it("clear button calls onSelect with empty string", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="alpha" onSelect={onSelect} />);
+    fireEvent.click(screen.getByLabelText("Clear tag filter"));
+    expect(onSelect).toHaveBeenCalledWith("");
+  });
+
+  it("shows all suggestions on focus", async () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    fireEvent.focus(screen.getByPlaceholderText("Filter by tag"));
+    await waitFor(() => expect(screen.getByRole("listbox")).toBeTruthy());
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+  });
+
+  it("filters suggestions based on typed input", async () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText("Filter by tag"), {
+      target: { value: "al" },
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "alpha" })).toBeTruthy();
+      expect(screen.queryByRole("option", { name: "beta" })).toBeNull();
+    });
+  });
+
+  it("mousedown on suggestion calls onSelect", async () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    fireEvent.focus(screen.getByPlaceholderText("Filter by tag"));
+    await waitFor(() => screen.getByRole("option", { name: "alpha" }));
+    fireEvent.mouseDown(screen.getByRole("option", { name: "alpha" }));
+    expect(onSelect).toHaveBeenCalledWith("alpha");
+  });
+
+  it("ArrowDown highlights next suggestion and cannot go past last", async () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.focus(input);
+    await waitFor(() => screen.getByRole("option", { name: "alpha" }));
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "beta" }).getAttribute("aria-selected")).toBe("true");
+
+    // Past last item — stays on last
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "gamma" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("ArrowUp highlights previous suggestion and cannot go before first", async () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.focus(input);
+    await waitFor(() => screen.getByRole("option", { name: "alpha" }));
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "beta" }).getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(screen.getByRole("option", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
+
+    // Cannot go before first
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(screen.getByRole("option", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("Enter with active item selects it", async () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.focus(input);
+    await waitFor(() => screen.getByRole("option", { name: "alpha" }));
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("alpha");
+  });
+
+  it("Enter with no active item does nothing", async () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.focus(input);
+    await waitFor(() => screen.getByRole("option", { name: "alpha" }));
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("Escape when suggestions are open closes the dropdown", async () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.focus(input);
+    await waitFor(() => screen.getByRole("listbox"));
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+  });
+
+  it("Escape when no suggestions still closes open state", () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    // "zzz" has no matches but sets open=true; Escape should close
+    fireEvent.change(input, { target: { value: "zzz" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("non-navigation key when no suggestions does nothing", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.change(input, { target: { value: "zzz" } }); // no matches
+    fireEvent.keyDown(input, { key: "a" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("non-navigation key when dropdown is open does nothing", async () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.focus(input);
+    await waitFor(() => screen.getByRole("listbox"));
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("blur closes dropdown after delay", async () => {
+    render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.focus(input);
+    await waitFor(() => screen.getByRole("listbox"));
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull(), { timeout: 500 });
+  });
+
+  it("shows no dropdown when knownTags is empty", () => {
+    render(<TagPicker knownTags={[]} value="" onSelect={vi.fn()} />);
+    fireEvent.focus(screen.getByPlaceholderText("Filter by tag"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------
+// MemoryBrowser
+// ------------------------------------------------------------------
 
 describe("MemoryBrowser", () => {
   beforeEach(() => {
@@ -47,7 +214,7 @@ describe("MemoryBrowser", () => {
 
   it("renders empty state after load", async () => {
     await act(async () => render(<MemoryBrowser />));
-    await waitFor(() => expect(screen.getByText("No memories found.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No memories yet")).toBeTruthy());
   });
 
   it("renders loaded memories", async () => {
@@ -74,10 +241,25 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(screen.getByText("Load failed")).toBeTruthy());
   });
 
-  it("passes tag filter to listMemories", async () => {
+  it("passes tag filter to listMemories when a tag is selected", async () => {
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ tags: ["mytag"] })],
+      next_cursor: null,
+    });
     await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+
+    // Type to surface suggestion then select it
     const filterInput = screen.getByPlaceholderText("Filter by tag");
-    await act(async () => fireEvent.change(filterInput, { target: { value: "mytag" } }));
+    await act(async () => fireEvent.focus(filterInput));
+    await act(async () =>
+      fireEvent.change(filterInput, { target: { value: "my" } }),
+    );
+    await waitFor(() => screen.getByRole("option", { name: "mytag" }));
+    await act(async () =>
+      fireEvent.mouseDown(screen.getByRole("option", { name: "mytag" })),
+    );
+
     await waitFor(() =>
       expect(api.listMemories).toHaveBeenCalledWith("mytag"),
     );
@@ -213,6 +395,118 @@ describe("MemoryBrowser", () => {
     expect(screen.queryByPlaceholderText("unique-key")).toBeNull(); // key field hidden in edit
   });
 
+  it("opens edit form when memory card is activated via keyboard Enter or Space", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    const card = screen.getByText("test-key").closest(".card");
+    // Enter opens the form
+    fireEvent.keyDown(card, { key: "Enter" });
+    expect(screen.getByText("Edit: test-key")).toBeTruthy();
+    // Close form; Space also opens it
+    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.keyDown(card, { key: " " });
+    expect(screen.getByText("Edit: test-key")).toBeTruthy();
+    // Other keys are ignored
+    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.keyDown(card, { key: "Tab" });
+    expect(screen.queryByText("Edit: test-key")).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // List keyboard navigation (#257)
+  // ---------------------------------------------------------------------------
+
+  it("ArrowDown moves focus to next card", async () => {
+    const m1 = makeMemory({ memory_id: "m1", key: "key1" });
+    const m2 = makeMemory({ memory_id: "m2", key: "key2" });
+    api.listMemories.mockResolvedValue({ items: [m1, m2], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("key1"));
+
+    const card1 = screen.getByText("key1").closest(".card");
+    const card2 = screen.getByText("key2").closest(".card");
+
+    // Focus card1 then press ArrowDown → card2 gets focus
+    await act(async () => fireEvent.focus(card1));
+    await act(async () => fireEvent.keyDown(card1, { key: "ArrowDown" }));
+    await waitFor(() => expect(card2).toHaveFocus());
+  });
+
+  it("ArrowUp moves focus to previous card", async () => {
+    const m1 = makeMemory({ memory_id: "m1", key: "key1" });
+    const m2 = makeMemory({ memory_id: "m2", key: "key2" });
+    api.listMemories.mockResolvedValue({ items: [m1, m2], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("key2"));
+
+    const card1 = screen.getByText("key1").closest(".card");
+    const card2 = screen.getByText("key2").closest(".card");
+
+    // Focus card2 then press ArrowUp → card1 gets focus
+    await act(async () => fireEvent.focus(card2));
+    await act(async () => fireEvent.keyDown(card2, { key: "ArrowUp" }));
+    await waitFor(() => expect(card1).toHaveFocus());
+  });
+
+  it("Delete key on focused card triggers delete", async () => {
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null })
+      .mockResolvedValue({ items: [], next_cursor: null });
+    api.deleteMemory.mockResolvedValue(null);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    const card = screen.getByText("test-key").closest(".card");
+    await act(async () => fireEvent.keyDown(card, { key: "Delete" }));
+    expect(api.deleteMemory).toHaveBeenCalledWith("m1");
+  });
+
+  it("Backspace key on focused card triggers delete", async () => {
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null })
+      .mockResolvedValue({ items: [], next_cursor: null });
+    api.deleteMemory.mockResolvedValue(null);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    const card = screen.getByText("test-key").closest(".card");
+    await act(async () => fireEvent.keyDown(card, { key: "Backspace" }));
+    expect(api.deleteMemory).toHaveBeenCalledWith("m1");
+  });
+
+  it("Escape key on card closes the edit panel", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+
+    // Open edit panel
+    fireEvent.click(screen.getByText("test-key").closest(".card"));
+    expect(screen.getByText("Edit: test-key")).toBeTruthy();
+
+    // Escape closes it
+    const card = screen.getByText("test-key").closest(".card");
+    await act(async () => fireEvent.keyDown(card, { key: "Escape" }));
+    expect(screen.queryByText("Edit: test-key")).toBeNull();
+  });
+
+  it("onFocus on card tracks focusedIndex (ArrowDown starts from focused card)", async () => {
+    const m1 = makeMemory({ memory_id: "m1", key: "key1" });
+    const m2 = makeMemory({ memory_id: "m2", key: "key2" });
+    const m3 = makeMemory({ memory_id: "m3", key: "key3" });
+    api.listMemories.mockResolvedValue({ items: [m1, m2, m3], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("key2"));
+
+    const card2 = screen.getByText("key2").closest(".card");
+    const card3 = screen.getByText("key3").closest(".card");
+
+    // Focus card2 (index 1) then ArrowDown → card3 (index 2)
+    await act(async () => fireEvent.focus(card2));
+    await act(async () => fireEvent.keyDown(card2, { key: "ArrowDown" }));
+    await waitFor(() => expect(card3).toHaveFocus());
+  });
+
   it("updates memory and closes form on success", async () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
     api.updateMemory.mockResolvedValue({});
@@ -342,28 +636,60 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(screen.getByText("87% match")).toBeTruthy(), { timeout: 1000 });
   });
 
-  it("clears tag filter when search query is typed", async () => {
+  it("clears tag filter chip when search query is typed", async () => {
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ tags: ["mytag"] })],
+      next_cursor: null,
+    });
     await act(async () => render(<MemoryBrowser />));
-    const tagInput = screen.getByPlaceholderText("Filter by tag");
-    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await waitFor(() => screen.getByText("test-key"));
 
-    await act(async () => fireEvent.change(tagInput, { target: { value: "mytag" } }));
+    // Select tag via TagPicker
+    const filterInput = screen.getByPlaceholderText("Filter by tag");
+    await act(async () => fireEvent.focus(filterInput));
+    await act(async () =>
+      fireEvent.change(filterInput, { target: { value: "my" } }),
+    );
+    await waitFor(() => screen.getByRole("option", { name: "mytag" }));
+    await act(async () =>
+      fireEvent.mouseDown(screen.getByRole("option", { name: "mytag" })),
+    );
+
+    // Chip is now shown; input is gone
+    expect(screen.queryByPlaceholderText("Filter by tag")).toBeNull();
+
+    // Type in search — tag chip should clear (input reappears)
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
     await act(async () =>
       fireEvent.change(searchInput, { target: { value: "query" } }),
     );
-
-    expect(tagInput.value).toBe("");
+    expect(screen.getByPlaceholderText("Filter by tag")).toBeTruthy();
   });
 
-  it("clears search query when tag filter is typed", async () => {
+  it("clears search query when tag is selected from picker", async () => {
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ tags: ["mytag"] })],
+      next_cursor: null,
+    });
     await act(async () => render(<MemoryBrowser />));
-    const tagInput = screen.getByPlaceholderText("Filter by tag");
-    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await waitFor(() => screen.getByText("test-key"));
 
+    // Enter search mode
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
     await act(async () =>
       fireEvent.change(searchInput, { target: { value: "query" } }),
     );
-    await act(async () => fireEvent.change(tagInput, { target: { value: "mytag" } }));
+
+    // Select tag via TagPicker
+    const filterInput = screen.getByPlaceholderText("Filter by tag");
+    await act(async () => fireEvent.focus(filterInput));
+    await act(async () =>
+      fireEvent.change(filterInput, { target: { value: "my" } }),
+    );
+    await waitFor(() => screen.getByRole("option", { name: "mytag" }));
+    await act(async () =>
+      fireEvent.mouseDown(screen.getByRole("option", { name: "mytag" })),
+    );
 
     expect(searchInput.value).toBe("");
   });

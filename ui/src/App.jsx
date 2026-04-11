@@ -1,12 +1,14 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Moon, Sun } from "lucide-react";
 import { trackEvent, trackPageView } from "./analytics.js";
 import { api } from "./api.js";
 import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import Dashboard from "./components/Dashboard.jsx";
+import LogViewer from "./components/LogViewer.jsx";
 import ChangelogPage from "./components/ChangelogPage.jsx";
 import FaqPage from "./components/FaqPage.jsx";
 import HomePage from "./components/HomePage.jsx";
@@ -30,6 +32,7 @@ const ADMIN_TABS = [
   ...BASE_TABS,
   { id: "users", label: "Users" },
   { id: "dashboard", label: "Dashboard" },
+  { id: "logs", label: "Logs" },
 ];
 
 function parseToken(token) {
@@ -48,7 +51,7 @@ function isTokenValid(token) {
 
 function signOut() {
   localStorage.removeItem("hive_mgmt_token");
-  window.location.replace("/");
+  globalThis.location.replace("/");
 }
 
 function AppShell() {
@@ -63,15 +66,7 @@ function AppShell() {
   const { theme, toggle } = useTheme();
 
   const token = localStorage.getItem("hive_mgmt_token") ?? "";
-
-  if (!isTokenValid(token)) {
-    return <LoginPage />;
-  }
-
-  const claims = parseToken(token);
-  const isAdmin = claims.role === "admin";
-  const userEmail = claims.email ?? "";
-  const tabs = isAdmin ? ADMIN_TABS : BASE_TABS;
+  const authenticated = isTokenValid(token);
 
   useEffect(() => {
     fetch("/health")
@@ -81,12 +76,28 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
+    if (!authenticated) return;
     api.listClients()
       .then((data) => {
         if (data && data.items.length === 0) setTab("setup");
       })
       .catch(() => {});
+  }, [authenticated]);
+
+  useEffect(() => {
+    function onSwitchTab(e) { switchTab(e.detail); }
+    globalThis.addEventListener("hive:switch-tab", onSwitchTab);
+    return () => globalThis.removeEventListener("hive:switch-tab", onSwitchTab);
   }, []);
+
+  if (!authenticated) {
+    return <LoginPage />;
+  }
+
+  const claims = parseToken(token);
+  const isAdmin = claims.role === "admin";
+  const userEmail = claims.email ?? "";
+  const tabs = isAdmin ? ADMIN_TABS : BASE_TABS;
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -101,13 +112,13 @@ function AppShell() {
           height: 56,
         }}
       >
-        <span
+        <button
           onClick={() => navigate("/")}
-          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", background: "transparent", border: "none", padding: 0, color: "inherit" }}
         >
           <img src="/logo.svg" alt="Hive" style={{ width: 28, height: 28 }} />
           <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
-        </span>
+        </button>
 
         <nav style={{ display: "flex", gap: 4, flex: 1 }}>
           {tabs.map((t) => (
@@ -115,11 +126,12 @@ function AppShell() {
               key={t.id}
               onClick={() => switchTab(t.id)}
               style={{
-                background: tab === t.id ? "rgba(255,255,255,.15)" : "transparent",
+                background: "transparent",
                 color: "#fff",
                 borderRadius: 6,
                 padding: "6px 14px",
                 fontSize: 14,
+                borderBottom: tab === t.id ? "2px solid #e8a020" : "2px solid transparent",
               }}
             >
               {t.label}
@@ -166,7 +178,7 @@ function AppShell() {
           }}
           aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
         >
-          {theme === "dark" ? "☀" : "☾"}
+          {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
         </button>
       </header>
 
@@ -177,6 +189,7 @@ function AppShell() {
         {tab === "users" && isAdmin && <UsersPanel />}
         {tab === "setup" && <SetupPanel />}
         {tab === "dashboard" && isAdmin && <Dashboard />}
+        {tab === "logs" && isAdmin && <LogViewer />}
       </main>
 
       {version && (
@@ -185,11 +198,20 @@ function AppShell() {
             textAlign: "center",
             padding: "8px 0",
             fontSize: 12,
-            color: "#888",
-            borderTop: "1px solid #eee",
+            color: "var(--text-muted)",
+            borderTop: "1px solid var(--border)",
           }}
         >
-          Hive {version}
+          <a
+            href="/changelog"
+            style={{ color: "inherit", textDecoration: "none" }}
+            onMouseOver={(e) => (e.target.style.textDecoration = "underline")}
+            onMouseOut={(e) => (e.target.style.textDecoration = "none")}
+            onFocus={(e) => (e.target.style.textDecoration = "underline")}
+            onBlur={(e) => (e.target.style.textDecoration = "none")}
+          >
+            Hive {version}
+          </a>
         </footer>
       )}
     </div>

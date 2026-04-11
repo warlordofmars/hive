@@ -561,6 +561,14 @@ class HiveStorage:
         )
         return resp.get("Count", 0)
 
+    def count_users(self) -> int:
+        resp = self.table.scan(
+            Select="COUNT",
+            FilterExpression="SK = :sk AND begins_with(PK, :prefix)",
+            ExpressionAttributeValues={":sk": "META", ":prefix": "USER#"},
+        )
+        return resp.get("Count", 0)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

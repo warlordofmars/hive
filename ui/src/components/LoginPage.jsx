@@ -32,7 +32,7 @@ export default function LoginPage() {
         </p>
         <button
           onClick={() => {
-            window.location.href = "/auth/login";
+            globalThis.location.href = "/auth/login";
           }}
           style={{
             width: "100%",

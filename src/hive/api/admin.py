@@ -24,12 +24,14 @@ _PERIOD_SECONDS = {
     "1h": 3600,
     "24h": 86400,
     "7d": 7 * 86400,
+    "30d": 30 * 86400,
 }
 # CloudWatch resolution per period (stat window size in seconds)
 _STAT_PERIOD = {
     "1h": 300,  # 5-min buckets
     "24h": 3600,  # 1-hour buckets
     "7d": 86400,  # 1-day buckets
+    "30d": 86400,  # 1-day buckets
 }
 
 # Cost cache: store results in a module-level dict keyed by env to avoid
@@ -178,20 +180,21 @@ def _get_cost_data() -> dict[str, Any]:
     # Last 6 full months + current month
     start_date = (today.replace(day=1) - datetime.timedelta(days=6 * 30)).replace(day=1)
 
+    _tag_filter = {"Tags": {"Key": "project", "Values": ["hive"], "MatchOptions": ["EQUALS"]}}
+
     try:
-        resp = ce.get_cost_and_usage(
-            TimePeriod={
-                "Start": start_date.isoformat(),
-                "End": today.isoformat(),
-            },
+        monthly_resp = ce.get_cost_and_usage(
+            TimePeriod={"Start": start_date.isoformat(), "End": today.isoformat()},
             Granularity="MONTHLY",
-            Filter={
-                "Tags": {
-                    "Key": "project",
-                    "Values": ["hive"],
-                    "MatchOptions": ["EQUALS"],
-                }
-            },
+            Filter=_tag_filter,
+            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+            Metrics=["UnblendedCost"],
+        )
+        daily_start = (today - datetime.timedelta(days=30)).isoformat()
+        daily_resp = ce.get_cost_and_usage(
+            TimePeriod={"Start": daily_start, "End": today.isoformat()},
+            Granularity="DAILY",
+            Filter=_tag_filter,
             GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
             Metrics=["UnblendedCost"],
         )
@@ -199,7 +202,7 @@ def _get_cost_data() -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Cost Explorer error: {exc}") from exc
 
     monthly: list[dict[str, Any]] = []
-    for result in resp.get("ResultsByTime", []):
+    for result in monthly_resp.get("ResultsByTime", []):
         period = result["TimePeriod"]["Start"]
         by_service = {
             g["Keys"][0]: float(g["Metrics"]["UnblendedCost"]["Amount"])
@@ -208,9 +211,19 @@ def _get_cost_data() -> dict[str, Any]:
         total = sum(by_service.values())
         monthly.append({"period": period, "total": round(total, 4), "by_service": by_service})
 
+    daily: list[dict[str, Any]] = []
+    for result in daily_resp.get("ResultsByTime", []):
+        day = result["TimePeriod"]["Start"]
+        total = sum(
+            float(g["Metrics"]["UnblendedCost"]["Amount"]) for g in result.get("Groups", [])
+        )
+        if total > 0:
+            daily.append({"date": day, "total": round(total, 6)})
+
     data: dict[str, Any] = {
         "environment": ENVIRONMENT,
         "monthly": monthly,
+        "daily": daily,
         "currency": "USD",
         "note": "Cost data lags ~24 h. Cached for 24 h.",
     }
@@ -220,12 +233,12 @@ def _get_cost_data() -> dict[str, Any]:
 
 @router.get("/metrics")
 async def get_metrics(
-    period: str = Query("24h", pattern="^(1h|24h|7d)$"),
+    period: str = Query("24h", pattern="^(1h|24h|7d|30d)$"),
     _claims: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Return CloudWatch metric time-series for the current environment.
 
-    Admin-only. Period: 1h | 24h | 7d.
+    Admin-only. Period: 1h | 24h | 7d | 30d.
     """
     return {
         "period": period,

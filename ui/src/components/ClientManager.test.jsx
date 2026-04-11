@@ -41,7 +41,7 @@ describe("ClientManager", () => {
 
   it("shows empty state when no clients", async () => {
     await act(async () => render(<ClientManager />));
-    await waitFor(() => expect(screen.getByText("No clients registered.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No clients registered")).toBeTruthy());
   });
 
   it("renders loaded clients in table", async () => {
@@ -161,7 +161,7 @@ describe("ClientManager", () => {
   it("handles API returning no items key gracefully", async () => {
     api.listClients.mockResolvedValue({});
     await act(async () => render(<ClientManager />));
-    await waitFor(() => expect(screen.getByText("No clients registered.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No clients registered")).toBeTruthy());
   });
 
   it("shows error when createClient fails", async () => {
@@ -206,5 +206,40 @@ describe("ClientManager", () => {
     await waitFor(() => screen.getByText("Test App"));
     await act(async () => fireEvent.click(screen.getByText("Delete")));
     await waitFor(() => expect(screen.getByText("Delete failed")).toBeTruthy());
+  });
+
+  // ---------------------------------------------------------------------------
+  // Copy client ID
+  // ---------------------------------------------------------------------------
+
+  it("renders copy button for each client", async () => {
+    api.listClients.mockResolvedValue({ items: [makeClient()] });
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    await act(async () => render(<ClientManager />));
+    await waitFor(() => screen.getByText("Test App"));
+    expect(screen.getByRole("button", { name: /copy client id/i })).toBeTruthy();
+  });
+
+  it("copies client ID to clipboard and shows check icon on click", async () => {
+    api.listClients.mockResolvedValue({ items: [makeClient({ client_id: "abc-123" })] });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    await act(async () => render(<ClientManager />));
+    await waitFor(() => screen.getByText("Test App"));
+    fireEvent.click(screen.getByRole("button", { name: /copy client id/i }));
+    expect(writeText).toHaveBeenCalledWith("abc-123");
+  });
+
+  it("copy button reverts after 2 seconds", async () => {
+    api.listClients.mockResolvedValue({ items: [makeClient()] });
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    await act(async () => render(<ClientManager />));
+    await waitFor(() => screen.getByText("Test App"));
+    // Switch to fake timers only after initial load is complete
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: /copy client id/i }));
+    act(() => vi.advanceTimersByTime(2000));
+    expect(screen.getByRole("button", { name: /copy client id/i })).toBeTruthy();
+    vi.useRealTimers();
   });
 });

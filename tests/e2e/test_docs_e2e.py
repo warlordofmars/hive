@@ -294,7 +294,7 @@ class TestDocsNavbar:
             timeout=30_000,
             wait_until="networkidle",
         )
-        docs_link = page.locator(".docs-nav-link")
+        docs_link = page.locator(".docs-nav-link", has_text="Docs")
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible")
         href = docs_link.get_attribute("href")
@@ -313,7 +313,7 @@ class TestDocsNavbar:
             timeout=30_000,
             wait_until="networkidle",
         )
-        docs_link = page.locator(".docs-nav-link")
+        docs_link = page.locator(".docs-nav-link", has_text="Docs")
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible")
         with page.expect_navigation(timeout=15_000):
@@ -440,7 +440,7 @@ class TestDocsNavbar:
         """Docs nav link color and font-size match the marketing site header."""
         page = docs_page
         page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
-        docs_link = page.locator(".docs-nav-link")
+        docs_link = page.locator(".docs-nav-link").first
         if not docs_link.is_visible():
             pytest.skip("Docs nav link not visible (may be mobile viewport)")
 

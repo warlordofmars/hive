@@ -75,9 +75,11 @@ describe("HomePage", () => {
 
   it("CTA buttons and Sign in button are clickable", async () => {
     await act(async () => renderInRouter(<HomePage />));
-    // Click all navigating buttons — they call navigate("/app") internally
+    // Buttons are present and clickable — they call navigate("/app") internally
+    expect(screen.getByText("Sign in")).toBeTruthy();
     fireEvent.click(screen.getByText("Sign in"));
     const ctaButtons = screen.getAllByText(/Get started free/);
+    expect(ctaButtons.length).toBeGreaterThan(0);
     ctaButtons.forEach((btn) => fireEvent.click(btn));
   });
 

@@ -1,6 +1,8 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import { api } from "../api.js";
+import EmptyState from "./EmptyState.jsx";
 
 export default function ClientManager() {
   const [clients, setClients] = useState([]);
@@ -14,6 +16,13 @@ export default function ClientManager() {
     token_endpoint_auth_method: "none",
   });
   const [newClient, setNewClient] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
+
+  function handleCopyId(id) {
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,16 +75,16 @@ export default function ClientManager() {
         </button>
       </div>
 
-      {error && <p style={{ color: "red", marginBottom: 12 }}>{error}</p>}
+      {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
 
       {newClient && (
-        <div className="card" style={{ marginBottom: 16, borderLeft: "4px solid #34a853" }}>
+        <div className="card" style={{ marginBottom: 16, borderLeft: "4px solid var(--success)" }}>
           <strong>Client registered successfully.</strong>
           <p style={{ marginTop: 8, fontSize: 13 }}>
             <b>Client ID:</b> <code>{newClient.client_id}</code>
           </p>
           {newClient.client_secret && (
-            <p style={{ marginTop: 4, fontSize: 13, color: "#d93025" }}>
+            <p style={{ marginTop: 4, fontSize: 13, color: "var(--danger)" }}>
               <b>Client Secret (save now, not shown again):</b>{" "}
               <code>{newClient.client_secret}</code>
             </p>
@@ -91,8 +100,9 @@ export default function ClientManager() {
           <h3 style={{ marginBottom: 16, fontSize: 15 }}>Register New Client (RFC 7591)</h3>
           <form onSubmit={handleCreate}>
             <div style={{ marginBottom: 10 }}>
-              <label>Client Name</label>
+              <label htmlFor="client-name">Client Name</label>
               <input
+                id="client-name"
                 required
                 value={form.client_name}
                 onChange={(e) => setForm({ ...form, client_name: e.target.value })}
@@ -100,23 +110,26 @@ export default function ClientManager() {
               />
             </div>
             <div style={{ marginBottom: 10 }}>
-              <label>Redirect URIs (comma-separated)</label>
+              <label htmlFor="client-redirect-uris">Redirect URIs (comma-separated)</label>
               <input
+                id="client-redirect-uris"
                 value={form.redirect_uris}
                 onChange={(e) => setForm({ ...form, redirect_uris: e.target.value })}
                 placeholder="http://localhost:3000/callback"
               />
             </div>
             <div style={{ marginBottom: 10 }}>
-              <label>Scope</label>
+              <label htmlFor="client-scope">Scope</label>
               <input
+                id="client-scope"
                 value={form.scope}
                 onChange={(e) => setForm({ ...form, scope: e.target.value })}
               />
             </div>
             <div style={{ marginBottom: 16 }}>
-              <label>Auth Method</label>
+              <label htmlFor="client-auth-method">Auth Method</label>
               <select
+                id="client-auth-method"
                 value={form.token_endpoint_auth_method}
                 onChange={(e) => setForm({ ...form, token_endpoint_auth_method: e.target.value })}
               >
@@ -133,7 +146,7 @@ export default function ClientManager() {
         </div>
       )}
 
-      {loading && <p style={{ color: "#888" }}>Loading…</p>}
+      {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
 
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
         <table>
@@ -150,15 +163,30 @@ export default function ClientManager() {
           <tbody>
             {clients.length === 0 && !loading && (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", color: "#888", padding: 30 }}>
-                  No clients registered.
+                <td colSpan={6} style={{ padding: 0 }}>
+                  <EmptyState
+                    variant="clients"
+                    title="No clients registered"
+                    description="Register an OAuth client to connect your MCP agent to Hive."
+                  />
                 </td>
               </tr>
             )}
             {clients.map((c) => (
               <tr key={c.client_id}>
                 <td><strong>{c.client_name}</strong></td>
-                <td><code style={{ fontSize: 12 }}>{c.client_id}</code></td>
+                <td>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <code style={{ fontSize: 12 }}>{c.client_id}</code>
+                    <button
+                      onClick={() => handleCopyId(c.client_id)}
+                      style={{ background: "transparent", padding: "2px 4px", color: "var(--text-muted)" }}
+                      aria-label="Copy client ID"
+                    >
+                      {copiedId === c.client_id ? <Check size={13} /> : <Copy size={13} />}
+                    </button>
+                  </span>
+                </td>
                 <td>{c.token_endpoint_auth_method === "none" ? "public" : "confidential"}</td>
                 <td>{c.scope}</td>
                 <td>{new Date(c.client_id_issued_at * 1000).toLocaleDateString()}</td>

@@ -11,13 +11,13 @@ export default function PageLayout({ children }) {
       {/* Nav */}
       <header className="bg-navy text-white">
         <div className="max-w-[1100px] mx-auto px-8 h-14 flex items-center justify-between">
-          <span
-            className="flex items-center gap-2 cursor-pointer"
+          <button
+            className="flex items-center gap-2 cursor-pointer bg-transparent border-none p-0 text-inherit"
             onClick={() => navigate("/")}
           >
             <img src="/logo.svg" alt="Hive" className="h-7 w-auto" />
             <span className="font-bold text-xl tracking-[1px]">Hive</span>
-          </span>
+          </button>
           <div className="flex items-center gap-6">
             <a href="/use-cases" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Use cases</a>
             <a href="/clients" className="text-white/75 text-sm no-underline hover:text-white transition-colors">Clients</a>

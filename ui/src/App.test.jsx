@@ -30,6 +30,9 @@ vi.mock("./components/HomePage.jsx", () => ({
 vi.mock("./components/Dashboard.jsx", () => ({
   default: () => <div data-testid="dashboard" />,
 }));
+vi.mock("./components/LogViewer.jsx", () => ({
+  default: () => <div data-testid="log-viewer" />,
+}));
 
 /** Build a syntactically-valid mgmt JWT with given claims. */
 function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
@@ -237,6 +240,14 @@ describe("AppShell", () => {
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
+  it("switches to LogViewer when Logs tab is clicked (admin only)", async () => {
+    _storage["hive_mgmt_token"] = makeToken({ role: "admin" });
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Logs"));
+    expect(screen.getByTestId("log-viewer")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
   it("shows LoginPage when no token is stored", async () => {
     delete _storage["hive_mgmt_token"];
     await act(async () => render(<App />));
@@ -333,14 +344,55 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     const toggle = screen.getByRole("button", { name: /switch to dark mode/i });
     expect(toggle).toBeTruthy();
-    expect(toggle.textContent).toBe("☾");
+    // icon is now a Lucide SVG — no text content
+    expect(toggle.querySelector("svg")).toBeTruthy();
   });
 
-  it("clicking dark mode toggle changes aria-label and icon", async () => {
+  it("clicking dark mode toggle changes aria-label", async () => {
     await act(async () => render(<App />));
     const toggle = screen.getByRole("button", { name: /switch to dark mode/i });
     fireEvent.click(toggle);
-    const toggled = screen.getByRole("button", { name: /switch to light mode/i });
-    expect(toggled.textContent).toBe("☀");
+    expect(screen.getByRole("button", { name: /switch to light mode/i })).toBeTruthy();
+  });
+
+  it("active tab has orange bottom border", async () => {
+    await act(async () => render(<App />));
+    const memoriesBtn = screen.getByText("Memories");
+    expect(memoriesBtn.style.borderBottom).toContain("rgb(232, 160, 32)");
+  });
+
+  it("version in footer links to /changelog", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
+    const link = screen.getByText("Hive 1.2.3").closest("a");
+    expect(link).toBeTruthy();
+    expect(link.getAttribute("href")).toBe("/changelog");
+  });
+
+  it("hive:switch-tab event switches the active tab", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    act(() => window.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "clients" })));
+    expect(screen.getByTestId("client-manager")).toBeTruthy();
+  });
+
+  it("footer changelog link underlines on hover and resets on mouse out", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
+    const link = screen.getByText("Hive 1.2.3").closest("a");
+    fireEvent.mouseOver(link);
+    expect(link.style.textDecoration).toBe("underline");
+    fireEvent.mouseOut(link);
+    expect(link.style.textDecoration).toBe("none");
+  });
+
+  it("footer changelog link underlines on focus and resets on blur", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
+    const link = screen.getByText("Hive 1.2.3").closest("a");
+    fireEvent.focus(link);
+    expect(link.style.textDecoration).toBe("underline");
+    fireEvent.blur(link);
+    expect(link.style.textDecoration).toBe("none");
   });
 });
