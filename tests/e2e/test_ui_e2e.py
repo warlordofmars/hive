@@ -58,9 +58,13 @@ class TestUIE2E:
         import time
 
         page = browser_page
-        # Use a unique key so stale data from previous runs never causes a
-        # ownership conflict (404) in the multi-tenant API.
-        memory_key = f"ui-e2e-{int(time.time())}"
+        # Use a unique key AND a unique tag per run.  The key avoids ownership
+        # conflicts; the tag is used to filter the list immediately after create
+        # so we never depend on the new memory appearing on page 1 of an
+        # unfiltered list (accumulated test data from past runs can push it off).
+        ts = int(time.time())
+        memory_key = f"ui-e2e-{ts}"
+        unique_tag = f"e2e-{ts}"
 
         page.goto(UI_URL)
         page.wait_for_load_state("networkidle")  # wait for initial memories load
@@ -68,10 +72,10 @@ class TestUIE2E:
         page.locator("nav button:has-text('Memories')").click()
         page.wait_for_load_state("networkidle")
 
-        page.locator("button:has-text('+ New')").click()
+        page.locator("button:has-text('+ New')").first.click()
         page.locator("input[placeholder='unique-key']").fill(memory_key)
         page.locator("textarea").fill("UI e2e test value")
-        page.locator("input[placeholder='tag1, tag2']").fill("e2e")
+        page.locator("input[placeholder='tag1, tag2']").fill(unique_tag)
 
         with page.expect_response(
             lambda r: "/api/memories" in r.url and r.request.method == "POST",
@@ -80,6 +84,8 @@ class TestUIE2E:
             page.locator("button:has-text('Save')").click()
         assert resp_info.value.ok, f"POST /api/memories failed: {resp_info.value.status}"
 
+        # Filter by the unique tag so only this memory is in the list.
+        page.locator("input[placeholder='Filter by tag']").fill(unique_tag)
         page.wait_for_selector(f"text={memory_key}", timeout=30_000)
         assert page.locator(f"text={memory_key}").first.is_visible()
 
