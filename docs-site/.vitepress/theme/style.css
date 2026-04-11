@@ -1,6 +1,23 @@
 /* ============================================================
    Brand colour — orange, matching marketing site (#e8a020)
    ============================================================ */
+
+/* ============================================================
+   Navbar height — 56px to match marketing site (h-14 / 56px)
+   VitePress default is 64px.
+   ============================================================ */
+:root {
+  --vp-nav-height: 56px;
+}
+
+/* ============================================================
+   Typography — system-ui to match marketing site font stack
+   ============================================================ */
+:root {
+  --vp-font-family-base: system-ui, -apple-system, sans-serif;
+  --vp-font-family-mono: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+}
+
 :root {
   --vp-c-brand-1: #e8a020;
   --vp-c-brand-2: #f5a623;
@@ -249,4 +266,27 @@
 
 .VPFeature .icon {
   color: var(--vp-c-brand-1);
+}
+
+/* ============================================================
+   Remove the vertical divider VitePress renders between the
+   logo and the nav links — marketing site has no divider.
+   ============================================================ */
+.VPNavBarTitle .divider {
+  display: none !important;
+}
+
+/* ============================================================
+   Footer — match marketing site treatment:
+   muted text, thin top border, compact padding.
+   ============================================================ */
+.VPFooter {
+  border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+  padding: 12px 24px !important;
+}
+
+.VPFooter .message,
+.VPFooter .copyright {
+  font-size: 12px !important;
+  color: rgba(255, 255, 255, 0.45) !important;
 }
