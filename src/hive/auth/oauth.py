@@ -159,7 +159,7 @@ async def authorize(
         params: dict[str, str] = {"code": auth_code.code}
         if state:
             params["state"] = state
-        return RedirectResponse(  # redirect_uri validated above (line 126). NOSONAR
+        return RedirectResponse(  # NOSONAR — redirect_uri validated above (line 126)
             f"{redirect_uri}?{urlencode(params)}", status_code=302
         )
 

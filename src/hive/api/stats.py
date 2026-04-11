@@ -58,7 +58,7 @@ async def get_activity(
     today = date.today()
     dates = [
         (today - timedelta(days=i)).isoformat()
-        for i in range(days)  # `days` bounded by FastAPI Query(ge=1, le=90). NOSONAR
+        for i in range(days)  # NOSONAR — days bounded by FastAPI Query(ge=1, le=90)
     ]
     events = storage.get_events_for_dates(dates, limit=limit + 1)
 
