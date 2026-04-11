@@ -411,14 +411,13 @@ class HiveStack(cdk.Stack):
             tracing=lambda_.Tracing.ACTIVE,
         )
 
-        # Pass the actual CloudWatch log group names to the API Lambda so it can
-        # query them without guessing CDK-generated function names at runtime.
-        # NOTE: api_fn.function_name is a CloudFormation token — it cannot appear
-        # in api_role's IAM policy (api_fn depends on api_role → circular).
-        # We use it only in add_environment (self-reference is permitted) and
-        # scope the IAM policy to the stack-name prefix, which is a plain string.
+        # Pass the MCP log group name so the API Lambda can query it.
+        # mcp_fn.function_name is safe here (mcp_fn has no dependency on api_fn).
+        # We do NOT pass the API log group name via CFN token — that would be a
+        # self-reference (api_fn → api_fn) and cause a circular dependency.
+        # Instead, logs.py derives it at runtime from AWS_LAMBDA_FUNCTION_NAME,
+        # which the Lambda runtime injects automatically.
         api_fn.add_environment("HIVE_MCP_LOG_GROUP", f"/aws/lambda/{mcp_fn.function_name}")
-        api_fn.add_environment("HIVE_API_LOG_GROUP", f"/aws/lambda/{api_fn.function_name}")
 
         # CDK names functions "{StackId}-{LogicalId}-{RandomSuffix}".
         # The stack construct_id is the first segment, so "/aws/lambda/HiveStack*"
