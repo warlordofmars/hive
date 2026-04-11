@@ -333,14 +333,28 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     const toggle = screen.getByRole("button", { name: /switch to dark mode/i });
     expect(toggle).toBeTruthy();
-    expect(toggle.textContent).toBe("☾");
+    // icon is now a Lucide SVG — no text content
+    expect(toggle.querySelector("svg")).toBeTruthy();
   });
 
-  it("clicking dark mode toggle changes aria-label and icon", async () => {
+  it("clicking dark mode toggle changes aria-label", async () => {
     await act(async () => render(<App />));
     const toggle = screen.getByRole("button", { name: /switch to dark mode/i });
     fireEvent.click(toggle);
-    const toggled = screen.getByRole("button", { name: /switch to light mode/i });
-    expect(toggled.textContent).toBe("☀");
+    expect(screen.getByRole("button", { name: /switch to light mode/i })).toBeTruthy();
+  });
+
+  it("active tab has orange bottom border", async () => {
+    await act(async () => render(<App />));
+    const memoriesBtn = screen.getByText("Memories");
+    expect(memoriesBtn.style.borderBottom).toContain("rgb(232, 160, 32)");
+  });
+
+  it("version in footer links to /changelog", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
+    const link = screen.getByText("Hive 1.2.3").closest("a");
+    expect(link).toBeTruthy();
+    expect(link.getAttribute("href")).toBe("/changelog");
   });
 });

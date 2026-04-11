@@ -1,6 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Moon, Sun } from "lucide-react";
 import { trackEvent, trackPageView } from "./analytics.js";
 import { api } from "./api.js";
 import ActivityLog from "./components/ActivityLog.jsx";
@@ -115,11 +116,12 @@ function AppShell() {
               key={t.id}
               onClick={() => switchTab(t.id)}
               style={{
-                background: tab === t.id ? "rgba(255,255,255,.15)" : "transparent",
+                background: "transparent",
                 color: "#fff",
                 borderRadius: 6,
                 padding: "6px 14px",
                 fontSize: 14,
+                borderBottom: tab === t.id ? "2px solid #e8a020" : "2px solid transparent",
               }}
             >
               {t.label}
@@ -166,7 +168,7 @@ function AppShell() {
           }}
           aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
         >
-          {theme === "dark" ? "☀" : "☾"}
+          {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
         </button>
       </header>
 
@@ -189,7 +191,14 @@ function AppShell() {
             borderTop: "1px solid #eee",
           }}
         >
-          Hive {version}
+          <a
+            href="/changelog"
+            style={{ color: "inherit", textDecoration: "none" }}
+            onMouseOver={(e) => (e.target.style.textDecoration = "underline")}
+            onMouseOut={(e) => (e.target.style.textDecoration = "none")}
+          >
+            Hive {version}
+          </a>
         </footer>
       )}
     </div>
