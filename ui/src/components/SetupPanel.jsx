@@ -6,7 +6,7 @@ import { api } from "../api.js";
 const STEP1_KEY = "hive_setup_step1_done";
 
 export default function SetupPanel() {
-  const mcpUrl = import.meta.env.VITE_MCP_BASE ?? `${window.location.origin}/mcp`;
+  const mcpUrl = import.meta.env.VITE_MCP_BASE ?? `${globalThis.location.origin}/mcp`;
   const [activeTab, setActiveTab] = useState("code");
   const [copied, setCopied] = useState(false);
   const [step1Done, setStep1Done] = useState(() => !!localStorage.getItem(STEP1_KEY));
@@ -81,7 +81,7 @@ export default function SetupPanel() {
             <strong>You're all set!</strong>
             <p style={{ margin: "2px 0 0", fontSize: 13, color: "var(--text-muted)" }}>
               Hive is connected and working. Head to the{" "}
-              <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" })); }}>
+              <a href="#" onClick={(e) => { e.preventDefault(); globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" })); }}>
                 Memories
               </a>{" "}
               tab to get started.
@@ -164,11 +164,9 @@ export default function SetupPanel() {
           {step2Done && <Check size={16} style={{ color: "var(--success)" }} />}
         </h3>
         <p style={{ color: "var(--text-muted)", marginBottom: 12 }}>
-          {activeTab === "code"
-            ? "Open Claude Code. The next time you use a Hive memory tool, it will prompt you to authorise access via your browser. Complete the flow and you're done."
-            : activeTab === "cursor"
-            ? "Restart Cursor. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."
-            : "Restart Claude Desktop. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."}
+          {activeTab === "code" && "Open Claude Code. The next time you use a Hive memory tool, it will prompt you to authorise access via your browser. Complete the flow and you're done."}
+          {activeTab === "cursor" && "Restart Cursor. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."}
+          {activeTab === "desktop" && "Restart Claude Desktop. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."}
         </p>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="secondary" onClick={handleTest} disabled={testing}>

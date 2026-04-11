@@ -7,8 +7,6 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -41,7 +39,7 @@ const PERIOD_OPTIONS = ["1h", "24h", "7d", "30d"];
 function buildInvocationSeries(metrics, tools) {
   const byTs = {};
   for (const tool of tools) {
-    const safe = tool.replace(/_/g, "");
+    const safe = tool.replaceAll("_", "");
     const series = metrics[`inv_${safe}`] ?? { timestamps: [], values: [] };
     series.timestamps.forEach((ts, i) => {
       const label = ts.slice(0, 16).replace("T", " ");
@@ -55,7 +53,7 @@ function buildInvocationSeries(metrics, tools) {
 function buildLatencySeries(metrics, tools) {
   const byTs = {};
   for (const tool of tools) {
-    const safe = tool.replace(/_/g, "");
+    const safe = tool.replaceAll("_", "");
     const series = metrics[`p99_${safe}`] ?? { timestamps: [], values: [] };
     series.timestamps.forEach((ts, i) => {
       const label = ts.slice(0, 16).replace("T", " ");
@@ -248,6 +246,105 @@ function EmptyState({ icon: Icon, message }) {
 }
 
 // ------------------------------------------------------------------
+// Chart sections (extracted to reduce cognitive complexity)
+// ------------------------------------------------------------------
+
+function InvocationsChart({ loading, metrics, data, error, tools, xAxisProps }) {
+  if (loading && !metrics) return <SkeletonBlock height={260} />;
+  if (data.length === 0) return error ? null : <EmptyState icon={TrendingUp} message="No invocation data for this period." />;
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <AreaChart data={data} margin={{ bottom: 10 }}>
+        <defs>
+          {tools.map((t) => (
+            <linearGradient key={t} id={`inv_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
+              <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
+            </linearGradient>
+          ))}
+        </defs>
+        <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
+        <XAxis {...xAxisProps} />
+        <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+        <Tooltip content={<CustomTooltip />} />
+        <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
+        {tools.map((t) => (
+          <Area key={t} type="monotone" dataKey={t} stroke={TOOL_COLORS[t]} fill={`url(#inv_grad_${t})`} strokeWidth={2} dot={false} animationDuration={400} activeDot={{ r: 5, strokeWidth: 2 }} />
+        ))}
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function LatencyChart({ loading, metrics, data, error, tools, xAxisProps }) {
+  if (loading && !metrics) return <SkeletonBlock height={220} />;
+  if (data.length === 0) return error ? null : <EmptyState icon={TrendingUp} message="No latency data for this period." />;
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <AreaChart data={data} margin={{ bottom: 10 }}>
+        <defs>
+          {tools.map((t) => (
+            <linearGradient key={t} id={`lat_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
+              <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
+            </linearGradient>
+          ))}
+        </defs>
+        <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
+        <XAxis {...xAxisProps} />
+        <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+        <Tooltip content={<CustomTooltip />} />
+        <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
+        {tools.map((t) => (
+          <Area key={t} type="monotone" dataKey={t} stroke={TOOL_COLORS[t]} fill={`url(#lat_grad_${t})`} strokeWidth={2} dot={false} animationDuration={400} activeDot={{ r: 5, strokeWidth: 2 }} />
+        ))}
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function DailyCostChart({ loading, costs, data, error }) {
+  if (loading && !costs) return <SkeletonBlock height={200} />;
+  if (data.length === 0) return error ? null : <EmptyState icon={BarChart2} message="No daily cost data available yet." />;
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <AreaChart data={data} margin={{ bottom: 10 }}>
+        <defs>
+          <linearGradient id="daily_cost_grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#e8a020" stopOpacity={0.4} />
+            <stop offset="95%" stopColor="#e8a020" stopOpacity={0.04} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
+        <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--text-muted)" }} interval="preserveStartEnd" angle={-25} textAnchor="end" height={40} />
+        <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
+        <Tooltip content={<CustomDailyCostTooltip />} />
+        <Area type="monotone" dataKey="total" stroke="#e8a020" fill="url(#daily_cost_grad)" strokeWidth={2} dot={false} animationDuration={400} />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function MonthlyCostChart({ loading, costs, data, error, services }) {
+  if (loading && !costs) return <SkeletonBlock height={260} />;
+  if (data.length === 0) return error ? null : <EmptyState icon={BarChart2} message="No cost data available yet." />;
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <BarChart data={data} margin={{ bottom: 10 }}>
+        <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
+        <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+        <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
+        <Tooltip content={<CustomCostTooltip />} />
+        <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
+        {services.map((svc, i) => (
+          <Bar key={svc} dataKey={svc} stackId="cost" fill={SERVICE_COLORS[i % SERVICE_COLORS.length]} radius={i === services.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} animationDuration={400} />
+        ))}
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ------------------------------------------------------------------
 // Main component
 // ------------------------------------------------------------------
 
@@ -399,81 +496,11 @@ export default function Dashboard() {
       {/* Tool Invocations */}
       <SectionHeader title="Tool Invocations" />
       <ErrorBanner msg={metricsError} />
-      {loading && !metrics ? (
-        <SkeletonBlock height={260} />
-      ) : invData.length > 0 ? (
-        <ResponsiveContainer width="100%" height={260}>
-          <AreaChart data={invData} margin={{ bottom: 10 }}>
-            <defs>
-              {TOOLS.map((t) => (
-                <linearGradient key={t} id={`inv_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
-                  <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
-                </linearGradient>
-              ))}
-            </defs>
-            <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-            <XAxis {...xAxisProps} />
-            <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
-            {TOOLS.map((t) => (
-              <Area
-                key={t}
-                type="monotone"
-                dataKey={t}
-                stroke={TOOL_COLORS[t]}
-                fill={`url(#inv_grad_${t})`}
-                strokeWidth={2}
-                dot={false}
-                animationDuration={400}
-                activeDot={{ r: 5, strokeWidth: 2 }}
-              />
-            ))}
-          </AreaChart>
-        </ResponsiveContainer>
-      ) : !metricsError && (
-        <EmptyState icon={TrendingUp} message="No invocation data for this period." />
-      )}
+      <InvocationsChart loading={loading} metrics={metrics} data={invData} error={metricsError} tools={TOOLS} xAxisProps={xAxisProps} />
 
       {/* Tool Latency p99 */}
       <SectionHeader title="Tool Latency p99 (ms)" />
-      {loading && !metrics ? (
-        <SkeletonBlock height={220} />
-      ) : latData.length > 0 ? (
-        <ResponsiveContainer width="100%" height={220}>
-          <AreaChart data={latData} margin={{ bottom: 10 }}>
-            <defs>
-              {TOOLS.map((t) => (
-                <linearGradient key={t} id={`lat_grad_${t}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={TOOL_COLORS[t]} stopOpacity={0.4} />
-                  <stop offset="95%" stopColor={TOOL_COLORS[t]} stopOpacity={0.04} />
-                </linearGradient>
-              ))}
-            </defs>
-            <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-            <XAxis {...xAxisProps} />
-            <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
-            <Tooltip content={<CustomTooltip />} />
-            <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
-            {TOOLS.map((t) => (
-              <Area
-                key={t}
-                type="monotone"
-                dataKey={t}
-                stroke={TOOL_COLORS[t]}
-                fill={`url(#lat_grad_${t})`}
-                strokeWidth={2}
-                dot={false}
-                animationDuration={400}
-                activeDot={{ r: 5, strokeWidth: 2 }}
-              />
-            ))}
-          </AreaChart>
-        </ResponsiveContainer>
-      ) : !metricsError && (
-        <EmptyState icon={TrendingUp} message="No latency data for this period." />
-      )}
+      <LatencyChart loading={loading} metrics={metrics} data={latData} error={metricsError} tools={TOOLS} xAxisProps={xAxisProps} />
 
       {/* Auth Events */}
       <SectionHeader title="Auth Events" />
@@ -488,42 +515,7 @@ export default function Dashboard() {
       {/* Daily AWS Spend */}
       <SectionHeader title="Daily AWS Spend (Last 30 Days)" />
       <ErrorBanner msg={costsError} />
-      {loading && !costs ? (
-        <SkeletonBlock height={200} />
-      ) : dailyCostData.length > 0 ? (
-        <ResponsiveContainer width="100%" height={200}>
-          <AreaChart data={dailyCostData} margin={{ bottom: 10 }}>
-            <defs>
-              <linearGradient id="daily_cost_grad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#e8a020" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="#e8a020" stopOpacity={0.04} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-            <XAxis
-              dataKey="date"
-              tick={{ fontSize: 11, fill: "var(--text-muted)" }}
-              interval="preserveStartEnd"
-              angle={-25}
-              textAnchor="end"
-              height={40}
-            />
-            <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
-            <Tooltip content={<CustomDailyCostTooltip />} />
-            <Area
-              type="monotone"
-              dataKey="total"
-              stroke="#e8a020"
-              fill="url(#daily_cost_grad)"
-              strokeWidth={2}
-              dot={false}
-              animationDuration={400}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      ) : !costsError && (
-        <EmptyState icon={BarChart2} message="No daily cost data available yet." />
-      )}
+      <DailyCostChart loading={loading} costs={costs} data={dailyCostData} error={costsError} />
 
       {/* Monthly AWS Spend */}
       <SectionHeader title="Monthly AWS Spend" />
@@ -532,31 +524,7 @@ export default function Dashboard() {
           {costs.note}
         </p>
       )}
-      {loading && !costs ? (
-        <SkeletonBlock height={260} />
-      ) : costData.length > 0 ? (
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={costData} margin={{ bottom: 10 }}>
-            <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-            <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
-            <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
-            <Tooltip content={<CustomCostTooltip />} />
-            <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
-            {services.map((svc, i) => (
-              <Bar
-                key={svc}
-                dataKey={svc}
-                stackId="cost"
-                fill={SERVICE_COLORS[i % SERVICE_COLORS.length]}
-                radius={i === services.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
-                animationDuration={400}
-              />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      ) : !costsError && (
-        <EmptyState icon={BarChart2} message="No cost data available yet." />
-      )}
+      <MonthlyCostChart loading={loading} costs={costs} data={costData} error={costsError} services={services} />
     </div>
   );
 }

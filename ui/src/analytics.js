@@ -11,7 +11,7 @@ const enabled = !import.meta.env.DEV && !!ID;
 
 export function trackPageView(path) {
   if (!enabled) return;
-  window.gtag?.("event", "page_view", {
+  globalThis.gtag?.("event", "page_view", {
     page_path: path,
     send_to: ID,
   });
@@ -19,5 +19,5 @@ export function trackPageView(path) {
 
 export function trackEvent(name, params = {}) {
   if (!enabled) return;
-  window.gtag?.("event", name, { ...params, send_to: ID });
+  globalThis.gtag?.("event", name, { ...params, send_to: ID });
 }

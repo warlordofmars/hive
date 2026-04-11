@@ -23,7 +23,7 @@ async function request(method, path, body) {
 
   if (res.status === 401) {
     localStorage.removeItem("hive_mgmt_token");
-    window.location.replace("/");
+    globalThis.location.replace("/");
     return null;
   }
 
