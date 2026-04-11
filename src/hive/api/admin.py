@@ -231,7 +231,14 @@ def _get_cost_data() -> dict[str, Any]:
     return data
 
 
-@router.get("/metrics")
+@router.get(
+    "/metrics",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        502: {"description": "CloudWatch error"},
+    },
+)
 async def get_metrics(
     _claims: Annotated[dict[str, Any], Depends(require_admin)],
     period: Annotated[str, Query(pattern="^(1h|24h|7d|30d)$")] = "24h",
@@ -247,7 +254,14 @@ async def get_metrics(
     }
 
 
-@router.get("/costs")
+@router.get(
+    "/costs",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        502: {"description": "Cost Explorer error"},
+    },
+)
 async def get_costs(
     _claims: Annotated[dict[str, Any], Depends(require_admin)],
 ) -> dict[str, Any]:

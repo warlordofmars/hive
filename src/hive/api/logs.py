@@ -114,7 +114,14 @@ def _fetch_log_events(
     }
 
 
-@router.get("/logs")
+@router.get(
+    "/logs",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        502: {"description": "CloudWatch Logs error"},
+    },
+)
 async def get_logs(
     _claims: Annotated[dict[str, Any], Depends(require_admin)],
     group: Annotated[str, Query(pattern="^(all|mcp|api)$")] = "all",

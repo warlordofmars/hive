@@ -47,7 +47,7 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
     return None if claims.get("role") == "admin" else claims["sub"]
 
 
-@router.get("/memories")
+@router.get("/memories", responses={401: {"description": "Unauthorized"}})
 async def list_memories(
     claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
     storage: Annotated[HiveStorage, Depends(_storage)],
@@ -99,7 +99,14 @@ async def list_memories(
     )
 
 
-@router.post("/memories")
+@router.post(
+    "/memories",
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "Memory not found (non-admin cannot overwrite another user's memory)"},
+        413: {"description": "Memory value too large"},
+    },
+)
 async def create_memory(
     body: MemoryCreate,
     response: Response,
@@ -157,7 +164,13 @@ async def create_memory(
     return MemoryResponse.from_memory(memory)
 
 
-@router.get("/memories/{memory_id}")
+@router.get(
+    "/memories/{memory_id}",
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "Memory not found"},
+    },
+)
 async def get_memory(
     memory_id: str,
     claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
@@ -172,7 +185,14 @@ async def get_memory(
     return MemoryResponse.from_memory(memory)
 
 
-@router.patch("/memories/{memory_id}")
+@router.patch(
+    "/memories/{memory_id}",
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "Memory not found"},
+        413: {"description": "Memory value too large"},
+    },
+)
 async def update_memory(
     memory_id: str,
     body: MemoryUpdate,
@@ -206,7 +226,14 @@ async def update_memory(
     return MemoryResponse.from_memory(memory)
 
 
-@router.delete("/memories/{memory_id}", status_code=204)
+@router.delete(
+    "/memories/{memory_id}",
+    status_code=204,
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": "Memory not found"},
+    },
+)
 async def delete_memory(
     memory_id: str,
     claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
