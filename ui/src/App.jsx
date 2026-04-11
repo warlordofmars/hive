@@ -63,6 +63,9 @@ function AppShell() {
   const navigate = useNavigate();
   const { theme, toggle } = useTheme();
 
+  const token = localStorage.getItem("hive_mgmt_token") ?? "";
+  const authenticated = isTokenValid(token);
+
   useEffect(() => {
     fetch("/health")
       .then((r) => r.json())
@@ -71,12 +74,13 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
+    if (!authenticated) return;
     api.listClients()
       .then((data) => {
         if (data && data.items.length === 0) setTab("setup");
       })
       .catch(() => {});
-  }, []);
+  }, [authenticated]);
 
   useEffect(() => {
     function onSwitchTab(e) { switchTab(e.detail); }
@@ -84,9 +88,7 @@ function AppShell() {
     return () => window.removeEventListener("hive:switch-tab", onSwitchTab);
   }, []);
 
-  const token = localStorage.getItem("hive_mgmt_token") ?? "";
-
-  if (!isTokenValid(token)) {
+  if (!authenticated) {
     return <LoginPage />;
   }
 
