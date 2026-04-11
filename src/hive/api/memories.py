@@ -30,6 +30,7 @@ from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
 router = APIRouter(tags=["memories"])
 
+_MEMORY_NOT_FOUND = "Memory not found"
 _LIMIT_DEFAULT = 50
 _LIMIT_MAX = 200
 
@@ -123,7 +124,7 @@ async def create_memory(
             and existing.owner_user_id != owner_user_id
             and claims.get("role") != "admin"
         ):
-            raise HTTPException(status_code=404, detail="Memory not found")
+            raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
 
         existing.value = body.value
         existing.tags = body.tags
@@ -168,7 +169,7 @@ async def create_memory(
     "/memories/{memory_id}",
     responses={
         401: {"description": "Unauthorized"},
-        404: {"description": "Memory not found"},
+        404: {"description": _MEMORY_NOT_FOUND},
     },
 )
 async def get_memory(
@@ -178,10 +179,10 @@ async def get_memory(
 ) -> MemoryResponse:
     memory = storage.get_memory_by_id(memory_id)
     if memory is None:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
     owner_user_id = _user_filter(claims)
     if owner_user_id and memory.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
     return MemoryResponse.from_memory(memory)
 
 
@@ -189,7 +190,7 @@ async def get_memory(
     "/memories/{memory_id}",
     responses={
         401: {"description": "Unauthorized"},
-        404: {"description": "Memory not found"},
+        404: {"description": _MEMORY_NOT_FOUND},
         413: {"description": "Memory value too large"},
     },
 )
@@ -201,10 +202,10 @@ async def update_memory(
 ) -> MemoryResponse:
     memory = storage.get_memory_by_id(memory_id)
     if memory is None:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
     owner_user_id = _user_filter(claims)
     if owner_user_id and memory.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
 
     if body.value is not None:
         memory.value = body.value
@@ -231,7 +232,7 @@ async def update_memory(
     status_code=204,
     responses={
         401: {"description": "Unauthorized"},
-        404: {"description": "Memory not found"},
+        404: {"description": _MEMORY_NOT_FOUND},
     },
 )
 async def delete_memory(
@@ -241,10 +242,10 @@ async def delete_memory(
 ) -> None:
     memory = storage.get_memory_by_id(memory_id)
     if memory is None:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
     owner_user_id = _user_filter(claims)
     if owner_user_id and memory.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
 
     storage.delete_memory(memory_id)
     storage.log_event(

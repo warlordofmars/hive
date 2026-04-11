@@ -45,7 +45,7 @@ def _cloudwatch_client():  # pragma: no cover
 
 
 def _ce_client():  # pragma: no cover
-    return boto3.client("ce", region_name="us-east-1")
+    return boto3.client("ce", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
 
 
 def _build_metric_queries(period_label: str) -> list[dict[str, Any]]:

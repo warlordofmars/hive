@@ -38,6 +38,8 @@ from hive.vector_store import VectorIndexNotFoundError, VectorStore
 configure_logging("mcp")
 logger = get_logger("hive.server")
 
+_MEMORIES_READ_SCOPE = "memories:read"
+
 
 class _OriginVerifyMiddleware(BaseHTTPMiddleware):
     """Reject requests missing the CloudFront X-Origin-Verify secret.
@@ -213,7 +215,7 @@ async def recall(
 ) -> str:
     """Retrieve a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -311,7 +313,7 @@ async def list_memories(
 ) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
@@ -359,7 +361,7 @@ async def summarize_context(
     memory and then provides a combined overview paragraph.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
 
@@ -425,7 +427,7 @@ async def search_memories(
     where higher means more semantically similar to the query.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     top_k = max(1, min(top_k, 50))
 
     try:

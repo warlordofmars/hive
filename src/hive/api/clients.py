@@ -25,6 +25,7 @@ from hive.storage import HiveStorage
 
 router = APIRouter(tags=["clients"])
 
+_CLIENT_NOT_FOUND = "Client not found"
 _LIMIT_DEFAULT = 50
 _LIMIT_MAX = 200
 
@@ -95,7 +96,7 @@ async def create_client(
     "/clients/{client_id}",
     responses={
         401: {"description": "Unauthorized"},
-        404: {"description": "Client not found"},
+        404: {"description": _CLIENT_NOT_FOUND},
     },
 )
 async def get_client(
@@ -105,10 +106,10 @@ async def get_client(
 ) -> ClientRegistrationResponse:
     client = storage.get_client(client_id)
     if client is None:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
     owner_user_id = _user_filter(claims)
     if owner_user_id and client.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
     return ClientRegistrationResponse.from_client(client)
 
 
@@ -117,7 +118,7 @@ async def get_client(
     status_code=204,
     responses={
         401: {"description": "Unauthorized"},
-        404: {"description": "Client not found"},
+        404: {"description": _CLIENT_NOT_FOUND},
     },
 )
 async def delete_client(
@@ -127,10 +128,10 @@ async def delete_client(
 ) -> None:
     client = storage.get_client(client_id)
     if client is None:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
     owner_user_id = _user_filter(claims)
     if owner_user_id and client.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
 
     storage.delete_client(client_id)
     storage.log_event(

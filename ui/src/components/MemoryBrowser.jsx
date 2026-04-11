@@ -134,7 +134,7 @@ export function TagPicker({ knownTags, value, onSelect }) {
         <div
           id="tag-suggestions"
           ref={listRef}
-          role="listbox"
+          role="listbox" /* NOSONAR — ARIA combobox pattern; native <select> cannot serve as a positioned overlay */
           style={{
             position: "absolute",
             top: "calc(100% + 4px)",
@@ -156,6 +156,7 @@ export function TagPicker({ knownTags, value, onSelect }) {
               key={t}
               id={`tag-opt-${i}`}
               role="option"
+              tabIndex={-1}
               aria-selected={i === activeIndex}
               onMouseDown={() => selectTag(t)}
               style={{
@@ -347,23 +348,20 @@ export default function MemoryBrowser() {
   // Programmatically focus the card at focusedIndex when it changes
   useEffect(() => {
     if (focusedIndex >= 0 && listRef.current) {
-      const card = listRef.current.children[focusedIndex];
+      const li = listRef.current.children[focusedIndex];
+      const card = li?.querySelector("button.card") ?? li;
       card?.focus();
     }
   }, [focusedIndex]);
 
-  function handleListKeyDown(e) {
+  function handleCardKeyDown(e, m) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setFocusedIndex((i) => Math.min(i + 1, memories.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setFocusedIndex((i) => Math.max(i - 1, 0));
-    }
-  }
-
-  function handleCardKeyDown(e, m) {
-    if (e.key === "Enter" || e.key === " ") {
+    } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       openEdit(m);
     } else if (e.key === "Delete" || e.key === "Backspace") {
@@ -406,28 +404,19 @@ export default function MemoryBrowser() {
           </div>
         )}
 
-        <div
+        <ul
           ref={listRef}
-          style={{ display: "flex", flexDirection: "column", gap: 10 }}
-          onKeyDown={handleListKeyDown}
+          style={{ display: "flex", flexDirection: "column", gap: 10, listStyle: "none", margin: 0, padding: 0 }}
         >
           {memories.map((m, i) => (
-            <div
-              key={m.memory_id}
-              className="card"
-              role="button"
-              tabIndex={0}
-              style={{ cursor: "pointer", borderLeft: "4px solid var(--accent)" }}
-              onClick={() => openEdit(m)}
-              onFocus={() => setFocusedIndex(i)}
-              onKeyDown={(e) => handleCardKeyDown(e, m)}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                }}
+            <li key={m.memory_id} style={{ display: "flex", alignItems: "flex-start", gap: 0 }}>
+              <button
+                type="button"
+                className="card"
+                style={{ cursor: "pointer", borderLeft: "4px solid var(--accent)", flex: 1, textAlign: "left", background: "var(--surface)" }}
+                onClick={() => openEdit(m)}
+                onFocus={() => setFocusedIndex(i)}
+                onKeyDown={(e) => handleCardKeyDown(e, m)}
               >
                 <div style={{ flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -463,20 +452,17 @@ export default function MemoryBrowser() {
                     ))}
                   </div>
                 </div>
-                <button
-                  className="danger"
-                  style={{ marginLeft: 12, flexShrink: 0 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete(m.memory_id);
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
+              </button>
+              <button
+                className="danger"
+                style={{ marginLeft: 12, flexShrink: 0, alignSelf: "center" }}
+                onClick={() => handleDelete(m.memory_id)}
+              >
+                Delete
+              </button>
+            </li>
           ))}
-        </div>
+        </ul>
 
         {nextCursor && (
           <div style={{ textAlign: "center", marginTop: 16 }}>

@@ -26,7 +26,8 @@ describe("EmptyState", () => {
 
   it("renders all four variants without error", () => {
     for (const variant of ["memories", "clients", "activity", "users"]) {
-      const { unmount } = render(<EmptyState variant={variant} title="Test" />);
+      const { container, unmount } = render(<EmptyState variant={variant} title="Test" />);
+      expect(container.querySelector("svg")).toBeTruthy();
       unmount();
     }
   });

@@ -312,7 +312,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           curl -s -u "$SONAR_TOKEN:" \
-            "https://sonarcloud.io/api/issues/search?projectKeys=warlordofmars_hive&resolved=false&ps=500" \
+            "https://sonarcloud.io/api/issues/search?projectKeys=warlordofmars_hive&resolved=false&types=VULNERABILITY,SECURITY_HOTSPOT&ps=500" \
             -o sonar-issues.json
           python3 scripts/sonar_to_sarif.py sonar-issues.json sonar.sarif
 
