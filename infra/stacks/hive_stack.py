@@ -371,18 +371,7 @@ class HiveStack(cdk.Stack):
                 resources=["*"],
             )
         )
-        api_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=[
-                    "logs:FilterLogEvents",
-                    "logs:DescribeLogGroups",
-                ],
-                resources=[
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/hive-*",
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/lambda/hive-*:*",
-                ],
-            )
-        )
+        # CloudWatch Logs permission is scoped after mcp_fn/api_fn are defined below.
         # S3 Vectors + Bedrock Titan Embeddings V2 for API Lambda
         api_role.add_to_policy(
             iam.PolicyStatement(
@@ -420,6 +409,28 @@ class HiveStack(cdk.Stack):
             timeout=cdk.Duration.seconds(30),
             description=f"Hive management API (FastAPI) [{env_name}]",
             tracing=lambda_.Tracing.ACTIVE,
+        )
+
+        # Pass the actual CloudWatch log group names to the API Lambda so it can
+        # query them without guessing CDK-generated function names at runtime.
+        mcp_log_group_name = f"/aws/lambda/{mcp_fn.function_name}"
+        api_log_group_name = f"/aws/lambda/{api_fn.function_name}"
+        api_fn.add_environment("HIVE_MCP_LOG_GROUP", mcp_log_group_name)
+        api_fn.add_environment("HIVE_API_LOG_GROUP", api_log_group_name)
+
+        api_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "logs:FilterLogEvents",
+                    "logs:DescribeLogGroups",
+                ],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{mcp_log_group_name}",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{mcp_log_group_name}:*",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{api_log_group_name}",
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:{api_log_group_name}:*",
+                ],
+            )
         )
 
         api_url = api_fn.add_function_url(

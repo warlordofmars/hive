@@ -28,6 +28,11 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 ENVIRONMENT = os.environ.get("HIVE_ENV", os.environ.get("ENV", "local"))
 
+# Log group names are injected by CDK so we use the real (CDK-generated) Lambda
+# function names rather than guessing them at runtime.
+_MCP_LOG_GROUP = os.environ.get("HIVE_MCP_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-mcp")
+_API_LOG_GROUP = os.environ.get("HIVE_API_LOG_GROUP", f"/aws/lambda/hive-{ENVIRONMENT}-api")
+
 # Map human window labels → milliseconds
 _WINDOW_MS: dict[str, int] = {
     "15m": 15 * 60 * 1000,
@@ -41,13 +46,11 @@ _MAX_EVENTS = 500
 
 def _log_group_names(group: str) -> list[str]:
     """Return the CloudWatch log group name(s) for the requested group selector."""
-    mcp = f"/aws/lambda/hive-{ENVIRONMENT}-mcp"
-    api = f"/aws/lambda/hive-{ENVIRONMENT}-api"
     if group == "mcp":
-        return [mcp]
+        return [_MCP_LOG_GROUP]
     if group == "api":
-        return [api]
-    return [mcp, api]
+        return [_API_LOG_GROUP]
+    return [_MCP_LOG_GROUP, _API_LOG_GROUP]
 
 
 def _fetch_log_events(
