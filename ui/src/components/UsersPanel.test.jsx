@@ -176,6 +176,67 @@ describe("UsersPanel", () => {
     expect(screen.getByText("carol@example.com")).toBeTruthy();
   });
 
+  it("shows error when loadMore fails", async () => {
+    api.listUsers
+      .mockResolvedValueOnce({ items: SAMPLE_USERS, has_more: true, next_cursor: "tok1" })
+      .mockRejectedValueOnce(new Error("Load failed"));
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Load more")));
+    await waitFor(() => expect(screen.getByText("Load failed")).toBeTruthy());
+  });
+
+  it("handles loadMore returning null gracefully", async () => {
+    api.listUsers
+      .mockResolvedValueOnce({ items: SAMPLE_USERS, has_more: true, next_cursor: "tok1" })
+      .mockResolvedValueOnce(null);
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("Load more")));
+    // no crash; original users still visible
+    expect(screen.getByText("alice@example.com")).toBeTruthy();
+  });
+
+  it("deletes user without open detail panel does not crash", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.deleteUser.mockResolvedValue(null);
+    await act(async () => render(<UsersPanel />));
+    // Delete without opening detail panel first
+    const deleteButtons = screen.getAllByText("Delete");
+    await act(async () => fireEvent.click(deleteButtons[0]));
+    await act(async () => fireEvent.click(screen.getAllByText("Delete").at(-1)));
+    await waitFor(() => expect(screen.queryByText("alice@example.com")).toBeNull());
+  });
+
+  it("deletes a different user while detail panel is open does not close panel", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 0, client_count: 0 });
+    api.deleteUser.mockResolvedValue(null);
+    await act(async () => render(<UsersPanel />));
+    // Open detail for alice
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    // Delete bob (not alice) — via table button
+    const deleteButtons = screen.getAllByText("Delete");
+    await act(async () => fireEvent.click(deleteButtons[1]));
+    await act(async () => fireEvent.click(screen.getAllByText("Delete").at(-1)));
+    await waitFor(() => expect(screen.queryByText("bob@example.com")).toBeNull());
+    // Alice's detail panel should still be open
+    expect(screen.getByTestId("user-detail")).toBeTruthy();
+  });
+
+  it("closes detail panel when deleting the same user via table row button", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 0, client_count: 0 });
+    api.deleteUser.mockResolvedValue(null);
+    await act(async () => render(<UsersPanel />));
+    // Open alice's detail panel
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    expect(screen.getByTestId("user-detail")).toBeTruthy();
+    // Delete alice via the TABLE row Delete button (not the panel button)
+    const tableDeleteButtons = screen.getAllByText("Delete");
+    await act(async () => fireEvent.click(tableDeleteButtons[0]));
+    await act(async () => fireEvent.click(screen.getAllByText("Delete").at(-1)));
+    await waitFor(() => expect(screen.queryByTestId("user-detail")).toBeNull());
+  });
+
   it("opens detail panel when row is clicked", async () => {
     api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
     api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 5, client_count: 2 });
