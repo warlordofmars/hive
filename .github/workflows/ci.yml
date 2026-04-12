@@ -312,6 +312,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          # SonarCloud free plan only supports one main branch (development).
+          # Quality gate status API returns 'not found' for main, so skip the
+          # wait on main-branch pushes; keep it enforced on development + PRs.
+          args: ${{ github.ref == 'refs/heads/main' && '-Dsonar.qualitygate.wait=false' || '' }}
 
       - name: Fetch SonarCloud issues as SARIF
         if: always()
