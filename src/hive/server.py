@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -32,11 +32,15 @@ from hive.auth.tokens import _origin_verify_secret, validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
+from hive.quota import QuotaExceeded, check_memory_quota
+from hive.rate_limiter import RateLimitExceeded, check_rate_limit
 from hive.storage import HiveStorage
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
 configure_logging("mcp")
 logger = get_logger("hive.server")
+
+_MEMORIES_READ_SCOPE = "memories:read"
 
 
 class _OriginVerifyMiddleware(BaseHTTPMiddleware):
@@ -119,6 +123,11 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
     if required_scope and required_scope not in set(token.scope.split()):
         raise ToolError(f"Insufficient scope: '{required_scope}' required")
 
+    try:
+        check_rate_limit(token.client_id, storage)
+    except RateLimitExceeded as exc:
+        raise ToolError(f"Rate limit exceeded. Retry after {exc.retry_after}s.") from exc
+
     set_request_context(request_id, token.client_id)
     return storage, token.client_id
 
@@ -137,19 +146,31 @@ async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
     value: Annotated[str, "Content of the memory"],
     tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ttl_seconds: Annotated[
+        int | None, "Seconds until the memory expires. None = never expires."
+    ] = None,
     ctx: Context | None = None,
 ) -> str:
-    """Store or update a memory with optional tags."""
+    """Store or update a memory with optional tags and optional TTL."""
     t0 = time.monotonic()
     storage, client_id = _auth(ctx, required_scope="memories:write")
     tags = tags or []
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        if ttl_seconds is not None
+        else None
+    )
 
     # Check if a memory with this key already exists (upsert path)
     existing = storage.get_memory_by_key(key)
 
     if existing:
         # Idempotent: skip write and log if nothing changed
-        if existing.value == value and set(existing.tags) == set(tags):
+        if (
+            existing.value == value
+            and set(existing.tags) == set(tags)
+            and existing.expires_at == expires_at
+        ):
             logger.info(
                 "Memory unchanged",
                 extra={
@@ -161,6 +182,7 @@ async def remember(
             return f"Memory '{key}' unchanged."
         existing.value = value
         existing.tags = tags
+        existing.expires_at = expires_at
         existing.updated_at = datetime.now(timezone.utc)
         try:
             storage.put_memory(existing)
@@ -169,9 +191,20 @@ async def remember(
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_updated
         action = "Updated"
-        _vector_store().upsert_memory(existing)
+        try:
+            _vector_store().upsert_memory(existing)
+        except Exception:
+            logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
     else:
-        memory = Memory(key=key, value=value, tags=tags, owner_client_id=client_id)
+        client = storage.get_client(client_id)
+        owner_user_id = client.owner_user_id if client else None
+        try:
+            check_memory_quota(owner_user_id, storage)
+        except QuotaExceeded as exc:
+            raise ToolError(exc.detail) from exc
+        memory = Memory(
+            key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+        )
         try:
             storage.put_memory(memory)
         except ValueError as exc:
@@ -179,7 +212,10 @@ async def remember(
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_created
         action = "Stored"
-        _vector_store().upsert_memory(memory)
+        try:
+            _vector_store().upsert_memory(memory)
+        except Exception:
+            logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
     storage.log_event(
         ActivityEvent(
@@ -213,7 +249,7 @@ async def recall(
 ) -> str:
     """Retrieve a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -277,7 +313,10 @@ async def forget(
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.delete_memory(existing.memory_id)
-    _vector_store().delete_memory(existing.memory_id, client_id)
+    try:
+        _vector_store().delete_memory(existing.memory_id, client_id)
+    except Exception:
+        logger.warning("Vector delete failed (non-fatal)", exc_info=True)
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_deleted,
@@ -303,6 +342,115 @@ async def forget(
 
 
 @mcp.tool()
+async def forget_all(
+    tag: Annotated[str, "Tag of the memories to delete"],
+    ctx: Context | None = None,
+) -> str:
+    """Delete all memories that have the given tag."""
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:write")
+
+    deleted = storage.delete_memories_by_tag(tag)
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_deleted,
+            client_id=client_id,
+            metadata={"tag": tag, "count": deleted},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Deleted %d memories with tag '%s'",
+        deleted,
+        tag,
+        extra={
+            "tool": "forget_all",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="forget_all")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="forget_all",
+    )
+    return f"Deleted {deleted} memories with tag '{tag}'."
+
+
+@mcp.tool()
+async def memory_history(
+    key: Annotated[str, "Key of the memory to retrieve history for"],
+    ctx: Context | None = None,
+) -> list[dict[str, Any]]:
+    """Return the version history of a memory (previous values before each overwrite)."""
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:read")
+
+    memory = storage.get_memory_by_key(key)
+    if memory is None:
+        raise ToolError(f"No memory found for key '{key}'.")
+    versions = storage.list_memory_versions(memory.memory_id)
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    await emit_metric("ToolInvocations", operation="memory_history")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="memory_history",
+    )
+    return [
+        {
+            "version_timestamp": v.version_timestamp,
+            "value": v.value,
+            "tags": v.tags,
+            "recorded_at": v.recorded_at.isoformat(),
+        }
+        for v in versions
+    ]
+
+
+@mcp.tool()
+async def restore_memory(
+    key: Annotated[str, "Key of the memory to restore"],
+    version_timestamp: Annotated[str, "Version timestamp to restore (from memory_history)"],
+    ctx: Context | None = None,
+) -> str:
+    """Restore a memory to a previous version."""
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:write")
+
+    memory = storage.get_memory_by_key(key)
+    if memory is None:
+        raise ToolError(f"No memory found for key '{key}'.")
+    version = storage.get_memory_version(memory.memory_id, version_timestamp)
+    if version is None:
+        raise ToolError(f"Version '{version_timestamp}' not found for memory '{key}'.")
+
+    memory.value = version.value
+    memory.tags = version.tags
+    memory.updated_at = datetime.now(timezone.utc)
+    storage.put_memory(memory)
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_updated,
+            client_id=client_id,
+            metadata={"key": key, "version_timestamp": version_timestamp},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    await emit_metric("ToolInvocations", operation="restore_memory")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="restore_memory",
+    )
+    return f"Restored memory '{key}' to version '{version_timestamp}'."
+
+
+@mcp.tool()
 async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
@@ -311,7 +459,7 @@ async def list_memories(
 ) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
@@ -359,7 +507,7 @@ async def summarize_context(
     memory and then provides a combined overview paragraph.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
 
@@ -425,12 +573,15 @@ async def search_memories(
     where higher means more semantically similar to the query.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     top_k = max(1, min(top_k, 50))
 
     try:
         pairs = _vector_store().search(query, client_id, top_k=top_k)
     except VectorIndexNotFoundError:
+        return {"items": [], "count": 0, "query": query}
+    except Exception:
+        logger.warning("Vector search failed (non-fatal)", exc_info=True)
         return {"items": [], "count": 0, "query": query}
 
     results = storage.hydrate_memory_ids(pairs)

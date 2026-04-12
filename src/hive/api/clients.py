@@ -8,7 +8,7 @@ Non-admins see only their own clients; admins see all.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -21,10 +21,12 @@ from hive.models import (
     EventType,
     PagedResponse,
 )
+from hive.quota import QuotaExceeded, check_client_quota
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["clients"])
 
+_CLIENT_NOT_FOUND = "Client not found"
 _LIMIT_DEFAULT = 50
 _LIMIT_MAX = 200
 
@@ -37,12 +39,17 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
     return None if claims.get("role") == "admin" else claims["sub"]
 
 
-@router.get("/clients", response_model=PagedResponse)
+@router.get(
+    "/clients",
+    summary="List OAuth clients",
+    description="Return a paginated list of OAuth clients. Non-admins see only their own clients.",
+    responses={401: {"description": "Unauthorized"}},
+)
 async def list_clients(
-    limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX),
-    cursor: str | None = Query(None),
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    limit: Annotated[int, Query(ge=1, le=_LIMIT_MAX)] = _LIMIT_DEFAULT,
+    cursor: Annotated[str | None, Query()] = None,
 ) -> PagedResponse:
     owner_user_id = _user_filter(claims)
     clients, next_cursor = storage.list_clients(
@@ -56,13 +63,26 @@ async def list_clients(
     )
 
 
-@router.post("/clients", response_model=ClientRegistrationResponse, status_code=201)
+@router.post(
+    "/clients",
+    summary="Register an OAuth client",
+    description="Register a new OAuth 2.1 client via Dynamic Client Registration (RFC 7591). Returns the client credentials including the client secret.",
+    status_code=201,
+    responses={
+        400: {"description": "Invalid client registration request"},
+        401: {"description": "Unauthorized"},
+    },
+)
 async def create_client(
     body: ClientRegistrationRequest,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> ClientRegistrationResponse:
     owner_user_id: str = claims["sub"]
+    try:
+        check_client_quota(owner_user_id, storage)
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
     try:
         resp = register_client(body, storage)
     except ValueError as exc:
@@ -84,33 +104,50 @@ async def create_client(
     return resp
 
 
-@router.get("/clients/{client_id}", response_model=ClientRegistrationResponse)
+@router.get(
+    "/clients/{client_id}",
+    summary="Get an OAuth client",
+    description="Retrieve a single OAuth client by its client ID. Non-admins can only access their own clients.",
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": _CLIENT_NOT_FOUND},
+    },
+)
 async def get_client(
     client_id: str,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> ClientRegistrationResponse:
     client = storage.get_client(client_id)
     if client is None:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
     owner_user_id = _user_filter(claims)
     if owner_user_id and client.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
     return ClientRegistrationResponse.from_client(client)
 
 
-@router.delete("/clients/{client_id}", status_code=204)
+@router.delete(
+    "/clients/{client_id}",
+    summary="Delete an OAuth client",
+    description="Permanently delete an OAuth client by its client ID. Non-admins can only delete their own clients.",
+    status_code=204,
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": _CLIENT_NOT_FOUND},
+    },
+)
 async def delete_client(
     client_id: str,
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> None:
     client = storage.get_client(client_id)
     if client is None:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
     owner_user_id = _user_filter(claims)
     if owner_user_id and client.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
 
     storage.delete_client(client_id)
     storage.log_event(

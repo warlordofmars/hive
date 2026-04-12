@@ -8,7 +8,7 @@ import PageLayout from "@/components/PageLayout";
  * Each section starts with "## vX.Y.Z — YYYY-MM-DD" and contains ### subsections.
  * Returns an array of { version, date, groups: [{ heading, items }] }
  */
-export function parseChangelog(raw) {
+export function parseChangelog(raw) { // NOSONAR — complexity inherent in multi-pass changelog parsing
   const sections = [];
   let current = null;
   let currentGroup = null;
@@ -41,7 +41,7 @@ export function parseChangelog(raw) {
     const itemMatch = line.match(/^- (.+)/);
     if (itemMatch && currentGroup) {
       // Strip PR refs like (#123, #456) from item text
-      currentGroup.items.push(itemMatch[1].replace(/\s*\(#[\d, #]+\)/g, "").trim());
+      currentGroup.items.push(itemMatch[1].replace(/\s*\(#[\d, #]+\)/g, "").trim()); // NOSONAR — input is a static changelog file, not user-supplied
     }
   }
 
@@ -112,9 +112,7 @@ export default function ChangelogPage() {
               rel="noreferrer"
             >
               GitHub releases page
-            </a>
-            .
-          </p>
+            </a>{"."}</p>
         </div>
       </section>
     </PageLayout>

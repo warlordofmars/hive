@@ -3,6 +3,13 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import { AlertDialog } from "./ui/alert-dialog.jsx";
+import { Button } from "./ui/button.jsx";
+import { Card } from "./ui/card.jsx";
+import { Input } from "./ui/input.jsx";
+import { Label } from "./ui/label.jsx";
+import { Select } from "./ui/select.jsx";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table.jsx";
 
 export default function ClientManager() {
   const [clients, setClients] = useState([]);
@@ -17,6 +24,7 @@ export default function ClientManager() {
   });
   const [newClient, setNewClient] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
 
   function handleCopyId(id) {
     navigator.clipboard.writeText(id);
@@ -57,51 +65,60 @@ export default function ClientManager() {
   }
 
   async function handleDelete(id) {
-    if (!confirm("Delete this OAuth client?")) return;
     try {
       await api.deleteClient(id);
       load();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setPendingDelete(null);
     }
   }
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 16, gap: 10 }}>
-        <h2 style={{ flex: 1, fontSize: 18 }}>OAuth Clients</h2>
-        <button className="primary" onClick={() => { setCreating(true); setNewClient(null); }}>
+      <AlertDialog
+        open={pendingDelete !== null}
+        title="Delete OAuth client?"
+        description="This will permanently remove the client and invalidate all its tokens."
+        onConfirm={() => handleDelete(pendingDelete)}
+        onCancel={() => setPendingDelete(null)}
+      />
+
+      <div className="flex items-center mb-4 gap-2.5">
+        <h2 className="flex-1 text-lg font-semibold">OAuth Clients</h2>
+        <Button onClick={() => { setCreating(true); setNewClient(null); }}>
           + Register Client
-        </button>
+        </Button>
       </div>
 
-      {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
+      {error && <p className="text-[var(--danger)] mb-3">{error}</p>}
 
       {newClient && (
-        <div className="card" style={{ marginBottom: 16, borderLeft: "4px solid var(--success)" }}>
+        <Card className="mb-4 border-l-4 border-l-[var(--success)]">
           <strong>Client registered successfully.</strong>
-          <p style={{ marginTop: 8, fontSize: 13 }}>
+          <p className="mt-2 text-[13px]">
             <b>Client ID:</b> <code>{newClient.client_id}</code>
           </p>
           {newClient.client_secret && (
-            <p style={{ marginTop: 4, fontSize: 13, color: "var(--danger)" }}>
+            <p className="mt-1 text-[13px] text-[var(--danger)]">
               <b>Client Secret (save now, not shown again):</b>{" "}
               <code>{newClient.client_secret}</code>
             </p>
           )}
-          <button className="secondary" style={{ marginTop: 12 }} onClick={() => setNewClient(null)}>
+          <Button variant="secondary" className="mt-3" onClick={() => setNewClient(null)}>
             Dismiss
-          </button>
-        </div>
+          </Button>
+        </Card>
       )}
 
       {creating && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginBottom: 16, fontSize: 15 }}>Register New Client (RFC 7591)</h3>
+        <Card className="mb-4">
+          <h3 className="mb-4 text-[15px] font-semibold">Register New Client (RFC 7591)</h3>
           <form onSubmit={handleCreate}>
-            <div style={{ marginBottom: 10 }}>
-              <label htmlFor="client-name">Client Name</label>
-              <input
+            <div className="mb-2.5">
+              <Label htmlFor="client-name">Client Name</Label>
+              <Input
                 id="client-name"
                 required
                 value={form.client_name}
@@ -109,26 +126,26 @@ export default function ClientManager() {
                 placeholder="My Agent"
               />
             </div>
-            <div style={{ marginBottom: 10 }}>
-              <label htmlFor="client-redirect-uris">Redirect URIs (comma-separated)</label>
-              <input
+            <div className="mb-2.5">
+              <Label htmlFor="client-redirect-uris">Redirect URIs (comma-separated)</Label>
+              <Input
                 id="client-redirect-uris"
                 value={form.redirect_uris}
                 onChange={(e) => setForm({ ...form, redirect_uris: e.target.value })}
                 placeholder="http://localhost:3000/callback"
               />
             </div>
-            <div style={{ marginBottom: 10 }}>
-              <label htmlFor="client-scope">Scope</label>
-              <input
+            <div className="mb-2.5">
+              <Label htmlFor="client-scope">Scope</Label>
+              <Input
                 id="client-scope"
                 value={form.scope}
                 onChange={(e) => setForm({ ...form, scope: e.target.value })}
               />
             </div>
-            <div style={{ marginBottom: 16 }}>
-              <label htmlFor="client-auth-method">Auth Method</label>
-              <select
+            <div className="mb-4">
+              <Label htmlFor="client-auth-method">Auth Method</Label>
+              <Select
                 id="client-auth-method"
                 value={form.token_endpoint_auth_method}
                 onChange={(e) => setForm({ ...form, token_endpoint_auth_method: e.target.value })}
@@ -136,70 +153,70 @@ export default function ClientManager() {
                 <option value="none">none (public)</option>
                 <option value="client_secret_post">client_secret_post</option>
                 <option value="client_secret_basic">client_secret_basic</option>
-              </select>
+              </Select>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="primary" type="submit">Register</button>
-              <button className="secondary" type="button" onClick={() => setCreating(false)}>Cancel</button>
+            <div className="flex gap-2">
+              <Button type="submit">Register</Button>
+              <Button variant="secondary" type="button" onClick={() => setCreating(false)}>Cancel</Button>
             </div>
           </form>
-        </div>
+        </Card>
       )}
 
-      {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
+      {loading && <p className="text-[var(--text-muted)]">Loading…</p>}
 
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Client ID</th>
-              <th>Type</th>
-              <th>Scope</th>
-              <th>Registered</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
+      <Card className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Client ID</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Scope</TableHead>
+              <TableHead>Registered</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {clients.length === 0 && !loading && (
-              <tr>
-                <td colSpan={6} style={{ padding: 0 }}>
+              <TableRow>
+                <TableCell colSpan={6} className="p-0">
                   <EmptyState
                     variant="clients"
                     title="No clients registered"
                     description="Register an OAuth client to connect your MCP agent to Hive."
                   />
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {clients.map((c) => (
-              <tr key={c.client_id}>
-                <td><strong>{c.client_name}</strong></td>
-                <td>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <code style={{ fontSize: 12 }}>{c.client_id}</code>
+              <TableRow key={c.client_id}>
+                <TableCell><strong>{c.client_name}</strong></TableCell>
+                <TableCell>
+                  <span className="inline-flex items-center gap-1">
+                    <code className="text-xs">{c.client_id}</code>
                     <button
                       onClick={() => handleCopyId(c.client_id)}
-                      style={{ background: "transparent", padding: "2px 4px", color: "var(--text-muted)" }}
+                      className="bg-transparent p-[2px_4px] text-[var(--text-muted)] border-none cursor-pointer"
                       aria-label="Copy client ID"
                     >
                       {copiedId === c.client_id ? <Check size={13} /> : <Copy size={13} />}
                     </button>
                   </span>
-                </td>
-                <td>{c.token_endpoint_auth_method === "none" ? "public" : "confidential"}</td>
-                <td>{c.scope}</td>
-                <td>{new Date(c.client_id_issued_at * 1000).toLocaleDateString()}</td>
-                <td>
-                  <button className="danger" onClick={() => handleDelete(c.client_id)}>
+                </TableCell>
+                <TableCell>{c.token_endpoint_auth_method === "none" ? "public" : "confidential"}</TableCell>
+                <TableCell>{c.scope}</TableCell>
+                <TableCell>{new Date(c.client_id_issued_at * 1000).toLocaleDateString()}</TableCell>
+                <TableCell>
+                  <Button variant="danger" size="sm" onClick={() => setPendingDelete(c.client_id)}>
                     Delete
-                  </button>
-                </td>
-              </tr>
+                  </Button>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </Card>
     </div>
   );
 }

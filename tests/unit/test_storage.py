@@ -18,7 +18,16 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 from moto import mock_aws
 
-from hive.models import ActivityEvent, EventType, Memory, OAuthClient, TokenType, User, UserResponse
+from hive.models import (
+    ActivityEvent,
+    ApiKey,
+    EventType,
+    Memory,
+    OAuthClient,
+    TokenType,
+    User,
+    UserResponse,
+)
 from hive.storage import HiveStorage
 
 
@@ -185,6 +194,143 @@ class TestMemoryStorage:
             )
             with pytest.raises(ClientError):
                 storage.put_memory(m)
+
+    def test_put_and_get_memory_with_ttl(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        m = Memory(key="ttl-key", value="ttl-val", owner_client_id="c1", expires_at=expires_at)
+        storage.put_memory(m)
+        result = storage.get_memory_by_id(m.memory_id)
+        assert result is not None
+        assert result.expires_at is not None
+        assert abs((result.expires_at - expires_at).total_seconds()) < 1
+
+    def test_get_expired_memory_returns_none(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        m = Memory(key="expired-key", value="gone", owner_client_id="c1", expires_at=past)
+        storage.put_memory(m)
+        # DynamoDB TTL is eventually consistent; filter client-side
+        result = storage.get_memory_by_id(m.memory_id)
+        assert result is None
+
+    def test_get_memory_by_key_expired_returns_none(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        m = Memory(key="expired-key2", value="gone", owner_client_id="c1", expires_at=past)
+        storage.put_memory(m)
+        result = storage.get_memory_by_key("expired-key2")
+        assert result is None
+
+    def test_memory_serialise_ttl_in_dynamo(self):
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        m = Memory(key="k", value="v", owner_client_id="c1", expires_at=expires_at)
+        item = m.to_dynamo_meta()
+        assert "expires_at" in item
+        assert "ttl" in item
+        assert item["ttl"] == int(expires_at.timestamp())
+
+    def test_memory_deserialise_ttl_from_dynamo(self):
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        m = Memory(key="k", value="v", owner_client_id="c1", expires_at=expires_at)
+        item = m.to_dynamo_meta()
+        restored = Memory.from_dynamo(item)
+        assert restored.expires_at is not None
+        assert abs((restored.expires_at - expires_at).total_seconds()) < 1
+
+    def test_memory_is_expired_false_when_no_ttl(self):
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        assert not m.is_expired
+
+    def test_memory_is_expired_true_when_past(self):
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        m = Memory(key="k", value="v", owner_client_id="c1", expires_at=past)
+        assert m.is_expired
+
+    def test_put_memory_saves_version_on_update(self, storage):
+        """Updating an existing memory should create a version snapshot."""
+        m = Memory(key="v-key", value="v1", owner_client_id="c1")
+        storage.put_memory(m)
+        m.value = "v2"
+        storage.put_memory(m)
+        versions = storage.list_memory_versions(m.memory_id)
+        assert len(versions) == 1
+        assert versions[0].value == "v1"
+
+    def test_put_new_memory_does_not_create_version(self, storage):
+        """Creating a brand-new memory should NOT create a version snapshot."""
+        m = Memory(key="fresh", value="x", owner_client_id="c1")
+        storage.put_memory(m)
+        assert storage.list_memory_versions(m.memory_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Memory version tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryVersionStorage:
+    def test_list_versions_newest_first(self, storage):
+
+        m = Memory(key="hist", value="v1", owner_client_id="c1")
+        storage.put_memory(m)
+        # two updates → two version snapshots
+        m.value = "v2"
+        storage.put_memory(m)
+        m.value = "v3"
+        storage.put_memory(m)
+        versions = storage.list_memory_versions(m.memory_id)
+        assert len(versions) == 2
+        # newest first (ScanIndexForward=False)
+        assert versions[0].value == "v2"
+        assert versions[1].value == "v1"
+
+    def test_get_memory_version_found(self, storage):
+        m = Memory(key="gv", value="original", owner_client_id="c1")
+        storage.put_memory(m)
+        m.value = "updated"
+        storage.put_memory(m)
+        versions = storage.list_memory_versions(m.memory_id)
+        assert len(versions) == 1
+        fetched = storage.get_memory_version(m.memory_id, versions[0].version_timestamp)
+        assert fetched is not None
+        assert fetched.value == "original"
+
+    def test_get_memory_version_not_found(self, storage):
+        m = Memory(key="missing-v", value="v", owner_client_id="c1")
+        storage.put_memory(m)
+        result = storage.get_memory_version(m.memory_id, "nonexistent-ts")
+        assert result is None
+
+    def test_version_serialise_deserialise(self):
+        from hive.models import MemoryVersion
+
+        m = Memory(key="ser", value="old-val", tags=["t1"], owner_client_id="c1")
+        v = MemoryVersion.from_memory(m)
+        item = v.to_dynamo()
+        restored = MemoryVersion.from_dynamo(item)
+        assert restored.memory_id == v.memory_id
+        assert restored.value == "old-val"
+        assert restored.tags == ["t1"]
+
+    def test_version_response_from_version(self):
+        from hive.models import MemoryVersion, MemoryVersionResponse
+
+        m = Memory(key="resp", value="v", tags=[], owner_client_id="c1")
+        v = MemoryVersion.from_memory(m)
+        resp = MemoryVersionResponse.from_version(v)
+        assert resp.memory_id == v.memory_id
+        assert resp.version_timestamp == v.version_timestamp
+        assert resp.value == "v"
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +676,16 @@ class TestUserStorage:
     def test_delete_nonexistent_returns_false(self, storage):
         assert storage.delete_user("no-such-id") is False
 
+    def test_update_user_role(self, storage):
+        u = self._user()
+        u.role = "user"
+        storage.put_user(u)
+        assert storage.update_user_role(u.user_id, "admin") is True
+        assert storage.get_user_by_id(u.user_id).role == "admin"
+
+    def test_update_user_role_nonexistent_returns_false(self, storage):
+        assert storage.update_user_role("no-such-id", "admin") is False
+
     def test_list_users(self, storage):
         storage.put_user(self._user("a@example.com"))
         storage.put_user(self._user("b@example.com"))
@@ -672,3 +828,157 @@ class TestHydrateMemoryIds:
         result = storage.hydrate_memory_ids(pairs)
         assert result[0][0].key == "ord-a"
         assert result[1][0].key == "ord-b"
+
+
+# ---------------------------------------------------------------------------
+# API Key storage
+# ---------------------------------------------------------------------------
+
+
+class TestApiKeyStorage:
+    def _key(self, owner_user_id: str = "u1", name: str = "test") -> ApiKey:
+        return ApiKey(owner_user_id=owner_user_id, name=name, key_hash="hash-" + name)
+
+    def test_put_and_get_by_id(self, storage):
+        k = self._key()
+        storage.put_api_key(k)
+        fetched = storage.get_api_key_by_id(k.key_id)
+        assert fetched is not None
+        assert fetched.key_id == k.key_id
+        assert fetched.name == "test"
+
+    def test_get_by_id_not_found(self, storage):
+        assert storage.get_api_key_by_id("no-such-key") is None
+
+    def test_get_by_hash(self, storage):
+        k = self._key()
+        storage.put_api_key(k)
+        found = storage.get_api_key_by_hash("hash-test")
+        assert found is not None
+        assert found.key_id == k.key_id
+
+    def test_get_by_hash_not_found(self, storage):
+        assert storage.get_api_key_by_hash("nonexistent-hash") is None
+
+    def test_list_for_user(self, storage):
+        k1 = self._key("u1", "key1")
+        k2 = self._key("u1", "key2")
+        k3 = self._key("u2", "other")
+        for k in (k1, k2, k3):
+            storage.put_api_key(k)
+        result = storage.list_api_keys_for_user("u1")
+        names = {k.name for k in result}
+        assert "key1" in names
+        assert "key2" in names
+        assert "other" not in names
+
+    def test_list_for_user_empty(self, storage):
+        assert storage.list_api_keys_for_user("no-such-user") == []
+
+    def test_delete(self, storage):
+        k = self._key()
+        storage.put_api_key(k)
+        assert storage.delete_api_key(k.key_id) is True
+        assert storage.get_api_key_by_id(k.key_id) is None
+
+    def test_delete_nonexistent(self, storage):
+        assert storage.delete_api_key("no-such-key") is False
+
+
+# ---------------------------------------------------------------------------
+# Bulk memory operations
+# ---------------------------------------------------------------------------
+
+
+class TestBulkMemoryOperations:
+    def test_delete_memories_by_tag_returns_count(self, storage):
+        m1 = Memory(key="a", value="1", tags=["bulk"], owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="b", value="2", tags=["bulk"], owner_client_id="c1", owner_user_id="u1")
+        m3 = Memory(key="c", value="3", tags=["other"], owner_client_id="c1", owner_user_id="u1")
+        for m in [m1, m2, m3]:
+            storage.put_memory(m)
+        deleted = storage.delete_memories_by_tag("bulk")
+        assert deleted == 2
+        assert storage.get_memory_by_key("a") is None
+        assert storage.get_memory_by_key("b") is None
+        assert storage.get_memory_by_key("c") is not None
+
+    def test_delete_memories_by_tag_with_owner_filter(self, storage):
+        m1 = Memory(key="x", value="1", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="y", value="2", tags=["t"], owner_client_id="c2", owner_user_id="u2")
+        for m in [m1, m2]:
+            storage.put_memory(m)
+        deleted = storage.delete_memories_by_tag("t", owner_user_id="u1")
+        assert deleted == 1
+        assert storage.get_memory_by_key("x") is None
+        assert storage.get_memory_by_key("y") is not None
+
+    def test_delete_memories_by_tag_empty(self, storage):
+        assert storage.delete_memories_by_tag("no-such-tag") == 0
+
+    def test_iter_all_memories_no_filter(self, storage):
+        for i in range(3):
+            storage.put_memory(Memory(key=f"k{i}", value=f"v{i}", owner_client_id="c1"))
+        result = list(storage.iter_all_memories())
+        assert len(result) == 3
+
+    def test_iter_all_memories_with_tag(self, storage):
+        m1 = Memory(key="tagged", value="1", tags=["export"], owner_client_id="c1")
+        m2 = Memory(key="untagged", value="2", tags=[], owner_client_id="c1")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        result = list(storage.iter_all_memories(tag="export"))
+        assert len(result) == 1
+        assert result[0].key == "tagged"
+
+    def test_iter_all_memories_with_owner_filter(self, storage):
+        m1 = Memory(key="mine", value="1", owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="theirs", value="2", owner_client_id="c2", owner_user_id="u2")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        result = list(storage.iter_all_memories(owner_user_id="u1"))
+        assert len(result) == 1
+        assert result[0].key == "mine"
+
+    def test_iter_all_memories_tag_and_owner_filter(self, storage):
+        m1 = Memory(key="a", value="1", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="b", value="2", tags=["t"], owner_client_id="c2", owner_user_id="u2")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        result = list(storage.iter_all_memories(tag="t", owner_user_id="u2"))
+        assert len(result) == 1
+        assert result[0].key == "b"
+
+    def test_iter_all_memories_follows_scan_pages(self, storage):
+        """iter_all_memories should follow DynamoDB scan pages via ExclusiveStartKey."""
+
+        memories = [Memory(key=f"page-{i}", value=f"v{i}", owner_client_id="c1") for i in range(3)]
+        for m in memories:
+            storage.put_memory(m)
+
+        # Capture calls to prove pagination works by using real storage
+        # (moto handles pagination internally, so just verify all items returned)
+        result = list(storage.iter_all_memories())
+        assert len(result) == 3
+
+    def test_iter_all_memories_multi_page(self, storage):
+        """iter_all_memories handles scan responses with ExclusiveStartKey."""
+        from unittest.mock import patch
+
+        from hive.models import Memory as _Memory
+
+        m1 = _Memory(key="page1", value="v1", owner_client_id="c1")
+        m1_item = m1.to_dynamo_meta()
+
+        page1_resp = {
+            "Items": [m1_item],
+            "LastEvaluatedKey": {"PK": "MEMORY#page1", "SK": "META"},
+        }
+        m2 = _Memory(key="page2", value="v2", owner_client_id="c1")
+        m2_item = m2.to_dynamo_meta()
+        page2_resp = {"Items": [m2_item]}
+
+        with patch.object(storage.table, "scan", side_effect=[page1_resp, page2_resp]):
+            result = list(storage.iter_all_memories())
+
+        assert len(result) == 2

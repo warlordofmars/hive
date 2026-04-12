@@ -18,7 +18,7 @@ async function request(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 
   if (res.status === 401) {
@@ -53,6 +53,9 @@ export const api = {
   createMemory: (body) => request("POST", "/api/memories", body),
   updateMemory: (id, body) => request("PATCH", `/api/memories/${id}`, body),
   deleteMemory: (id) => request("DELETE", `/api/memories/${id}`),
+  listMemoryVersions: (id) => request("GET", `/api/memories/${id}/versions`),
+  restoreMemoryVersion: (id, versionTimestamp) =>
+    request("POST", `/api/memories/${id}/restore?version_timestamp=${encodeURIComponent(versionTimestamp)}`),
 
   // Clients
   listClients: ({ limit = 50, cursor } = {}) => {
@@ -72,6 +75,7 @@ export const api = {
   // Admin
   getMetrics: (period = "24h") => request("GET", `/api/admin/metrics?period=${period}`),
   getCosts: () => request("GET", "/api/admin/costs"),
+  getAlarms: () => request("GET", "/api/admin/alarms"),
   getLogs: ({ group = "all", window = "1h", filter = "", nextToken } = {}) => {
     const params = new URLSearchParams({ group, window });
     if (filter) params.set("filter", filter);
@@ -86,5 +90,15 @@ export const api = {
     if (cursor) params.set("cursor", cursor);
     return request("GET", `/api/users?${params}`);
   },
+  updateUserRole: (id, role) => request("PATCH", `/api/users/${id}`, { role }),
+  getUserStats: (id) => request("GET", `/api/users/${id}/stats`),
   deleteUser: (id) => request("DELETE", `/api/users/${id}`),
+
+  // API Keys
+  listApiKeys: () => request("GET", "/api/keys"),
+  createApiKey: (name, scope) => request("POST", "/api/keys", { name, scope }),
+  deleteApiKey: (id) => request("DELETE", `/api/keys/${id}`),
+
+  // Account
+  deleteAccount: () => request("DELETE", "/api/account", { confirm: true }),
 };

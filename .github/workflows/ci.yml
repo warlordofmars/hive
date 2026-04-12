@@ -50,6 +50,8 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
@@ -107,6 +109,11 @@ jobs:
         with:
           sarif_file: trivy-deps.sarif
           category: trivy-deps
+
+      - name: Gitleaks — secret scan
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   unit-tests:
     name: Unit Tests
@@ -183,6 +190,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      security-events: write
       statuses: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
@@ -300,10 +308,27 @@ jobs:
             }
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@ffc3010689be73b8e5ae0c57ce35968afd7909e8 # v5.0.0
+        uses: SonarSource/sonarqube-scan-action@0303d6b62e310685c0e34d0b9cde218036885c4d # v5.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Fetch SonarCloud issues as SARIF
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          curl -s -u "$SONAR_TOKEN:" \
+            "https://sonarcloud.io/api/issues/search?projectKeys=warlordofmars_hive&resolved=false&types=VULNERABILITY,SECURITY_HOTSPOT&ps=500" \
+            -o sonar-issues.json
+          python3 scripts/sonar_to_sarif.py sonar-issues.json sonar.sarif
+
+      - name: Upload SonarCloud results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@f94817b9f0deeb3871261446912ae8f854d1b675 # codeql-bundle-v2.25.1
+        with:
+          sarif_file: sonar.sarif
+          category: sonarcloud
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
@@ -445,6 +470,33 @@ jobs:
           sarif_file: trivy-iac.sarif
           category: trivy-iac
 
+  notify-pipeline-failure:
+    name: Notify Slack — CI Failure
+    needs: [lint-typecheck, audit, unit-tests, integration-tests, coverage, frontend, infra-synth]
+    if: >-
+      always() &&
+      contains(needs.*.result, 'failure') &&
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/development' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Notify Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":x: CI pipeline failed on *${{ github.ref_name }}*",
+              "attachments": [{
+                "color": "danger",
+                "text": "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }
+
 # ── Deploy to dev (push to development) ───────────────────────────────────────
 
   deploy-dev:
@@ -456,6 +508,8 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     outputs:
       mcp_url: ${{ steps.urls.outputs.mcp_url }}
       api_url: ${{ steps.urls.outputs.api_url }}
@@ -510,11 +564,43 @@ jobs:
           echo "api_url=$(query ApiFunctionUrl)"  >> "$GITHUB_OUTPUT"
           echo "ui_url=$(query UiUrl)"            >> "$GITHUB_OUTPUT"
 
+      - name: Notify Slack — deploy success
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":white_check_mark: Deploy to *dev* succeeded",
+              "attachments": [{
+                "color": "good",
+                "text": "MCP: ${{ steps.urls.outputs.mcp_url }}\nAPI: ${{ steps.urls.outputs.api_url }}\nUI: ${{ steps.urls.outputs.ui_url }}"
+              }]
+            }
+
+      - name: Notify Slack — deploy failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":x: Deploy to *dev* failed",
+              "attachments": [{
+                "color": "danger",
+                "text": "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }
+
   e2e-dev:
     name: E2E Tests (dev)
     needs: deploy-dev
     if: github.event_name == 'push' && github.ref == 'refs/heads/development'
     runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -605,6 +691,21 @@ jobs:
           HIVE_BEARER_TOKEN: ${{ steps.synth-token.outputs.token }}
         run: uv run python scripts/synthetic_traffic.py
 
+      - name: Notify Slack — e2e failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":x: E2E tests failed on *dev* after deploy",
+              "attachments": [{
+                "color": "danger",
+                "text": "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }
+
 # ── Release + deploy to prod (push to main) ───────────────────────────────────
 
   release:
@@ -650,6 +751,8 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     outputs:
       mcp_url: ${{ steps.urls.outputs.mcp_url }}
       api_url: ${{ steps.urls.outputs.api_url }}
@@ -705,11 +808,43 @@ jobs:
           echo "api_url=$(query ApiFunctionUrl)"  >> "$GITHUB_OUTPUT"
           echo "ui_url=$(query UiUrl)"            >> "$GITHUB_OUTPUT"
 
+      - name: Notify Slack — deploy success
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":white_check_mark: Deploy to *prod* succeeded — version `${{ needs.release.outputs.version }}`",
+              "attachments": [{
+                "color": "good",
+                "text": "MCP: ${{ steps.urls.outputs.mcp_url }}\nAPI: ${{ steps.urls.outputs.api_url }}\nUI: ${{ steps.urls.outputs.ui_url }}"
+              }]
+            }
+
+      - name: Notify Slack — deploy failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":x: Deploy to *prod* failed — version `${{ needs.release.outputs.version }}`",
+              "attachments": [{
+                "color": "danger",
+                "text": "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }
+
   e2e-prod:
     name: E2E Tests (prod)
     needs: deploy-prod
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -731,6 +866,21 @@ jobs:
 
       # UI e2e tests require HIVE_BYPASS_GOOGLE_AUTH which is dev-only.
       # They run in the dev pipeline; no need to repeat against prod.
+
+      - name: Notify Slack — e2e failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": ":x: E2E tests failed on *prod* after deploy",
+              "attachments": [{
+                "color": "danger",
+                "text": "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }
 
   back-merge:
     name: Back-merge main → development

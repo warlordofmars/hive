@@ -120,3 +120,55 @@ class TestAdminMetricsE2E:
             assert total_invocations > 0, (
                 "No invocation data found in 7d window — synthetic traffic may not have run yet"
             )
+
+
+@pytest.mark.asyncio
+class TestAdminCostsE2E:
+    async def test_costs_returns_200(self, live_admin_token):
+        async with httpx.AsyncClient(base_url=API_URL, timeout=30.0) as http:
+            resp = await http.get(
+                "/api/admin/costs",
+                headers={"Authorization": f"Bearer {live_admin_token}"},
+            )
+            assert resp.status_code == 200, resp.text
+
+    async def test_costs_response_structure(self, live_admin_token):
+        """Response must contain required keys regardless of whether billing data exists."""
+        async with httpx.AsyncClient(base_url=API_URL, timeout=30.0) as http:
+            resp = await http.get(
+                "/api/admin/costs",
+                headers={"Authorization": f"Bearer {live_admin_token}"},
+            )
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+            assert "monthly" in data, "Response missing 'monthly' key"
+            assert "daily" in data, "Response missing 'daily' key"
+            assert "currency" in data, "Response missing 'currency' key"
+            assert "environment" in data, "Response missing 'environment' key"
+            assert isinstance(data["monthly"], list)
+            assert isinstance(data["daily"], list)
+
+    async def test_costs_monthly_items_have_correct_shape(self, live_admin_token):
+        """Each monthly item must have period, total, and by_service keys."""
+        async with httpx.AsyncClient(base_url=API_URL, timeout=30.0) as http:
+            resp = await http.get(
+                "/api/admin/costs",
+                headers={"Authorization": f"Bearer {live_admin_token}"},
+            )
+            assert resp.status_code == 200, resp.text
+            monthly = resp.json()["monthly"]
+            for item in monthly:
+                assert "period" in item, f"Monthly item missing 'period': {item}"
+                assert "total" in item, f"Monthly item missing 'total': {item}"
+                assert "by_service" in item, f"Monthly item missing 'by_service': {item}"
+                assert isinstance(item["total"], (int, float))
+                assert isinstance(item["by_service"], dict)
+
+    async def test_costs_requires_admin(self, live_token):
+        """MCP access tokens must not grant access to admin cost endpoints."""
+        async with httpx.AsyncClient(base_url=API_URL, timeout=30.0) as http:
+            resp = await http.get(
+                "/api/admin/costs",
+                headers={"Authorization": f"Bearer {live_token}"},
+            )
+            assert resp.status_code == 401

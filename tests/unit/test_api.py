@@ -94,6 +94,7 @@ def _setup_app_overrides(app, storage, claims):
     from hive.api import memories as memories_mod
     from hive.api import stats as stats_mod
     from hive.api import users as users_mod
+    from hive.api import versions as versions_mod
 
     def _override_mgmt_user():
         return claims
@@ -102,7 +103,7 @@ def _setup_app_overrides(app, storage, claims):
         return storage
 
     app.dependency_overrides[auth_mod.require_mgmt_user] = _override_mgmt_user
-    for mod in (memories_mod, clients_mod, stats_mod, users_mod):
+    for mod in (memories_mod, clients_mod, stats_mod, users_mod, versions_mod):
         app.dependency_overrides[mod._storage] = _override_storage
 
 
@@ -179,6 +180,51 @@ class TestHealth:
 
 
 # ---------------------------------------------------------------------------
+# OpenAPI schema + protected docs endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAPI:
+    def test_openapi_schema_is_non_empty(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/openapi.json")
+        assert resp.status_code == 200
+        schema = resp.json()
+        assert schema.get("info", {}).get("title") == "Hive Management API"
+        assert schema.get("paths"), "OpenAPI schema must define at least one path"
+
+    def test_docs_accessible_by_admin(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/docs")
+        assert resp.status_code == 200
+        assert b"swagger" in resp.content.lower()
+
+    def test_redoc_accessible_by_admin(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/redoc")
+        assert resp.status_code == 200
+        assert b"redoc" in resp.content.lower()
+
+    def test_docs_forbidden_for_non_admin(self, client):
+        tc, *_ = client
+        resp = tc.get("/docs")
+        assert resp.status_code == 403
+
+    def test_redoc_forbidden_for_non_admin(self, client):
+        tc, *_ = client
+        resp = tc.get("/redoc")
+        assert resp.status_code == 403
+
+    def test_docs_requires_auth(self, unauthed_client):
+        resp = unauthed_client.get("/docs")
+        assert resp.status_code in (401, 403)
+
+    def test_redoc_requires_auth(self, unauthed_client):
+        resp = unauthed_client.get("/redoc")
+        assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Auth failures
 # ---------------------------------------------------------------------------
 
@@ -226,6 +272,27 @@ class TestMemories:
             resp = tc.post("/api/memories", json={"key": "big", "value": "x" * 1000})
         assert resp.status_code == 413
         assert "too large" in resp.json()["detail"]
+
+    def test_create_returns_429_when_memory_quota_exceeded(self, client):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "0"}):
+            tc, *_ = client
+            resp = tc.post("/api/memories", json={"key": "blocked", "value": "v"})
+        assert resp.status_code == 429
+        assert "quota" in resp.json()["detail"].lower()
+
+    def test_update_does_not_check_quota(self, client):
+        """Updating an existing memory must not be blocked by quota."""
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "existing", "value": "v1"})
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "0"}):
+            resp = tc.post("/api/memories", json={"key": "existing", "value": "v2"})
+        assert resp.status_code == 200
 
     def test_update_oversized_returns_413(self, client):
         from unittest.mock import patch
@@ -371,6 +438,145 @@ class TestMemories:
 
 
 # ---------------------------------------------------------------------------
+# Memory TTL endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryTTL:
+    def test_create_with_ttl_returns_expires_at(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories", json={"key": "ttl-k", "value": "v", "ttl_seconds": 3600})
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["expires_at"] is not None
+
+    def test_create_without_ttl_expires_at_is_null(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories", json={"key": "no-ttl", "value": "v"})
+        assert resp.status_code == 201
+        assert resp.json()["expires_at"] is None
+
+    def test_upsert_with_ttl_updates_expires_at(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "upsert-ttl", "value": "v"})
+        resp = tc.post(
+            "/api/memories", json={"key": "upsert-ttl", "value": "v2", "ttl_seconds": 7200}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] is not None
+
+    def test_patch_sets_ttl(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "patch-ttl", "value": "v"}).json()["memory_id"]
+        resp = tc.patch(f"/api/memories/{mid}", json={"ttl_seconds": 3600})
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] is not None
+
+    def test_patch_clears_ttl_with_zero(self, client):
+        tc, *_ = client
+        mid = tc.post(
+            "/api/memories", json={"key": "clear-ttl", "value": "v", "ttl_seconds": 3600}
+        ).json()["memory_id"]
+        resp = tc.patch(f"/api/memories/{mid}", json={"ttl_seconds": 0})
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Memory version endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestVersionEndpoints:
+    def test_list_versions_empty(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "ver-k", "value": "v1"}).json()["memory_id"]
+        resp = tc.get(f"/api/memories/{mid}/versions")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_list_versions_after_update(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "ver-upd", "value": "v1"}).json()["memory_id"]
+        tc.patch(f"/api/memories/{mid}", json={"value": "v2"})
+        resp = tc.get(f"/api/memories/{mid}/versions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["value"] == "v1"
+
+    def test_list_versions_memory_not_found(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/memories/no-such-id/versions")
+        assert resp.status_code == 404
+
+    def test_list_versions_non_admin_cannot_see_other_user_memory(self, client):
+        tc, storage, _ = client
+        from hive.models import Memory
+
+        other = Memory(key="other", value="v", owner_client_id="x", owner_user_id="other-user")
+        storage.put_memory(other)
+        resp = tc.get(f"/api/memories/{other.memory_id}/versions")
+        assert resp.status_code == 404
+
+    def test_restore_version(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "restore-k", "value": "v1"}).json()["memory_id"]
+        tc.patch(f"/api/memories/{mid}", json={"value": "v2"})
+        versions = tc.get(f"/api/memories/{mid}/versions").json()
+        assert len(versions) == 1
+        vts = versions[0]["version_timestamp"]
+        resp = tc.post(f"/api/memories/{mid}/restore?version_timestamp={vts}")
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "v1"
+        # Verify the memory was actually restored
+        current = tc.get(f"/api/memories/{mid}").json()
+        assert current["value"] == "v1"
+
+    def test_restore_memory_not_found(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories/no-such-id/restore?version_timestamp=ts")
+        assert resp.status_code == 404
+
+    def test_restore_version_not_found(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "rv-nf", "value": "v"}).json()["memory_id"]
+        resp = tc.post(f"/api/memories/{mid}/restore?version_timestamp=no-such-ts")
+        assert resp.status_code == 404
+
+    def test_restore_non_admin_cannot_restore_other_user_memory(self, client):
+        tc, storage, _ = client
+        from hive.models import Memory
+
+        other = Memory(key="other2", value="v", owner_client_id="x", owner_user_id="other-user")
+        storage.put_memory(other)
+        resp = tc.post(f"/api/memories/{other.memory_id}/restore?version_timestamp=ts")
+        assert resp.status_code == 404
+
+    def test_versions_dep_returns_storage(self):
+        import boto3
+        from moto import mock_aws
+
+        with mock_aws():
+            boto3.client("dynamodb", region_name="us-east-1").create_table(
+                TableName="hive",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            from hive.api.versions import _storage
+            from hive.storage import HiveStorage
+
+            assert isinstance(_storage(), HiveStorage)
+
+
+# ---------------------------------------------------------------------------
 # Client endpoints
 # ---------------------------------------------------------------------------
 
@@ -421,6 +627,16 @@ class TestClients:
         resp = tc.delete("/api/clients/no-such-id")
         assert resp.status_code == 404
 
+    def test_create_returns_429_when_client_quota_exceeded(self, client):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_CLIENTS": "0"}):
+            tc, *_ = client
+            resp = tc.post("/api/clients", json={"client_name": "Blocked"})
+        assert resp.status_code == 429
+        assert "quota" in resp.json()["detail"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Stats + activity endpoints
@@ -438,6 +654,28 @@ class TestStats:
         assert "total_clients" in data
         assert "events_today" in data
         assert "events_last_7_days" in data
+
+    def test_get_stats_includes_quota_limits_for_user(self, client):
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        with patch.dict(
+            os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "500", "HIVE_QUOTA_MAX_CLIENTS": "10"}
+        ):
+            resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] == 500
+        assert data["client_limit"] == 10
+
+    def test_get_stats_admin_has_no_quota_limits(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] is None
+        assert data["client_limit"] is None
 
     def test_get_stats_admin_sees_all(self, admin_client):
         """Admin role passes owner_user_id=None so all items are counted."""
@@ -526,6 +764,56 @@ class TestUsers:
     def test_delete_user_non_admin_returns_403(self, client):
         tc, *_ = client
         resp = tc.delete(f"/api/users/{_TEST_USER_ID}")
+        assert resp.status_code == 403
+
+    def test_update_user_role_admin(self, admin_client):
+        tc, storage, _ = admin_client
+        from hive.models import User
+
+        u = User(email="promote@example.com", display_name="Promotee", role="user")
+        storage.put_user(u)
+        resp = tc.patch(f"/api/users/{u.user_id}", json={"role": "admin"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["role"] == "admin"
+        assert storage.get_user_by_id(u.user_id).role == "admin"
+
+    def test_update_user_role_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.patch("/api/users/no-such-user", json={"role": "admin"})
+        assert resp.status_code == 404
+
+    def test_update_user_role_non_admin_returns_403(self, client):
+        tc, *_ = client
+        resp = tc.patch(f"/api/users/{_TEST_USER_ID}", json={"role": "admin"})
+        assert resp.status_code == 403
+
+    def test_update_user_role_invalid_role_returns_422(self, admin_client):
+        tc, storage, _ = admin_client
+        from hive.models import User
+
+        u = User(email="invalid@example.com", display_name="Invalid")
+        storage.put_user(u)
+        resp = tc.patch(f"/api/users/{u.user_id}", json={"role": "superuser"})
+        assert resp.status_code == 422
+
+    def test_get_user_stats_admin(self, admin_client):
+        tc, storage, admin_id = admin_client
+        resp = tc.get(f"/api/users/{admin_id}/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == admin_id
+        assert "memory_count" in data
+        assert "client_count" in data
+
+    def test_get_user_stats_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/users/no-such-user/stats")
+        assert resp.status_code == 404
+
+    def test_get_user_stats_non_admin_returns_403(self, client):
+        tc, _, user_id = client
+        resp = tc.get(f"/api/users/{user_id}/stats")
         assert resp.status_code == 403
 
 
@@ -702,7 +990,7 @@ class TestRequireTokenPath:
         from hive.api._auth import require_admin
 
         claims = {"sub": "u1", "role": "admin"}
-        result = await require_admin(claims=claims)
+        result = require_admin(claims=claims)
         assert result == claims
 
 
@@ -1108,3 +1396,169 @@ class TestOriginVerifyMiddleware:
             tc = TestClient(app, raise_server_exceptions=False)
             resp = tc.get("/health")
         assert resp.status_code == 200
+
+
+class TestBulkDeleteByTag:
+    def test_delete_by_tag_returns_count(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "a", "value": "1", "tags": ["bulk"]})
+        tc.post("/api/memories", json={"key": "b", "value": "2", "tags": ["bulk"]})
+        tc.post("/api/memories", json={"key": "c", "value": "3", "tags": ["other"]})
+        resp = tc.delete("/api/memories", params={"tag": "bulk"})
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 2
+
+    def test_delete_by_tag_requires_tag_param(self, client):
+        tc, *_ = client
+        resp = tc.delete("/api/memories")
+        assert resp.status_code == 400
+
+    def test_delete_by_tag_non_admin_only_owns_own(self, client):
+        tc, storage, claims = client
+        # Create memory owned by another user
+        from hive.models import Memory
+
+        other = Memory(
+            key="other-k", value="v", tags=["t"], owner_client_id="c2", owner_user_id="other-user"
+        )
+        storage.put_memory(other)
+        tc.post("/api/memories", json={"key": "mine", "value": "v", "tags": ["t"]})
+        resp = tc.delete("/api/memories", params={"tag": "t"})
+        assert resp.status_code == 200
+        # Only the owned memory should be deleted
+        assert resp.json()["deleted"] == 1
+        assert storage.get_memory_by_key("other-k") is not None
+
+    def test_delete_by_tag_requires_auth(self, unauthed_client):
+        resp = unauthed_client.delete("/api/memories", params={"tag": "t"})
+        assert resp.status_code in (401, 403)
+
+
+class TestExportMemories:
+    def test_export_returns_jsonl(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "exp-a", "value": "1", "tags": ["e"]})
+        tc.post("/api/memories", json={"key": "exp-b", "value": "2", "tags": ["e"]})
+        resp = tc.get("/api/memories/export")
+        assert resp.status_code == 200
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) >= 2
+
+    def test_export_with_tag_filter(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "in", "value": "1", "tags": ["export-tag"]})
+        tc.post("/api/memories", json={"key": "out", "value": "2", "tags": ["other"]})
+        resp = tc.get("/api/memories/export", params={"tag": "export-tag"})
+        assert resp.status_code == 200
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) == 1
+        import json as _json
+
+        assert _json.loads(lines[0])["key"] == "in"
+
+    def test_export_content_disposition(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/memories/export")
+        assert resp.status_code == 200
+        assert "attachment" in resp.headers.get("content-disposition", "")
+
+    def test_export_requires_auth(self, unauthed_client):
+        resp = unauthed_client.get("/api/memories/export")
+        assert resp.status_code in (401, 403)
+
+
+class TestImportMemories:
+    def test_import_creates_memories(self, client):
+        import json as _json
+
+        tc, storage, _ = client
+        lines = "\n".join(
+            [
+                _json.dumps({"key": "imp-a", "value": "v1", "tags": ["imp"]}),
+                _json.dumps({"key": "imp-b", "value": "v2", "tags": []}),
+            ]
+        )
+        resp = tc.post(
+            "/api/memories/import", content=lines, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == 2
+        assert data["updated"] == 0
+        assert data["errors"] == []
+
+    def test_import_updates_existing(self, client):
+        import json as _json
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "upsert-k", "value": "old"})
+        line = _json.dumps({"key": "upsert-k", "value": "new", "tags": []})
+        resp = tc.post(
+            "/api/memories/import", content=line, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["updated"] == 1
+        assert data["created"] == 0
+
+    def test_import_records_errors_for_bad_lines(self, client):
+        tc, *_ = client
+        body = "not valid json\n"
+        resp = tc.post(
+            "/api/memories/import", content=body, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["errors"]) == 1
+
+    def test_import_skips_empty_lines(self, client):
+        import json as _json
+
+        tc, *_ = client
+        body = "\n" + _json.dumps({"key": "skip-empty", "value": "v", "tags": []}) + "\n\n"
+        resp = tc.post(
+            "/api/memories/import", content=body, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["created"] == 1
+
+    def test_import_requires_auth(self, unauthed_client):
+        resp = unauthed_client.post(
+            "/api/memories/import", content="{}", headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_import_records_error_for_oversized_create(self, client):
+        import json as _json
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        line = _json.dumps({"key": "big-new", "value": "x" * 1000, "tags": []})
+        with patch.object(storage, "put_memory", side_effect=ValueError("too large")):
+            resp = tc.post(
+                "/api/memories/import",
+                content=line,
+                headers={"Content-Type": "application/x-ndjson"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["errors"]) == 1
+        assert data["created"] == 0
+
+    def test_import_records_error_for_oversized_update(self, client):
+        import json as _json
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        tc.post("/api/memories", json={"key": "big-exist", "value": "small"})
+        line = _json.dumps({"key": "big-exist", "value": "x" * 1000, "tags": []})
+        with patch.object(storage, "put_memory", side_effect=ValueError("too large")):
+            resp = tc.post(
+                "/api/memories/import",
+                content=line,
+                headers={"Content-Type": "application/x-ndjson"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["errors"]) == 1
+        assert data["updated"] == 0

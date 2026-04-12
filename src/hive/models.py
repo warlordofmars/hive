@@ -10,6 +10,7 @@ DynamoDB single-table design:
   Activity log:  PK=LOG#{date}#{hour}     SK={timestamp}#{event_id}  (hour sharding)
   User items:    PK=USER#{user_id}        SK=META
   Mgmt state:    PK=MGMT_STATE#{state}    SK=META          (TTL enabled)
+  API key items: PK=APIKEY#{key_id}       SK=META
 
 GSIs:
   TagIndex:       PK=tag, SK=memory_id    — for list_memories(tag)
@@ -25,6 +26,8 @@ from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+_DEFAULT_SCOPE = "memories:read memories:write"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,6 +58,7 @@ class Memory(BaseModel):
     updated_at: datetime = Field(default_factory=_now_utc)
     owner_client_id: str  # which OAuth client owns this memory
     owner_user_id: str | None = None  # which user owns this memory (None for pre-migration items)
+    expires_at: datetime | None = None  # optional TTL; None means never expires
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -78,6 +82,9 @@ class Memory(BaseModel):
         }
         if self.owner_user_id is not None:
             item["owner_user_id"] = self.owner_user_id
+        if self.expires_at is not None:
+            item["expires_at"] = self.expires_at.isoformat()
+            item["ttl"] = int(self.expires_at.timestamp())
         return item
 
     def to_dynamo_tag_items(self) -> list[dict[str, Any]]:
@@ -100,6 +107,9 @@ class Memory(BaseModel):
 
     @classmethod
     def from_dynamo(cls, item: dict[str, Any]) -> Memory:
+        expires_at = None
+        if ea := item.get("expires_at"):
+            expires_at = datetime.fromisoformat(ea)
         return cls(
             memory_id=item["memory_id"],
             key=item["key"],
@@ -109,7 +119,12 @@ class Memory(BaseModel):
             updated_at=datetime.fromisoformat(item["updated_at"]),
             owner_client_id=item["owner_client_id"],
             owner_user_id=item.get("owner_user_id"),
+            expires_at=expires_at,
         )
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and _now_utc() >= self.expires_at
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +147,7 @@ class OAuthClient(BaseModel):
     redirect_uris: list[str] = Field(default_factory=list)
     grant_types: list[str] = Field(default_factory=lambda: ["authorization_code"])
     response_types: list[str] = Field(default_factory=lambda: ["code"])
-    scope: str = "memories:read memories:write"
+    scope: str = _DEFAULT_SCOPE
     token_endpoint_auth_method: str = (
         "none"  # public clients: none; confidential: client_secret_post
     )
@@ -177,7 +192,7 @@ class OAuthClient(BaseModel):
             redirect_uris=item.get("redirect_uris", []),
             grant_types=item.get("grant_types", ["authorization_code"]),
             response_types=item.get("response_types", ["code"]),
-            scope=item.get("scope", "memories:read memories:write"),
+            scope=item.get("scope", _DEFAULT_SCOPE),
             token_endpoint_auth_method=item.get("token_endpoint_auth_method", "none"),
             created_at=datetime.fromisoformat(item["created_at"]),
             owner_user_id=item.get("owner_user_id"),
@@ -420,6 +435,7 @@ class EventType(str, Enum):
     token_revoked = "token_revoked"
     client_registered = "client_registered"
     client_deleted = "client_deleted"
+    account_deleted = "account_deleted"
 
 
 class ActivityEvent(BaseModel):
@@ -458,6 +474,58 @@ class ActivityEvent(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Memory version (snapshot of a memory value before overwrite)
+# ---------------------------------------------------------------------------
+
+
+class MemoryVersion(BaseModel):
+    """A point-in-time snapshot of a memory, written before an overwrite."""
+
+    memory_id: str
+    version_timestamp: str  # ISO-formatted UTC timestamp used as SK
+    key: str
+    value: str
+    tags: list[str]
+    recorded_at: datetime
+
+    def to_dynamo(self) -> dict[str, Any]:
+        return {
+            "PK": f"MEMORY#{self.memory_id}",
+            "SK": f"VERSION#{self.version_timestamp}",
+            "memory_id": self.memory_id,
+            "version_timestamp": self.version_timestamp,
+            "key": self.key,
+            "value": self.value,
+            "tags": self.tags,
+            "recorded_at": self.recorded_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> MemoryVersion:
+        return cls(
+            memory_id=item["memory_id"],
+            version_timestamp=item["version_timestamp"],
+            key=item["key"],
+            value=item["value"],
+            tags=item.get("tags", []),
+            recorded_at=datetime.fromisoformat(item["recorded_at"]),
+        )
+
+    @classmethod
+    def from_memory(cls, memory: Memory) -> MemoryVersion:
+        """Snapshot the current state of a memory."""
+        now = _now_utc()
+        return cls(
+            memory_id=memory.memory_id,
+            version_timestamp=now.strftime("%Y%m%dT%H%M%S%f"),
+            key=memory.key,
+            value=memory.value,
+            tags=memory.tags,
+            recorded_at=now,
+        )
+
+
+# ---------------------------------------------------------------------------
 # API request / response schemas (used by FastAPI routes)
 # ---------------------------------------------------------------------------
 
@@ -466,11 +534,17 @@ class MemoryCreate(BaseModel):
     key: str
     value: str
     tags: list[str] = Field(default_factory=list)
+    ttl_seconds: int | None = Field(
+        default=None, ge=1, description="Seconds until expiry. None = never expires."
+    )
 
 
 class MemoryUpdate(BaseModel):
     value: str | None = None
     tags: list[str] | None = None
+    ttl_seconds: int | None = Field(
+        default=None, ge=0, description="Seconds until expiry. 0 = clear TTL. None = no change."
+    )
 
 
 class MemoryResponse(BaseModel):
@@ -480,6 +554,7 @@ class MemoryResponse(BaseModel):
     tags: list[str]
     created_at: datetime
     updated_at: datetime
+    expires_at: datetime | None = None
 
     @classmethod
     def from_memory(cls, m: Memory) -> MemoryResponse:
@@ -490,6 +565,27 @@ class MemoryResponse(BaseModel):
             tags=m.tags,
             created_at=m.created_at,
             updated_at=m.updated_at,
+            expires_at=m.expires_at,
+        )
+
+
+class MemoryVersionResponse(BaseModel):
+    memory_id: str
+    version_timestamp: str
+    key: str
+    value: str
+    tags: list[str]
+    recorded_at: datetime
+
+    @classmethod
+    def from_version(cls, v: MemoryVersion) -> MemoryVersionResponse:
+        return cls(
+            memory_id=v.memory_id,
+            version_timestamp=v.version_timestamp,
+            key=v.key,
+            value=v.value,
+            tags=v.tags,
+            recorded_at=v.recorded_at,
         )
 
 
@@ -500,7 +596,7 @@ class ClientRegistrationRequest(BaseModel):
     redirect_uris: list[str] = Field(default_factory=list)
     grant_types: list[str] = Field(default_factory=lambda: ["authorization_code"])
     response_types: list[str] = Field(default_factory=lambda: ["code"])
-    scope: str = "memories:read memories:write"
+    scope: str = _DEFAULT_SCOPE
     token_endpoint_auth_method: str = "none"
 
 
@@ -548,6 +644,8 @@ class StatsResponse(BaseModel):
     total_users: int | None = None  # admin only
     events_today: int
     events_last_7_days: int
+    memory_limit: int | None = None  # None = unlimited (admin or exempt)
+    client_limit: int | None = None  # None = unlimited (admin or exempt)
 
 
 class PagedResponse(BaseModel):
@@ -577,6 +675,95 @@ class UserResponse(BaseModel):
             created_at=u.created_at,
             last_login_at=u.last_login_at,
         )
+
+
+# ---------------------------------------------------------------------------
+# API Keys (long-lived auth alternative to OAuth)
+# ---------------------------------------------------------------------------
+
+
+class ApiKey(BaseModel):
+    """A long-lived API key for server-to-server authentication."""
+
+    key_id: str = Field(default_factory=_new_id)
+    owner_user_id: str
+    name: str
+    key_hash: str  # SHA-256 hex digest — never store plaintext
+    scope: str = "memories:read memories:write"
+    created_at: datetime = Field(default_factory=_now_utc)
+    expires_at: datetime | None = None
+    revoked: bool = False
+
+    def to_dynamo(self) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "PK": f"APIKEY#{self.key_id}",
+            "SK": "META",
+            "key_id": self.key_id,
+            "owner_user_id": self.owner_user_id,
+            "name": self.name,
+            "key_hash": self.key_hash,
+            "scope": self.scope,
+            "created_at": self.created_at.isoformat(),
+            "revoked": self.revoked,
+        }
+        if self.expires_at is not None:
+            item["expires_at"] = self.expires_at.isoformat()
+            item["ttl"] = int(self.expires_at.timestamp())
+        return item
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> ApiKey:
+        expires_at = None
+        if ea := item.get("expires_at"):
+            expires_at = datetime.fromisoformat(ea)
+        return cls(
+            key_id=item["key_id"],
+            owner_user_id=item["owner_user_id"],
+            name=item["name"],
+            key_hash=item["key_hash"],
+            scope=item.get("scope", "memories:read memories:write"),
+            created_at=datetime.fromisoformat(item["created_at"]),
+            expires_at=expires_at,
+            revoked=item.get("revoked", False),
+        )
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and _now_utc() >= self.expires_at
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.revoked and not self.is_expired
+
+
+class ApiKeyResponse(BaseModel):
+    """Public metadata for an API key — never includes the plaintext key or hash."""
+
+    key_id: str
+    owner_user_id: str
+    name: str
+    scope: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    revoked: bool
+
+    @classmethod
+    def from_api_key(cls, k: ApiKey) -> ApiKeyResponse:
+        return cls(
+            key_id=k.key_id,
+            owner_user_id=k.owner_user_id,
+            name=k.name,
+            scope=k.scope,
+            created_at=k.created_at,
+            expires_at=k.expires_at,
+            revoked=k.revoked,
+        )
+
+
+class ApiKeyCreateResponse(ApiKeyResponse):
+    """Returned only on key creation — includes the plaintext key (shown once)."""
+
+    plaintext_key: str
 
 
 class MemorySearchResult(BaseModel):

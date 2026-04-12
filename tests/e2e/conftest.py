@@ -19,23 +19,32 @@ API_URL = os.environ.get("HIVE_API_URL", "")
 ADMIN_EMAIL = os.environ.get("HIVE_ADMIN_EMAIL", "")
 
 
-@pytest.fixture(scope="function")
-async def live_token() -> str:
-    """Issue a fresh access token via DCR + PKCE against the deployed API."""
+def _pkce_pair() -> tuple[str, str]:
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+async def _issue_token(client_name: str) -> str:
+    """Issue a fresh access token via DCR + PKCE.
+
+    Raises pytest.fail (not skip) if the server redirects to Google, since
+    HIVE_BYPASS_GOOGLE_AUTH must be active in any environment where MCP e2e
+    tests are expected to run.
+    """
     if not API_URL:
         pytest.skip("HIVE_API_URL not set")
 
-    async with httpx.AsyncClient(base_url=API_URL) as http:
+    verifier, challenge = _pkce_pair()
+
+    async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False) as http:
         reg = await http.post(
             "/oauth/register",
-            json={"client_name": "E2E Session Client", "redirect_uris": ["http://localhost/cb"]},
+            json={"client_name": client_name, "redirect_uris": ["http://localhost/cb"]},
         )
         reg.raise_for_status()
         client_id = reg.json()["client_id"]
-
-        verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
-        digest = hashlib.sha256(verifier.encode()).digest()
-        challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
         auth = await http.get(
             "/oauth/authorize",
@@ -46,11 +55,13 @@ async def live_token() -> str:
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
             },
-            follow_redirects=False,
         )
         location = auth.headers.get("location", "")
         if "accounts.google.com" in location:
-            pytest.skip("Google OAuth required — cannot complete token flow in CI without bypass")
+            pytest.fail(
+                "Google OAuth redirect — HIVE_BYPASS_GOOGLE_AUTH must be enabled "
+                "in any environment where MCP e2e tests are expected to run."
+            )
         code = location.split("code=")[1].split("&")[0]
 
         token_resp = await http.post(
@@ -67,14 +78,28 @@ async def live_token() -> str:
         return token_resp.json()["access_token"]
 
 
+@pytest.fixture(scope="function")
+async def live_token() -> str:
+    """Issue a fresh access token via DCR + PKCE against the deployed API."""
+    return await _issue_token("E2E Session Client")
+
+
+@pytest.fixture(scope="function")
+async def live_token_b() -> str:
+    """Issue a second fresh access token from a distinct OAuth client registration.
+
+    Used by isolation tests to verify that two separate clients cannot access
+    each other's memories.
+    """
+    return await _issue_token("E2E Session Client B")
+
+
 def issue_token_sync() -> str:
-    """Synchronous version for use in non-async fixtures."""
+    """Synchronous version for use in non-async fixtures (e.g. Playwright browser_page)."""
     if not API_URL:
         pytest.skip("HIVE_API_URL not set")
 
-    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
-    digest = hashlib.sha256(verifier.encode()).digest()
-    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    verifier, challenge = _pkce_pair()
 
     with httpx.Client(base_url=API_URL, follow_redirects=False) as http:
         reg = http.post(

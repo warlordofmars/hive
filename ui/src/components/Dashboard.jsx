@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { BarChart2, TrendingUp } from "lucide-react";
+import { AlertTriangle, BarChart2, CheckCircle, TrendingUp, XCircle } from "lucide-react";
 import { api } from "../api.js";
 
 // Brand-aligned tool colors: navy/orange palette + complementary tones
@@ -247,6 +247,56 @@ function EmptyState({ icon: Icon, message }) {
 }
 
 // ------------------------------------------------------------------
+// Alarm status
+// ------------------------------------------------------------------
+
+export const ALARM_STATE_STYLE = {
+  OK:               { icon: CheckCircle,  color: "var(--success)" },
+  ALARM:            { icon: XCircle,      color: "var(--danger)" },
+  INSUFFICIENT_DATA:{ icon: AlertTriangle, color: "var(--text-muted)" },
+};
+
+export function AlarmBadge({ alarm }) {
+  const style = ALARM_STATE_STYLE[alarm.state] ?? ALARM_STATE_STYLE.INSUFFICIENT_DATA;
+  const Icon = style.icon;
+  const label = alarm.description || alarm.name.replace(/^Hive-[^-]+-/, "");
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        padding: "7px 12px",
+        fontSize: 13,
+      }}
+    >
+      <Icon size={14} style={{ color: style.color, flexShrink: 0 }} />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function AlarmStatusRow({ alarms, loading, error }) {
+  if (loading && !alarms) {
+    return (
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        {[1, 2, 3, 4].map((i) => <SkeletonBlock key={i} height={36} width={160} />)}
+      </div>
+    );
+  }
+  if (error) return <ErrorBanner msg={error} />;
+  if (!alarms?.alarms?.length) return null;
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+      {alarms.alarms.map((a) => <AlarmBadge key={a.name} alarm={a} />)}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------
 // Chart sections (extracted to reduce cognitive complexity)
 // ------------------------------------------------------------------
 
@@ -255,7 +305,7 @@ function ToolAreaChart({ loading, metrics, data, error, tools, xAxisProps, heigh
   if (data.length === 0) return error ? null : <EmptyState icon={TrendingUp} message={emptyMessage} />;
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={data} margin={{ bottom: 10 }}>
+      <AreaChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 60 }}>
         <defs>
           {tools.map((t) => (
             <linearGradient key={t} id={`${gradientPrefix}_${t}`} x1="0" y1="0" x2="0" y2="1">
@@ -282,7 +332,7 @@ function DailyCostChart({ loading, costs, data, error }) {
   if (data.length === 0) return error ? null : <EmptyState icon={BarChart2} message="No daily cost data available yet." />;
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <AreaChart data={data} margin={{ bottom: 10 }}>
+      <AreaChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 60 }}>
         <defs>
           <linearGradient id="daily_cost_grad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="#e8a020" stopOpacity={0.4} />
@@ -290,7 +340,7 @@ function DailyCostChart({ loading, costs, data, error }) {
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-        <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--text-muted)" }} interval="preserveStartEnd" angle={-25} textAnchor="end" height={40} />
+        <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--text-muted)" }} interval="preserveStartEnd" angle={-45} textAnchor="end" height={70} />
         <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
         <Tooltip content={<CustomDailyCostTooltip />} />
         <Area type="monotone" dataKey="total" stroke="#e8a020" fill="url(#daily_cost_grad)" strokeWidth={2} dot={false} animationDuration={400} />
@@ -304,9 +354,9 @@ function MonthlyCostChart({ loading, costs, data, error, services }) {
   if (data.length === 0) return error ? null : <EmptyState icon={BarChart2} message="No cost data available yet." />;
   return (
     <ResponsiveContainer width="100%" height={260}>
-      <BarChart data={data} margin={{ bottom: 10 }}>
+      <BarChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 60 }}>
         <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-        <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+        <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--text-muted)" }} angle={-45} textAnchor="end" height={70} />
         <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
         <Tooltip content={<CustomCostTooltip />} />
         <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
@@ -327,8 +377,10 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [costs, setCosts] = useState(null);
+  const [alarms, setAlarms] = useState(null);
   const [metricsError, setMetricsError] = useState("");
   const [costsError, setCostsError] = useState("");
+  const [alarmsError, setAlarmsError] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const relativeTime = useRelativeTime(lastRefreshed);
@@ -340,11 +392,13 @@ export default function Dashboard() {
     setLoading(true);
     setMetricsError("");
     setCostsError("");
+    setAlarmsError("");
 
-    const [statsRes, metricsRes, costsRes] = await Promise.allSettled([
+    const [statsRes, metricsRes, costsRes, alarmsRes] = await Promise.allSettled([
       api.getStats(),
       api.getMetrics(period),
       api.getCosts(),
+      api.getAlarms(),
     ]);
 
     if (statsRes.status === "fulfilled") setStats(statsRes.value);
@@ -352,6 +406,8 @@ export default function Dashboard() {
     else setMetricsError(metricsRes.reason?.message ?? "Failed to load metrics");
     if (costsRes.status === "fulfilled") setCosts(costsRes.value);
     else setCostsError(costsRes.reason?.message ?? "Failed to load costs");
+    if (alarmsRes.status === "fulfilled") setAlarms(alarmsRes.value);
+    else setAlarmsError(alarmsRes.reason?.message ?? "Failed to load alarms");
 
     setLastRefreshed(new Date());
     setLoading(false);
@@ -390,9 +446,9 @@ export default function Dashboard() {
     dataKey: "ts",
     tick: { fontSize: 11, fill: "var(--text-muted)" },
     interval: "preserveStartEnd",
-    angle: -25,
+    angle: -45,
     textAnchor: "end",
-    height: 40,
+    height: 70,
   };
 
   return (
@@ -447,6 +503,9 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* Alarm status */}
+      <AlarmStatusRow alarms={alarms} loading={loading} error={alarmsError} />
 
       {/* Summary stats */}
       {loading && !stats ? (

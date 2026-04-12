@@ -133,7 +133,7 @@ class VectorStore:
                 keys=[memory_id],
             )
         except Exception:
-            logger.warning(
+            logger.warning(  # NOSONAR — memory_id and client_id are internal identifiers, not user content
                 "Vector delete failed for memory_id '%s' (client %s)",
                 memory_id,
                 client_id,

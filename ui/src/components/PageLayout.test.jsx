@@ -1,5 +1,5 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import PageLayout from "./PageLayout.jsx";
@@ -10,8 +10,8 @@ vi.mock("react-router-dom", async (importOriginal) => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
-function renderInRouter(ui) {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+function renderInRouter(ui, path = "/") {
+  return render(<MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>);
 }
 
 describe("PageLayout", () => {
@@ -80,5 +80,32 @@ describe("PageLayout", () => {
     expect(screen.getAllByText("FAQ").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Use cases").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Clients").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("active nav link has orange bottom border for current page", async () => {
+    const { container } = await act(async () =>
+      renderInRouter(<PageLayout><span /></PageLayout>, "/pricing")
+    );
+    const header = container.querySelector("header");
+    const pricingLink = within(header).getByRole("link", { name: "Pricing" });
+    expect(pricingLink.style.borderBottomColor).toBe("rgb(232, 160, 32)");
+  });
+
+  it("inactive nav links have transparent bottom border", async () => {
+    const { container } = await act(async () =>
+      renderInRouter(<PageLayout><span /></PageLayout>, "/pricing")
+    );
+    const header = container.querySelector("header");
+    const faqLink = within(header).getByRole("link", { name: "FAQ" });
+    expect(faqLink.style.borderBottomColor).toBe("transparent");
+  });
+
+  it("Sign in button uses nav variant with visible border", async () => {
+    await act(async () =>
+      renderInRouter(<PageLayout><span /></PageLayout>)
+    );
+    const btn = screen.getByRole("button", { name: "Sign in" });
+    expect(btn.className).toContain("border-white/60");
+    expect(btn.className).toContain("marketing-signin-btn");
   });
 });

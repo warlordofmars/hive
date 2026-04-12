@@ -48,6 +48,35 @@ def browser_page():
         browser.close()
 
 
+class TestMarketingNav:
+    def test_signin_btn_border_is_visible(self):
+        """Sign in button on marketing navbar has a visible border (not transparent).
+
+        Asserts the computed border-color so CSS regressions can't sneak past a
+        class-name check.  The nav variant bakes border-white/60 into the variant
+        itself — no className override needed.
+        """
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"{UI_URL}/", timeout=30_000, wait_until="networkidle")
+            signin_btn = page.locator(".marketing-signin-btn")
+            if not signin_btn.is_visible():
+                browser.close()
+                pytest.skip("Sign in button not visible (may be mobile viewport)")
+            border_color = signin_btn.evaluate("el => getComputedStyle(el).borderColor")
+            import re
+
+            nums = [float(x) for x in re.findall(r"[\d.]+", border_color)]
+            assert len(nums) >= 4 and nums[3] > 0, (
+                f"Sign in button border is transparent: {border_color!r}. "
+                "Check that the nav variant in button.jsx applies border-white/60."
+            )
+            browser.close()
+
+
 class TestUIE2E:
     def test_memories_tab_visible(self, browser_page):
         page = browser_page
@@ -84,10 +113,29 @@ class TestUIE2E:
             page.locator("button:has-text('Save')").click()
         assert resp_info.value.ok, f"POST /api/memories failed: {resp_info.value.status}"
 
-        # Filter by the unique tag so only this memory is in the list.
-        page.locator("input[placeholder='Filter by tag']").fill(unique_tag)
-        page.wait_for_selector(f"text={memory_key}", timeout=30_000)
-        assert page.locator(f"text={memory_key}").first.is_visible()
+        # Wait for the list to reload after save.
+        page.wait_for_load_state("networkidle")
+
+        # Apply tag filter and retry to handle DynamoDB GSI eventual consistency.
+        # The TagIndex GSI may not immediately reflect a new write; if the filtered
+        # list comes back empty, clear the chip and reapply the filter until the
+        # memory appears (or we exhaust retries).
+        for attempt in range(6):
+            # If a chip is already showing, clear it first so we can re-type.
+            if page.locator("[aria-label='Clear tag filter']").count() > 0:
+                page.locator("[aria-label='Clear tag filter']").click()
+                page.wait_for_selector("input[placeholder='Filter by tag']")
+            tag_input = page.locator("input[placeholder='Filter by tag']")
+            tag_input.fill(unique_tag)
+            tag_input.press("Enter")
+            page.wait_for_load_state("networkidle")
+            if page.locator(f"text={memory_key}").count() > 0:
+                break
+            if attempt < 5:
+                time.sleep(5)  # wait for GSI propagation before retrying
+        assert page.locator(f"text={memory_key}").first.is_visible(), (
+            f"Memory '{memory_key}' not visible after filtering by tag '{unique_tag}'"
+        )
 
     def test_clients_tab(self, browser_page):
         page = browser_page

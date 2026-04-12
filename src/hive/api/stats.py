@@ -6,12 +6,13 @@ Usage stats and activity log endpoints for the Hive management API.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 
 from hive.api._auth import require_mgmt_user
 from hive.models import PagedResponse, StatsResponse
+from hive.quota import _exempt_users, get_client_limit, get_memory_limit
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["stats"])
@@ -24,10 +25,15 @@ def _storage() -> HiveStorage:
     return HiveStorage()
 
 
-@router.get("/stats", response_model=StatsResponse)
+@router.get(
+    "/stats",
+    summary="Get usage statistics",
+    description="Return summary counts for memories, clients, and activity events. Admins see platform-wide totals; non-admins see only their own data.",
+    responses={401: {"description": "Unauthorized"}},
+)
 async def get_stats(
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> StatsResponse:
     owner_user_id = None if claims.get("role") == "admin" else claims["sub"]
     today = date.today()
@@ -37,29 +43,37 @@ async def get_stats(
     events_7 = storage.get_events_for_dates(last_7, limit=10000)
 
     is_admin = claims.get("role") == "admin"
+    is_exempt = claims["sub"] in _exempt_users()
     return StatsResponse(
         total_memories=storage.count_memories(owner_user_id=owner_user_id),
         total_clients=storage.count_clients(owner_user_id=owner_user_id),
         total_users=storage.count_users() if is_admin else None,
         events_today=len(events_today),
         events_last_7_days=len(events_7),
+        memory_limit=None if (is_admin or is_exempt) else get_memory_limit(),
+        client_limit=None if (is_admin or is_exempt) else get_client_limit(),
     )
 
 
-@router.get("/activity", response_model=PagedResponse)
+@router.get(
+    "/activity",
+    summary="Get activity log",
+    description="Return recent activity events (memory creates, updates, deletes, client registrations, etc.) for the configured number of days.",
+    responses={401: {"description": "Unauthorized"}},
+)
 async def get_activity(
-    days: int = Query(7, ge=1, le=90, description="Number of days of history to return"),
-    limit: int = Query(
-        _ACTIVITY_LIMIT_DEFAULT,
-        ge=1,
-        le=_ACTIVITY_LIMIT_MAX,
-        description="Max events to return",
-    ),
-    claims: dict[str, Any] = Depends(require_mgmt_user),
-    storage: HiveStorage = Depends(_storage),
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    days: Annotated[int, Query(ge=1, le=90, description="Number of days of history to return")] = 7,
+    limit: Annotated[
+        int, Query(ge=1, le=_ACTIVITY_LIMIT_MAX, description="Max events to return")
+    ] = _ACTIVITY_LIMIT_DEFAULT,
 ) -> PagedResponse:
     today = date.today()
-    dates = [(today - timedelta(days=i)).isoformat() for i in range(days)]
+    dates = [
+        (today - timedelta(days=i)).isoformat()
+        for i in range(days)  # NOSONAR — days bounded by FastAPI Query(ge=1, le=90)
+    ]
     events = storage.get_events_for_dates(dates, limit=limit + 1)
 
     has_more = len(events) > limit

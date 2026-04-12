@@ -2,6 +2,12 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import { Badge } from "./ui/badge.jsx";
+import { Card } from "./ui/card.jsx";
+import { Button } from "./ui/button.jsx";
+import { Label } from "./ui/label.jsx";
+import { Select } from "./ui/select.jsx";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table.jsx";
 
 const EVENT_COLORS = {
   memory_created: "#34a853",
@@ -46,78 +52,87 @@ export default function ActivityLog() {
 
   return (
     <div>
-      <h2 style={{ fontSize: 18, marginBottom: 16 }}>Activity Log</h2>
+      <h2 className="text-lg font-semibold mb-4">Activity Log</h2>
 
       {/* Stats bar */}
       {stats && (
-        <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+        <div className="flex gap-4 mb-5">
           {[
             { label: "Total Memories", value: stats.total_memories },
             { label: "Total Clients", value: stats.total_clients },
             { label: "Events Today", value: stats.events_today },
             { label: "Events (7 days)", value: stats.events_last_7_days },
           ].map(({ label, value }) => (
-            <div key={label} className="card" style={{ flex: 1, textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>{value}</div>
-              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>{label}</div>
-            </div>
+            <Card key={label} className="flex-1 text-center">
+              <div className="text-[28px] font-bold">{value}</div>
+              <div className="text-xs text-[var(--text-muted)] mt-1">{label}</div>
+            </Card>
           ))}
         </div>
       )}
 
-      {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
+      {error && <p className="text-[var(--danger)] mb-3">{error}</p>}
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
-        <label htmlFor="activity-days" style={{ marginBottom: 0 }}>Show last</label>
-        <select id="activity-days" style={{ width: 80 }} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+      <div className="flex gap-2.5 items-center mb-3">
+        <Label htmlFor="activity-days" className="mb-0">Show last</Label>
+        <Select
+          id="activity-days"
+          className="w-20"
+          value={days}
+          onChange={(e) => setDays(Number(e.target.value))}
+        >
           {[1, 7, 14, 30, 90].map((d) => (
             <option key={d} value={d}>{d} days</option>
           ))}
-        </select>
-        <label htmlFor="activity-limit" style={{ marginBottom: 0, marginLeft: 8 }}>Limit</label>
-        <select id="activity-limit" style={{ width: 80 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+        </Select>
+        <Label htmlFor="activity-limit" className="mb-0 ml-2">Limit</Label>
+        <Select
+          id="activity-limit"
+          className="w-20"
+          value={limit}
+          onChange={(e) => setLimit(Number(e.target.value))}
+        >
           {[50, 100, 250, 500].map((l) => (
             <option key={l} value={l}>{l}</option>
           ))}
-        </select>
-        <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
+        </Select>
+        <span className="text-[var(--text-muted)] text-[13px]">
           {events.length} events{hasMore ? " (more available)" : ""}
         </span>
-        <button className="secondary" onClick={load} style={{ marginLeft: "auto" }}>Refresh</button>
+        <Button variant="secondary" onClick={load} className="ml-auto">Refresh</Button>
       </div>
 
-      {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
+      {loading && <p className="text-[var(--text-muted)]">Loading…</p>}
 
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Event</th>
-              <th>Client</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody>
+      <Card className="p-0 overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Time</TableHead>
+              <TableHead>Event</TableHead>
+              <TableHead>Client</TableHead>
+              <TableHead>Details</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {events.length === 0 && !loading && (
-              <tr>
-                <td colSpan={4} style={{ padding: 0 }}>
+              <TableRow>
+                <TableCell colSpan={4} className="p-0">
                   <EmptyState
                     variant="activity"
                     title="No activity in this period"
                     description="Events will appear here as your MCP clients use Hive tools."
                   />
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {events.map((e) => (
-              <tr key={e.event_id}>
-                <td style={{ whiteSpace: "nowrap", color: "var(--text-muted)", fontSize: 12 }}>
+              <TableRow key={e.event_id}>
+                <TableCell className="whitespace-nowrap text-[var(--text-muted)] text-xs">
                   {new Date(e.timestamp).toLocaleString()}
-                </td>
-                <td>
-                  <span
-                    className="badge"
+                </TableCell>
+                <TableCell>
+                  <Badge
                     style={{
                       background: `${EVENT_COLORS[e.event_type] ?? "var(--text-muted)"}20`,
                       color: EVENT_COLORS[e.event_type] ?? "var(--text-muted)",
@@ -125,21 +140,21 @@ export default function ActivityLog() {
                     }}
                   >
                     {e.event_type}
-                  </span>
-                </td>
-                <td>
-                  <code style={{ fontSize: 11 }}>{e.client_id.slice(0, 8)}…</code>
-                </td>
-                <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <code className="text-[11px]">{e.client_id.slice(0, 8)}…</code>
+                </TableCell>
+                <TableCell className="text-xs text-[var(--text-muted)]">
                   {Object.entries(e.metadata)
                     .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
                     .join(" · ")}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </Card>
     </div>
   );
 }

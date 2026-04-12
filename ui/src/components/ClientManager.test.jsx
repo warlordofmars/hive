@@ -1,6 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ClientManager from "./ClientManager.jsx";
 
 vi.mock("../api.js", () => ({
@@ -26,7 +26,6 @@ describe("ClientManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.listClients.mockResolvedValue({ items: [] });
-    vi.stubGlobal("confirm", vi.fn(() => true));
   });
 
   afterEach(() => {
@@ -179,6 +178,14 @@ describe("ClientManager", () => {
   // Delete
   // ---------------------------------------------------------------------------
 
+  it("opens confirm dialog when Delete clicked", async () => {
+    api.listClients.mockResolvedValue({ items: [makeClient()] });
+    await act(async () => render(<ClientManager />));
+    await waitFor(() => screen.getByText("Test App"));
+    await act(async () => fireEvent.click(screen.getByText("Delete")));
+    expect(screen.getByText("Delete OAuth client?")).toBeTruthy();
+  });
+
   it("deletes a client when confirmed", async () => {
     api.listClients
       .mockResolvedValueOnce({ items: [makeClient()] })
@@ -187,15 +194,18 @@ describe("ClientManager", () => {
     await act(async () => render(<ClientManager />));
     await waitFor(() => screen.getByText("Test App"));
     await act(async () => fireEvent.click(screen.getByText("Delete")));
+    await act(async () =>
+      fireEvent.click(screen.getAllByText("Delete").at(-1)),
+    );
     expect(api.deleteClient).toHaveBeenCalledWith("c1");
   });
 
-  it("does not delete when confirm is cancelled", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => false));
+  it("does not delete when dialog is cancelled", async () => {
     api.listClients.mockResolvedValue({ items: [makeClient()] });
     await act(async () => render(<ClientManager />));
     await waitFor(() => screen.getByText("Test App"));
     await act(async () => fireEvent.click(screen.getByText("Delete")));
+    await act(async () => fireEvent.click(screen.getByText("Cancel")));
     expect(api.deleteClient).not.toHaveBeenCalled();
   });
 
@@ -205,6 +215,9 @@ describe("ClientManager", () => {
     await act(async () => render(<ClientManager />));
     await waitFor(() => screen.getByText("Test App"));
     await act(async () => fireEvent.click(screen.getByText("Delete")));
+    await act(async () =>
+      fireEvent.click(screen.getAllByText("Delete").at(-1)),
+    );
     await waitFor(() => expect(screen.getByText("Delete failed")).toBeTruthy());
   });
 

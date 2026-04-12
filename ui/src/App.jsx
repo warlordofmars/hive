@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { Moon, Sun } from "lucide-react";
+import { Menu, Moon, Sun, X } from "lucide-react";
 import { trackEvent, trackPageView } from "./analytics.js";
 import { api } from "./api.js";
 import ActivityLog from "./components/ActivityLog.jsx";
@@ -17,14 +17,18 @@ import McpClientsPage from "./components/McpClientsPage.jsx";
 import PricingPage from "./components/PricingPage.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import UseCasesPage from "./components/UseCasesPage.jsx";
+import ApiKeysPanel from "./components/ApiKeysPanel.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import SetupPanel from "./components/SetupPanel.jsx";
 import UsersPanel from "./components/UsersPanel.jsx";
+import { Button } from "./components/ui/button.jsx";
+import { Toaster } from "./components/ui/sonner.jsx";
 import { useTheme } from "./hooks/useTheme.js";
 
 const BASE_TABS = [
   { id: "memories", label: "Memories" },
   { id: "clients", label: "OAuth Clients" },
+  { id: "api-keys", label: "API Keys" },
   { id: "activity", label: "Activity Log" },
   { id: "setup", label: "Setup" },
 ];
@@ -38,7 +42,7 @@ const ADMIN_TABS = [
 function parseToken(token) {
   if (!token) return null;
   try {
-    return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return JSON.parse(atob(token.split(".")[1].replaceAll("-", "+").replaceAll("_", "/")));
   } catch {
     return null;
   }
@@ -56,6 +60,7 @@ function signOut() {
 
 function AppShell() {
   const [tab, setTab] = useState("memories");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   function switchTab(id) {
     setTab(id);
@@ -79,7 +84,7 @@ function AppShell() {
     if (!authenticated) return;
     api.listClients()
       .then((data) => {
-        if (data && data.items.length === 0) setTab("setup");
+        if (data?.items.length === 0) setTab("setup");
       })
       .catch(() => {});
   }, [authenticated]);
@@ -100,91 +105,98 @@ function AppShell() {
   const tabs = isAdmin ? ADMIN_TABS : BASE_TABS;
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-      <header
-        style={{
-          background: "#1a1a2e",
-          color: "#fff",
-          padding: "0 24px",
-          display: "flex",
-          alignItems: "center",
-          gap: 24,
-          height: 56,
-        }}
-      >
+    <div className="min-h-screen flex flex-col">
+      <header className="bg-navy text-white px-4 md:px-6 flex items-center gap-3 md:gap-6 h-14 relative">
         <button
           onClick={() => navigate("/")}
-          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", background: "transparent", border: "none", padding: 0, color: "inherit" }}
+          className="flex items-center gap-2 cursor-pointer bg-transparent border-none p-0 text-inherit"
         >
-          <img src="/logo.svg" alt="Hive" style={{ width: 28, height: 28 }} />
-          <span style={{ fontWeight: 700, fontSize: 20, letterSpacing: 1 }}>Hive</span>
+          <img src="/logo.svg" alt="Hive" className="w-7 h-7" />
+          <span className="font-bold text-xl tracking-wide">Hive</span>
         </button>
 
-        <nav style={{ display: "flex", gap: 4, flex: 1 }}>
+        {/* Desktop tab nav — hidden on mobile */}
+        <nav className="hidden md:flex gap-1 flex-1">
           {tabs.map((t) => (
-            <button
+            <Button
               key={t.id}
+              variant="ghost"
+              size="sm"
               onClick={() => switchTab(t.id)}
-              style={{
-                background: "transparent",
-                color: "#fff",
-                borderRadius: 6,
-                padding: "6px 14px",
-                fontSize: 14,
-                borderBottom: tab === t.id ? "2px solid #e8a020" : "2px solid transparent",
-              }}
+              className={`text-sm border-b-2 rounded-none pb-0 ${
+                tab === t.id ? "border-b-brand" : "border-b-transparent"
+              }`}
             >
               {t.label}
-            </button>
+            </Button>
           ))}
         </nav>
 
+        {/* Spacer on mobile so right-side items stay right */}
+        <div className="flex-1 md:hidden" />
+
         <a
           href="/docs/"
-          style={{ fontSize: 13, color: "rgba(255,255,255,.6)", textDecoration: "none" }}
+          className="hidden md:block text-[13px] text-white/60 no-underline hover:text-white/90"
         >
           Docs
         </a>
 
         {userEmail && (
-          <span style={{ fontSize: 13, color: "rgba(255,255,255,.7)" }}>{userEmail}</span>
+          <span className="hidden md:inline text-[13px] text-white/70">{userEmail}</span>
         )}
 
-        <button
-          onClick={signOut}
-          style={{
-            background: "transparent",
-            color: "rgba(255,255,255,.7)",
-            border: "1px solid rgba(255,255,255,.3)",
-            borderRadius: 6,
-            padding: "5px 12px",
-            fontSize: 13,
-            cursor: "pointer",
-          }}
-        >
+        <Button variant="outline" size="sm" onClick={signOut}>
           Sign out
-        </button>
+        </Button>
 
-        <button
+        <Button
+          variant="outline"
+          size="sm"
           onClick={toggle}
-          style={{
-            background: "transparent",
-            color: "rgba(255,255,255,.7)",
-            border: "1px solid rgba(255,255,255,.3)",
-            borderRadius: 6,
-            padding: "5px 10px",
-            fontSize: 16,
-            cursor: "pointer",
-          }}
           aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
         >
           {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
+        </Button>
+
+        {/* Hamburger — mobile only */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="md:hidden text-white hover:bg-white/10"
+          onClick={() => setMenuOpen(!menuOpen)}
+          aria-label="Toggle navigation"
+          aria-expanded={menuOpen}
+        >
+          {menuOpen ? <X size={20} /> : <Menu size={20} />}
+        </Button>
+
+        {/* Mobile nav dropdown */}
+        {menuOpen && (
+          <nav
+            data-testid="mobile-nav"
+            className="absolute top-14 left-0 right-0 bg-navy border-t border-white/10 z-50"
+          >
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`w-full text-left px-6 py-3 text-sm text-white bg-transparent border-none cursor-pointer font-[inherit] min-h-[44px] hover:bg-white/10 ${
+                  tab === t.id ? "font-semibold bg-white/5" : ""
+                }`}
+                onClick={() => { switchTab(t.id); setMenuOpen(false); }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        )}
       </header>
 
-      <main style={{ flex: 1, padding: 24, maxWidth: 1100, margin: "0 auto", width: "100%" }}>
+      <main className="flex-1 p-4 md:p-6 max-w-[1100px] mx-auto w-full">
         {tab === "memories" && <MemoryBrowser />}
         {tab === "clients" && <ClientManager />}
+        {tab === "api-keys" && <ApiKeysPanel />}
         {tab === "activity" && <ActivityLog />}
         {tab === "users" && isAdmin && <UsersPanel />}
         {tab === "setup" && <SetupPanel />}
@@ -193,27 +205,17 @@ function AppShell() {
       </main>
 
       {version && (
-        <footer
-          style={{
-            textAlign: "center",
-            padding: "8px 0",
-            fontSize: 12,
-            color: "var(--text-muted)",
-            borderTop: "1px solid var(--border)",
-          }}
-        >
+        <footer className="text-center py-2 text-xs text-[var(--text-muted)] border-t border-[var(--border)]">
           <a
             href="/changelog"
-            style={{ color: "inherit", textDecoration: "none" }}
-            onMouseOver={(e) => (e.target.style.textDecoration = "underline")}
-            onMouseOut={(e) => (e.target.style.textDecoration = "none")}
-            onFocus={(e) => (e.target.style.textDecoration = "underline")}
-            onBlur={(e) => (e.target.style.textDecoration = "none")}
+            className="text-inherit no-underline hover:underline focus:underline"
           >
             Hive {version}
           </a>
         </footer>
       )}
+
+      <Toaster />
     </div>
   );
 }

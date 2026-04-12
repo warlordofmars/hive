@@ -356,6 +356,84 @@ gh pr merge --auto --merge
 
    **Never run `gh release create` manually** — the pipeline owns this.
 
+## Running the full stack locally
+
+```bash
+# 1. Start all services (DynamoDB Local, MCP server, API, Vite dev server)
+#    Add --seed to also seed demo data automatically once the API is ready
+uv run inv dev [--seed]
+```
+
+`inv dev` sets automatically:
+
+- `CORS_ORIGINS` — `localhost:5173` through `localhost:5179` (handles port
+  collisions if 5173 is already taken by another project)
+- `HIVE_VECTORS_BUCKET=local-dev` — prevents VectorStore from crashing on
+  every list-memories request (semantic search will still fail locally)
+- `HIVE_BYPASS_GOOGLE_AUTH=1` — enables the `?test_email=` auth shortcut
+  (only activates when that query param is present; normal browser flows
+  are unaffected)
+
+```bash
+# 2. Seed DynamoDB with demo data (also creates the table) — if not using --seed
+uv run inv seed
+```
+
+Must be re-run after every `inv dev` restart (DynamoDB Local is ephemeral).
+
+### Running UI e2e tests locally
+
+```bash
+# Auto-detects the Vite port — no env vars to set manually
+uv run inv e2e-local
+
+# Run a specific test file
+uv run inv e2e-local --tests tests/e2e/test_ui_e2e.py
+
+# Repeat N times to check for flakiness
+uv run inv e2e-local --n 5
+```
+
+`inv e2e-local` probes ports 5173–5179 for the Hive Vite dev server (via
+`/auth/login?test_email=probe`) and passes the detected URL as `HIVE_UI_URL`.
+
+Key local e2e gotchas:
+
+- The Vite proxy handles `/auth`, `/api`, `/oauth`, `/mcp` — tests must use
+  the Vite URL (not the API URL directly) so the auth bypass sets
+  `localStorage` at the correct origin.
+- If Vite lands on a port other than 5173, `CORS_ORIGINS` must include that
+  port. `inv dev` covers 5173–5179; if you're outside that range, pass
+  `CORS_ORIGINS=http://localhost:<port>` when starting the stack.
+- `inv seed` (or `inv dev --seed`) must succeed before running e2e tests —
+  if auth bypass returns 500, the table is likely missing.
+- `test_docs_e2e.py` is excluded automatically — those tests require a
+  deployed VitePress build; run them against the deployed stack with `inv e2e`.
+
+### When to run local e2e tests
+
+Not required on every PR — `uv run inv pre-push` (unit + frontend tests) is
+the standard gate. Run `inv e2e-local` before opening a PR when the change
+touches any of the following:
+
+**Always required:**
+
+- Fixing a failing e2e test — the fix must pass locally before the PR opens
+- Auth flows (`auth/`, `AuthCallback.jsx`, `LoginPage.jsx`, OAuth endpoints)
+- MCP tool logic (`server.py`) — remember, recall, forget, search, list
+- Management API endpoints (`api/`) that the UI or MCP tests exercise
+
+**Use judgement (run the relevant `--tests` file at minimum):**
+
+- UI component changes that affect user-visible flows (memory CRUD, client
+  management, activity log)
+- Vite proxy config or API base URL changes
+
+**Not needed:**
+
+- Pure unit test fixes, documentation, infra/CDK changes, style/CSS tweaks,
+  or any change fully covered by unit + frontend tests
+
 ## Pre-PR checklist (required before every push)
 
 Run `uv run inv pre-push` — this runs the same gate as CI:
@@ -369,3 +447,254 @@ This is enforced automatically if you install the git hook:
 `uv run inv install-hooks`
 
 If infra files changed, also run: `uv run inv synth`
+
+---
+
+## Autonomous issue workflow
+
+This section governs how Claude Code operates when given a batch of issues
+to work through unattended.
+
+### Core principle
+
+Work autonomously. Do not ask for confirmation unless the situation is
+explicitly listed under **Stop and ask** below. Make reasonable judgment
+calls and document them in the PR description.
+
+### Issue cycle
+
+When given one or more GitHub issue numbers, process them **sequentially**.
+Complete the full cycle for each issue before starting the next.
+
+When processing a batch of issues, after completing each issue cycle
+successfully, append the issue number to `.autonomous-progress` in the
+repo root. This allows an interrupted batch to be resumed by checking
+which issues are already recorded there.
+
+#### 1. Understand the issue
+
+```bash
+gh issue view <number>
+```
+
+Read the issue fully. Before doing anything else, check it is still open
+and has no existing PR:
+
+```bash
+gh issue view <number> --json state -q .state          # must be OPEN
+gh pr list --search "issue-<number>" --state open      # must be empty
+```
+
+If the issue is closed or already has an open PR, skip it and move to the
+next. If the issue is ambiguous, make a reasonable interpretation, document
+it in the PR description, and proceed.
+
+#### 2. Branch
+
+Always branch off `origin/development`, never off another feature branch.
+Name the branch to match the issue type:
+
+```bash
+git fetch origin
+
+# bug fix
+git checkout -b fix/issue-<number>-<short-slug> origin/development
+# feature / enhancement
+git checkout -b feat/issue-<number>-<short-slug> origin/development
+# chore / docs / refactor
+git checkout -b chore/issue-<number>-<short-slug> origin/development
+```
+
+#### 3. Implement
+
+Make the necessary changes. Follow all conventions in this file.
+
+**Coverage:** 100% is required — CI fails below this.
+- Every new Python module needs tests in `tests/unit/` or `tests/integration/`.
+- Every new UI component needs a co-located `*.test.jsx` file.
+
+**Copyright, UI conventions, dependency management:** follow the rules
+defined in the sections above.
+
+#### 4. Run pre-push gate
+
+```bash
+uv run inv pre-push
+```
+
+If infra files changed, also run:
+
+```bash
+uv run inv synth
+```
+
+Fix all failures before proceeding. Do not open a PR with a failing
+pre-push gate.
+
+#### 5. Run local e2e if warranted
+
+Apply the "when to run local e2e tests" rules above to decide whether to
+run e2e before opening the PR.
+
+**Important:** `inv dev` is a long-lived blocking process. Do not attempt
+to start it in the background during an autonomous session. Instead:
+
+- If the local stack is already running (started externally), run:
+
+  ```bash
+  uv run inv e2e-local
+  # or for a specific test file:
+  uv run inv e2e-local --tests tests/e2e/<relevant_file>.py
+  ```
+
+- If the local stack is **not** running, skip local e2e and note in the PR
+  description: *"Local e2e not run — CI will cover this on the development
+  branch deploy."* The `development` pipeline deploys and runs the full e2e
+  suite, which is an adequate safety net for most changes.
+
+Fix any failures before proceeding.
+
+**Decision rules for "use judgement" cases:**
+
+- Any change to a UI component → run `tests/e2e/test_ui_e2e.py`
+- Any change to `api/` endpoints → run `tests/e2e/test_mcp_e2e.py` and/or
+  `tests/e2e/test_auth_e2e.py` depending on what's affected
+
+#### 6. Create PR
+
+Rebase and verify clean history:
+
+```bash
+git fetch origin
+git rebase origin/development
+git log --oneline origin/development..HEAD   # must show ONLY your commits
+```
+
+Push — use `-u` for a brand-new branch, `--force-with-lease` after a rebase
+on an already-pushed branch:
+
+```bash
+# first push of this branch
+git push -u origin <branch>
+
+# after a rebase on a branch already pushed
+git push --force-with-lease
+```
+
+Create the PR and enable squash auto-merge immediately:
+
+```bash
+gh pr create --base development \
+  --title "<concise title>" \
+  --body "Closes #<number>
+
+## Summary
+<what was changed and why>
+
+## Approach
+<any non-obvious decisions or interpretations of the issue>"
+
+gh pr merge --auto --squash --delete-branch
+```
+
+#### 7. Monitor PR CI
+
+Get the run ID and watch until all checks pass or a failure requires a fix:
+
+```bash
+gh run list --branch <branch> --limit 1   # get the run ID
+gh run watch <run-id>
+```
+
+If any check fails:
+1. Read the failure: `gh run view <run-id> --log-failed`
+2. Fix on the same branch
+3. `git push`
+4. Get the new run ID: `gh run list --branch <branch> --limit 1`
+5. Return to watching
+
+Repeat until all checks pass. Auto-merge fires automatically once they do.
+
+If the same check fails 3 times without a clear fix, stop and ask.
+
+#### 8. Monitor development branch CI/CD post-merge
+
+After the PR merges, the `development` branch pipeline triggers. Record the
+merge time and poll until a matching run appears, then watch it:
+
+```bash
+# Record merge time, then poll until an active run created after merge appears
+MERGE_TIME=$(date -u +%s)
+while true; do
+  RUN_ID=$(gh run list --branch development --limit 5 \
+    --json databaseId,status,createdAt | \
+    jq -r --argjson since "$MERGE_TIME" \
+    '.[] | select(
+        (.status == "in_progress" or .status == "queued") and
+        (.createdAt | fromdateiso8601) > $since
+      ) | .databaseId' | head -1)
+  [ -n "$RUN_ID" ] && break
+  sleep 15
+done
+gh run watch "$RUN_ID"
+```
+
+This uses `jq`'s built-in `fromdateiso8601` for portable timestamp parsing —
+avoids the `date -r` vs `date -d` incompatibility between macOS and Linux,
+and ensures we only latch onto a run triggered by this merge rather than a
+pre-existing in-flight run from a concurrent PR.
+
+If the pipeline fails:
+1. Read the failure: `gh run view <run-id> --log-failed`
+2. Create a new fix branch off the updated `origin/development`
+3. Fix, run `inv pre-push`, run local e2e if warranted
+4. PR and repeat from step 6
+
+Only move to the next issue when the `development` pipeline is green.
+
+### Keeping CLAUDE.md current
+
+If you discover that CLAUDE.md is missing information needed to work
+effectively — a new inv task, an undocumented gotcha, a test convention —
+update it in the same PR as the change that surfaced it.
+
+**Permitted without asking:**
+- Adding or correcting inv task names, commands, or flags
+- Documenting a newly discovered gotcha or test convention
+- Updating the file structure map when new files are added
+
+**Requires human review (open a separate PR, do not auto-merge):**
+- Any change to the "Autonomous issue workflow" section
+- Any change to the "Stop and ask" list
+- Any change that expands what Claude is permitted to do unattended
+
+### Stop and ask
+
+When stopping, always emit a sentinel as the first line of your message:
+
+```
+HUMAN_INPUT_REQUIRED: <brief reason>
+```
+
+This allows automated monitoring to detect the stop and alert the operator.
+
+Halt and wait for human input **only** in these situations:
+
+- The PR is not auto-merging after CI passes and the reason is unclear
+- The `development` pipeline failure is in infrastructure (CDK / Lambda /
+  DynamoDB) and the root cause is not apparent from logs
+- A change requires modifying `infra/stacks/hive_stack.py` in a way that
+  could affect production resources
+- The same CI check has failed 3 times without a clear fix
+
+In all other cases, make a judgment call and proceed.
+
+### What you must never do
+
+- Push directly to `development` or `main`
+- Merge a PR manually — auto-merge handles this
+- Run `gh release create` — CI owns releases
+- Hardcode credentials, secrets, or AWS account IDs
+- Use `pip` or `requirements.txt` — always use `uv`
+- Skip `inv pre-push` before creating a PR
+- Pin GitHub Actions to mutable version tags — use full commit SHAs

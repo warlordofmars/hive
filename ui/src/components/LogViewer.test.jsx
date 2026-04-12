@@ -166,7 +166,7 @@ describe("LogViewer", () => {
     await act(async () => render(<LogViewer />));
     await waitFor(() => screen.getByText("tool called"));
 
-    const row = screen.getByText("tool called").closest("[role='button']");
+    const row = screen.getByText("tool called").closest("button");
     fireEvent.click(row);
     await waitFor(() => expect(screen.getByText(/"message": "tool called"/)).toBeTruthy());
   });
@@ -176,7 +176,7 @@ describe("LogViewer", () => {
     await act(async () => render(<LogViewer />));
     await waitFor(() => screen.getByText("tool called"));
 
-    const row = screen.getByText("tool called").closest("[role='button']");
+    const row = screen.getByText("tool called").closest("button");
     fireEvent.keyDown(row, { key: "Enter" });
     await waitFor(() => expect(screen.getByText(/"message": "tool called"/)).toBeTruthy());
   });
@@ -186,7 +186,7 @@ describe("LogViewer", () => {
     await act(async () => render(<LogViewer />));
     await waitFor(() => screen.getByText("tool called"));
 
-    const row = screen.getByText("tool called").closest("[role='button']");
+    const row = screen.getByText("tool called").closest("button");
     fireEvent.keyDown(row, { key: " " });
     await waitFor(() => expect(screen.getByText(/"message": "tool called"/)).toBeTruthy());
   });
@@ -196,7 +196,7 @@ describe("LogViewer", () => {
     await act(async () => render(<LogViewer />));
     await waitFor(() => screen.getByText("tool called"));
 
-    const row = screen.getByText("tool called").closest("[role='button']");
+    const row = screen.getByText("tool called").closest("button");
     fireEvent.click(row);
     await waitFor(() => screen.getByText(/"message": "tool called"/));
     fireEvent.click(row);
@@ -211,7 +211,7 @@ describe("LogViewer", () => {
     await act(async () => render(<LogViewer />));
     await waitFor(() => screen.getAllByText("plain text log line"));
 
-    const row = screen.getAllByText("plain text log line")[0].closest("[role='button']");
+    const row = screen.getAllByText("plain text log line")[0].closest("button");
     fireEvent.click(row);
     // raw text appears in the expanded <pre>
     await waitFor(() => expect(screen.getAllByText("plain text log line").length).toBeGreaterThan(1));

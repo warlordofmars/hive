@@ -42,26 +42,17 @@ const ILLUSTRATIONS = {
 
 export default function EmptyState({ variant, title, description, action }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        textAlign: "center",
-        padding: "48px 24px",
-        color: "var(--text-muted)",
-      }}
-    >
-      <div style={{ marginBottom: 16, opacity: 0.6 }}>
+    <div className="flex flex-col items-center text-center py-12 px-6 text-[var(--text-muted)]">
+      <div className="mb-4 opacity-60">
         {ILLUSTRATIONS[variant] ?? ILLUSTRATIONS.memories}
       </div>
-      <p style={{ fontWeight: 600, fontSize: 15, color: "var(--text)", marginBottom: 6 }}>
+      <p className="font-semibold text-[15px] text-[var(--text)] mb-1.5">
         {title}
       </p>
       {description && (
-        <p style={{ fontSize: 13, maxWidth: 320, lineHeight: 1.5 }}>{description}</p>
+        <p className="text-[13px] max-w-xs leading-relaxed">{description}</p>
       )}
-      {action && <div style={{ marginTop: 16 }}>{action}</div>}
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }

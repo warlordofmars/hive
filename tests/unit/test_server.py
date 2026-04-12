@@ -174,6 +174,39 @@ class TestRemember:
         ):
             await remember("big-key", "x" * 1000, [], ctx=_make_ctx(jwt))
 
+    async def test_remember_with_ttl_sets_expires_at(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import remember
+
+        result = await remember("ttl-key", "ttl-val", [], ttl_seconds=3600, ctx=_make_ctx(jwt))
+        assert result == "Stored memory 'ttl-key'."
+        m = storage.get_memory_by_key("ttl-key")
+        assert m is not None
+        assert m.expires_at is not None
+
+    async def test_remember_without_ttl_no_expires_at(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import remember
+
+        await remember("no-ttl-key", "v", [], ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("no-ttl-key")
+        assert m is not None
+        assert m.expires_at is None
+
+    async def test_idempotent_with_same_ttl(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import remember
+
+        await remember("idem-ttl", "v", [], ttl_seconds=3600, ctx=_make_ctx(jwt))
+        m1 = storage.get_memory_by_key("idem-ttl")
+        assert m1 is not None
+        # Second call with same value but no ttl should NOT be idempotent
+        result = await remember("idem-ttl", "v", [], ttl_seconds=None, ctx=_make_ctx(jwt))
+        assert result == "Updated memory 'idem-ttl'."
+        m2 = storage.get_memory_by_key("idem-ttl")
+        assert m2 is not None
+        assert m2.expires_at is None
+
 
 # ---------------------------------------------------------------------------
 # recall
@@ -629,3 +662,198 @@ class TestSearchMemories:
             await forget("forget-dw-key", ctx=_make_ctx(jwt))
 
         mock_vs.delete_memory.assert_called_once()
+
+    async def test_remember_vector_upsert_failure_is_non_fatal(self, server_env):
+        """VectorStore errors during remember() are logged but do not raise."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.upsert_memory.side_effect = RuntimeError("no bucket")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await remember("vec-fail-new", "v", [], ctx=_make_ctx(jwt))
+
+        assert "Stored" in result
+
+    async def test_remember_vector_upsert_failure_on_update_is_non_fatal(self, server_env):
+        """VectorStore errors during remember() update are logged but do not raise."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("vec-fail-upd", "original", [], ctx=_make_ctx(jwt))
+
+        mock_vs.upsert_memory.side_effect = RuntimeError("no bucket")
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await remember("vec-fail-upd", "updated", [], ctx=_make_ctx(jwt))
+
+        assert "Updated" in result
+
+    async def test_forget_vector_delete_failure_is_non_fatal(self, server_env):
+        """VectorStore errors during forget() are logged but do not raise."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import forget, remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.delete_memory.side_effect = RuntimeError("no bucket")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("vec-fail-forget", "v", [], ctx=_make_ctx(jwt))
+            result = await forget("vec-fail-forget", ctx=_make_ctx(jwt))
+
+        assert "Deleted" in result
+
+    async def test_search_vector_failure_returns_empty(self, server_env):
+        """Unexpected VectorStore errors during search_memories() return empty results."""
+        from unittest.mock import patch
+
+        from hive.server import search_memories
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = RuntimeError("no bucket")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("anything", ctx=_make_ctx(jwt))
+
+        assert result == {"items": [], "count": 0, "query": "anything"}
+
+
+# ---------------------------------------------------------------------------
+# forget_all
+# ---------------------------------------------------------------------------
+
+
+class TestForgetAll:
+    async def test_forget_all_deletes_tagged_memories(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import forget_all, remember
+
+        await remember("fa-a", "v1", ["purge"], ctx=_make_ctx(jwt))
+        await remember("fa-b", "v2", ["purge"], ctx=_make_ctx(jwt))
+        await remember("fa-c", "v3", ["keep"], ctx=_make_ctx(jwt))
+        result = await forget_all("purge", ctx=_make_ctx(jwt))
+        assert "2" in result
+        assert storage.get_memory_by_key("fa-a") is None
+        assert storage.get_memory_by_key("fa-b") is None
+        assert storage.get_memory_by_key("fa-c") is not None
+
+    async def test_forget_all_zero_when_tag_missing(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import forget_all
+
+        result = await forget_all("no-such-tag", ctx=_make_ctx(jwt))
+        assert "0" in result
+
+    async def test_forget_all_requires_write_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import forget_all
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await forget_all("t", ctx=_make_ctx(read_only_jwt))
+
+
+# ---------------------------------------------------------------------------
+# memory_history
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHistory:
+    async def test_memory_history_returns_versions(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import memory_history, remember
+
+        await remember("hist-k", "v1", [], ctx=_make_ctx(jwt))
+        await remember("hist-k", "v2", [], ctx=_make_ctx(jwt))
+        result = await memory_history("hist-k", ctx=_make_ctx(jwt))
+        assert len(result) == 1
+        assert result[0]["value"] == "v1"
+
+    async def test_memory_history_empty_for_new_memory(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import memory_history, remember
+
+        await remember("new-hist", "v1", [], ctx=_make_ctx(jwt))
+        result = await memory_history("new-hist", ctx=_make_ctx(jwt))
+        assert result == []
+
+    async def test_memory_history_raises_for_missing_key(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import memory_history
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="No memory found"):
+            await memory_history("no-such-key", ctx=_make_ctx(jwt))
+
+    async def test_memory_history_requires_read_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import memory_history
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await memory_history("k", ctx=_make_ctx(write_only_jwt))
+
+
+# ---------------------------------------------------------------------------
+# restore_memory
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreMemory:
+    async def test_restore_memory_reverts_value(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import memory_history, remember, restore_memory
+
+        await remember("rst-k", "v1", [], ctx=_make_ctx(jwt))
+        await remember("rst-k", "v2", [], ctx=_make_ctx(jwt))
+        versions = await memory_history("rst-k", ctx=_make_ctx(jwt))
+        vts = versions[0]["version_timestamp"]
+        result = await restore_memory("rst-k", vts, ctx=_make_ctx(jwt))
+        assert "rst-k" in result
+        m = storage.get_memory_by_key("rst-k")
+        assert m is not None
+        assert m.value == "v1"
+
+    async def test_restore_memory_raises_for_missing_key(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import restore_memory
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="No memory found"):
+            await restore_memory("no-such-key", "ts", ctx=_make_ctx(jwt))
+
+    async def test_restore_memory_raises_for_missing_version(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember, restore_memory
+
+        _, _, jwt = server_env
+        await remember("rv-k", "v", [], ctx=_make_ctx(jwt))
+        with pytest.raises(ToolError, match="not found"):
+            await restore_memory("rv-k", "bad-ts", ctx=_make_ctx(jwt))
+
+    async def test_restore_memory_requires_write_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import restore_memory
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await restore_memory("k", "ts", ctx=_make_ctx(read_only_jwt))

@@ -21,7 +21,7 @@ export default {
           h("a", { href: "/faq", class: "docs-nav-link" }, "FAQ"),
           h(
             "a",
-            { href: "/docs/getting-started/what-is-hive", class: "docs-nav-link" },
+            { href: "/docs/getting-started/what-is-hive", class: "docs-nav-link docs-nav-link--active" },
             "Docs",
           ),
           h("a", { href: "/app", class: "docs-signin-btn" }, "Sign in"),

@@ -21,6 +21,8 @@ const buttonVariants = cva(
           "bg-red-600 text-white hover:opacity-90",
         secondary:
           "border border-[var(--border)] bg-transparent text-[var(--text)] hover:bg-[var(--surface)]",
+        nav:
+          "border border-white/60 bg-transparent text-white/80 hover:text-white hover:border-white",
       },
       size: {
         default: "px-4 py-2",

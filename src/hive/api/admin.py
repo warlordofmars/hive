@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Annotated, Any
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -39,13 +39,17 @@ _STAT_PERIOD = {
 _cost_cache: dict[str, tuple[float, Any]] = {}
 _COST_CACHE_TTL = 86400  # 24 hours
 
+# Alarm cache: alarm state changes infrequently; cache for 5 min.
+_alarm_cache: dict[str, tuple[float, Any]] = {}
+_ALARM_CACHE_TTL = 300  # 5 minutes
+
 
 def _cloudwatch_client():  # pragma: no cover
     return boto3.client("cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 
 def _ce_client():  # pragma: no cover
-    return boto3.client("ce", region_name="us-east-1")
+    return boto3.client("ce", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
 
 
 def _build_metric_queries(period_label: str) -> list[dict[str, Any]]:
@@ -231,10 +235,18 @@ def _get_cost_data() -> dict[str, Any]:
     return data
 
 
-@router.get("/metrics")
+@router.get(
+    "/metrics",
+    summary="Get CloudWatch metrics",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        502: {"description": "CloudWatch error"},
+    },
+)
 async def get_metrics(
-    period: str = Query("24h", pattern="^(1h|24h|7d|30d)$"),
-    _claims: dict[str, Any] = Depends(require_admin),
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
+    period: Annotated[str, Query(pattern="^(1h|24h|7d|30d)$")] = "24h",
 ) -> dict[str, Any]:
     """Return CloudWatch metric time-series for the current environment.
 
@@ -247,12 +259,74 @@ async def get_metrics(
     }
 
 
-@router.get("/costs")
+@router.get(
+    "/costs",
+    summary="Get AWS cost data",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        502: {"description": "Cost Explorer error"},
+    },
+)
 async def get_costs(
-    _claims: dict[str, Any] = Depends(require_admin),
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
 ) -> dict[str, Any]:
     """Return AWS Cost Explorer monthly spend breakdown.
 
     Admin-only. Results cached for 24 h.
     """
     return _get_cost_data()
+
+
+def _get_alarm_data() -> dict[str, Any]:
+    """Fetch CloudWatch alarm states for all Hive alarms, cached for 5 min."""
+    cached = _alarm_cache.get(ENVIRONMENT)
+    if cached and time.time() - cached[0] < _ALARM_CACHE_TTL:
+        return cached[1]
+
+    cw = _cloudwatch_client()
+    try:
+        resp = cw.describe_alarms(
+            AlarmNamePrefix=f"Hive-{ENVIRONMENT}-",
+            AlarmTypes=["MetricAlarm"],
+        )
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=502, detail=f"CloudWatch error: {exc}") from exc
+
+    alarms = []
+    for a in resp.get("MetricAlarms", []):
+        alarms.append(
+            {
+                "name": a["AlarmName"],
+                "description": a.get("AlarmDescription", ""),
+                "state": a["StateValue"],
+                "state_updated_at": a["StateUpdatedTimestamp"].isoformat(),
+                "threshold": a.get("Threshold"),
+                "comparison_operator": a.get("ComparisonOperator", ""),
+                "metric_name": a.get("MetricName", ""),
+                "namespace": a.get("Namespace", ""),
+            }
+        )
+
+    data: dict[str, Any] = {"environment": ENVIRONMENT, "alarms": alarms}
+    _alarm_cache[ENVIRONMENT] = (time.time(), data)
+    return data
+
+
+@router.get(
+    "/alarms",
+    summary="Get CloudWatch alarm states",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        502: {"description": "CloudWatch error"},
+    },
+)
+async def get_alarms(
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
+) -> dict[str, Any]:
+    """Return CloudWatch alarm states for all Hive-prefixed alarms.
+
+    Admin-only. Results cached for 5 min.
+    """
+    return _get_alarm_data()

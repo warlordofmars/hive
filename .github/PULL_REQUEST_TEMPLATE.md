@@ -17,3 +17,4 @@
 - [ ] PR title is descriptive
 - [ ] Closes #<!-- issue number -->
 - [ ] Docs updated if behaviour changed
+- [ ] No secrets or credentials committed

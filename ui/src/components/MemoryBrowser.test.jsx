@@ -10,6 +10,8 @@ vi.mock("../api.js", () => ({
     createMemory: vi.fn(),
     updateMemory: vi.fn(),
     deleteMemory: vi.fn(),
+    listMemoryVersions: vi.fn(),
+    restoreMemoryVersion: vi.fn(),
   },
 }));
 
@@ -132,6 +134,57 @@ describe("TagPicker", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("Enter with typed value and no suggestions commits the typed value", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.change(input, { target: { value: "new-tag" } }); // no matches → no suggestions
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("new-tag");
+  });
+
+  it("Enter with empty input and no suggestions does nothing", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.change(input, { target: { value: "zzz" } }); // no matches → no suggestions
+    fireEvent.change(input, { target: { value: "" } }); // clear
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("Enter with typed value matching suggestions commits the typed value", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.change(input, { target: { value: "new-unique-tag" } }); // no match → no suggestions, first branch
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("new-unique-tag");
+  });
+
+  it("Enter with typed value matching suggestions (dropdown open) commits typed value", async () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    // Wrap in act so React flushes state (open=true, suggestions populated) before keyDown
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "alpha" } });
+    });
+    // Now open=true, suggestions=["alpha"], activeIndex=-1 → second branch (line 64)
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("alpha");
+  });
+
+  it("Enter with empty input when suggestions are open does nothing", () => {
+    const onSelect = vi.fn();
+    render(<TagPicker knownTags={tags} value="" onSelect={onSelect} />);
+    const input = screen.getByPlaceholderText("Filter by tag");
+    fireEvent.change(input, { target: { value: "tag1" } }); // open suggestions
+    fireEvent.change(input, { target: { value: "" } }); // clear input
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("Escape when suggestions are open closes the dropdown", async () => {
     render(<TagPicker knownTags={tags} value="" onSelect={vi.fn()} />);
     const input = screen.getByPlaceholderText("Filter by tag");
@@ -195,12 +248,15 @@ describe("MemoryBrowser", () => {
     vi.clearAllMocks();
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
     api.searchMemories.mockResolvedValue({ items: [], count: 0 });
-    vi.stubGlobal("confirm", vi.fn(() => true));
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
+
+  // Helpers
+  function getCard() { return screen.getByTestId("memory-card"); }
+  function getAllCards() { return screen.getAllByTestId("memory-card"); }
 
   // ---------------------------------------------------------------------------
   // Initial render
@@ -246,6 +302,7 @@ describe("MemoryBrowser", () => {
       items: [makeMemory({ tags: ["mytag"] })],
       next_cursor: null,
     });
+
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
 
@@ -390,7 +447,7 @@ describe("MemoryBrowser", () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
-    fireEvent.click(screen.getByText("test-key").closest(".card"));
+    fireEvent.click(getCard());
     expect(screen.getByText("Edit: test-key")).toBeTruthy();
     expect(screen.queryByPlaceholderText("unique-key")).toBeNull(); // key field hidden in edit
   });
@@ -399,7 +456,7 @@ describe("MemoryBrowser", () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
-    const card = screen.getByText("test-key").closest(".card");
+    const card = getCard();
     // Enter opens the form
     fireEvent.keyDown(card, { key: "Enter" });
     expect(screen.getByText("Edit: test-key")).toBeTruthy();
@@ -424,8 +481,7 @@ describe("MemoryBrowser", () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("key1"));
 
-    const card1 = screen.getByText("key1").closest(".card");
-    const card2 = screen.getByText("key2").closest(".card");
+    const [card1, card2] = getAllCards();
 
     // Focus card1 then press ArrowDown → card2 gets focus
     await act(async () => fireEvent.focus(card1));
@@ -440,8 +496,7 @@ describe("MemoryBrowser", () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("key2"));
 
-    const card1 = screen.getByText("key1").closest(".card");
-    const card2 = screen.getByText("key2").closest(".card");
+    const [card1, card2] = getAllCards();
 
     // Focus card2 then press ArrowUp → card1 gets focus
     await act(async () => fireEvent.focus(card2));
@@ -457,7 +512,7 @@ describe("MemoryBrowser", () => {
 
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
-    const card = screen.getByText("test-key").closest(".card");
+    const card = getCard();
     await act(async () => fireEvent.keyDown(card, { key: "Delete" }));
     expect(api.deleteMemory).toHaveBeenCalledWith("m1");
   });
@@ -470,7 +525,7 @@ describe("MemoryBrowser", () => {
 
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
-    const card = screen.getByText("test-key").closest(".card");
+    const card = getCard();
     await act(async () => fireEvent.keyDown(card, { key: "Backspace" }));
     expect(api.deleteMemory).toHaveBeenCalledWith("m1");
   });
@@ -481,11 +536,11 @@ describe("MemoryBrowser", () => {
     await waitFor(() => screen.getByText("test-key"));
 
     // Open edit panel
-    fireEvent.click(screen.getByText("test-key").closest(".card"));
+    fireEvent.click(getCard());
     expect(screen.getByText("Edit: test-key")).toBeTruthy();
 
     // Escape closes it
-    const card = screen.getByText("test-key").closest(".card");
+    const card = getCard();
     await act(async () => fireEvent.keyDown(card, { key: "Escape" }));
     expect(screen.queryByText("Edit: test-key")).toBeNull();
   });
@@ -498,8 +553,7 @@ describe("MemoryBrowser", () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("key2"));
 
-    const card2 = screen.getByText("key2").closest(".card");
-    const card3 = screen.getByText("key3").closest(".card");
+    const [, card2, card3] = getAllCards();
 
     // Focus card2 (index 1) then ArrowDown → card3 (index 2)
     await act(async () => fireEvent.focus(card2));
@@ -513,7 +567,7 @@ describe("MemoryBrowser", () => {
 
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
-    fireEvent.click(screen.getByText("test-key").closest(".card"));
+    fireEvent.click(getCard());
 
     fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
       target: { value: "new-value" },
@@ -535,7 +589,7 @@ describe("MemoryBrowser", () => {
 
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
-    fireEvent.click(screen.getByText("test-key").closest(".card"));
+    fireEvent.click(getCard());
     await act(async () =>
       fireEvent.submit(screen.getByPlaceholderText("Memory content…").closest("form")),
     );
@@ -546,7 +600,7 @@ describe("MemoryBrowser", () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
-    fireEvent.click(screen.getByText("test-key").closest(".card"));
+    fireEvent.click(getCard());
     expect(screen.getByText("Edit: test-key")).toBeTruthy();
     fireEvent.click(screen.getByText("+ New"));
     expect(screen.getByText("New Memory")).toBeTruthy();
@@ -557,6 +611,15 @@ describe("MemoryBrowser", () => {
   // Delete
   // ---------------------------------------------------------------------------
 
+  it("opens confirm dialog when Delete button clicked", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("Delete")));
+    expect(screen.getByText("Delete this memory?")).toBeTruthy();
+  });
+
   it("deletes memory when confirmed", async () => {
     api.listMemories
       .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null })
@@ -565,19 +628,20 @@ describe("MemoryBrowser", () => {
 
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("Delete")));
     await act(async () =>
-      fireEvent.click(screen.getByText("Delete")),
+      fireEvent.click(screen.getAllByText("Delete").at(-1)),
     );
     expect(api.deleteMemory).toHaveBeenCalledWith("m1");
   });
 
-  it("does not delete when confirm is cancelled", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => false));
+  it("does not delete when dialog is cancelled", async () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
 
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
     await act(async () => fireEvent.click(screen.getByText("Delete")));
+    await act(async () => fireEvent.click(screen.getByText("Cancel")));
     expect(api.deleteMemory).not.toHaveBeenCalled();
   });
 
@@ -588,11 +652,13 @@ describe("MemoryBrowser", () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
     await act(async () => fireEvent.click(screen.getByText("Delete")));
+    await act(async () =>
+      fireEvent.click(screen.getAllByText("Delete").at(-1)),
+    );
     await waitFor(() => expect(screen.getByText("Delete failed")).toBeTruthy());
   });
 
-  it("delete button stops propagation and does not open edit form", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => false));
+  it("delete button does not open edit form", async () => {
     api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
 
     await act(async () => render(<MemoryBrowser />));
@@ -734,5 +800,222 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(screen.getByText("Search error")).toBeTruthy(), {
       timeout: 1000,
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // TTL / expiry
+  // ---------------------------------------------------------------------------
+
+  it("shows expiry badge for memories with expires_at", async () => {
+    const expiry = new Date("2027-01-15T00:00:00.000Z").toISOString();
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ expires_at: expiry })],
+      next_cursor: null,
+    });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    expect(screen.getByText(/Expires/)).toBeTruthy();
+  });
+
+  it("creates memory with TTL when Expires In is set", async () => {
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValue({ items: [], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "ttl-key" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "ttl-val" },
+    });
+    fireEvent.change(screen.getByLabelText("Expires in"), {
+      target: { value: "3600" },
+    });
+
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(api.createMemory).toHaveBeenCalledWith(
+      expect.objectContaining({ ttl_seconds: 3600 }),
+    );
+  });
+
+  it("updates memory with ttl_seconds 0 to clear TTL when form.ttl is empty", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.updateMemory.mockResolvedValue({});
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    fireEvent.click(getCard());
+
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("Memory content…").closest("form")),
+    );
+
+    expect(api.updateMemory).toHaveBeenCalledWith(
+      "m1",
+      expect.objectContaining({ ttl_seconds: 0 }),
+    );
+  });
+
+  it("updates memory with parsed ttl_seconds when TTL is set", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.updateMemory.mockResolvedValue({});
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    fireEvent.click(getCard());
+
+    fireEvent.change(screen.getByLabelText("Expires in"), {
+      target: { value: "86400" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("Memory content…").closest("form")),
+    );
+
+    expect(api.updateMemory).toHaveBeenCalledWith(
+      "m1",
+      expect.objectContaining({ ttl_seconds: 86400 }),
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Version history
+  // ---------------------------------------------------------------------------
+
+  it("opens history panel on History button click with no versions", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockResolvedValue([]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+
+    await waitFor(() => expect(screen.getByText("History: test-key")).toBeTruthy());
+    expect(screen.getByText("No previous versions.")).toBeTruthy();
+  });
+
+  it("shows versions in history panel and truncates long values", async () => {
+    const shortVersion = {
+      version_timestamp: "20260412T120000000000",
+      value: "old value",
+      tags: [],
+      recorded_at: "2026-04-12T12:00:00.000Z",
+    };
+    const longVersion = {
+      version_timestamp: "20260412T110000000000",
+      value: "x".repeat(200),
+      tags: [],
+      recorded_at: "2026-04-12T11:00:00.000Z",
+    };
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockResolvedValue([shortVersion, longVersion]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+
+    await waitFor(() => expect(screen.getByText("old value")).toBeTruthy());
+    // Long value gets truncated with ellipsis
+    expect(screen.getByText(/x{120}…/)).toBeTruthy();
+    expect(screen.getAllByText("Restore")).toHaveLength(2);
+  });
+
+  it("restores a version and closes history panel", async () => {
+    const version = {
+      version_timestamp: "20260412T120000000000",
+      value: "old value",
+      tags: [],
+      recorded_at: "2026-04-12T12:00:00.000Z",
+    };
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null })
+      .mockResolvedValue({ items: [], next_cursor: null });
+    api.listMemoryVersions.mockResolvedValue([version]);
+    api.restoreMemoryVersion.mockResolvedValue({});
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Restore"));
+    await act(async () => fireEvent.click(screen.getByText("Restore")));
+
+    expect(api.restoreMemoryVersion).toHaveBeenCalledWith("m1", "20260412T120000000000");
+    await waitFor(() => expect(screen.queryByText("History: test-key")).toBeNull());
+  });
+
+  it("shows error when restore fails", async () => {
+    const version = {
+      version_timestamp: "20260412T120000000000",
+      value: "old value",
+      tags: [],
+      recorded_at: "2026-04-12T12:00:00.000Z",
+    };
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockResolvedValue([version]);
+    api.restoreMemoryVersion.mockRejectedValue(new Error("Restore failed"));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Restore"));
+    await act(async () => fireEvent.click(screen.getByText("Restore")));
+
+    await waitFor(() => expect(screen.getByText("Restore failed")).toBeTruthy());
+  });
+
+  it("closes history panel on Close button click", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockResolvedValue([]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("History: test-key"));
+    fireEvent.click(screen.getByText("Close"));
+    expect(screen.queryByText("History: test-key")).toBeNull();
+  });
+
+  it("shows error when listMemoryVersions fails", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockRejectedValue(new Error("History load failed"));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+
+    await waitFor(() => expect(screen.getByText("History load failed")).toBeTruthy());
+  });
+
+  it("opening create form clears history panel", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockResolvedValue([]);
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("History: test-key"));
+    fireEvent.click(screen.getByText("+ New"));
+    expect(screen.queryByText("History: test-key")).toBeNull();
+    expect(screen.getByText("New Memory")).toBeTruthy();
+  });
+
+  it("opening edit form clears history panel", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockResolvedValue([]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("History: test-key"));
+    fireEvent.click(getCard());
+    expect(screen.queryByText("History: test-key")).toBeNull();
+    expect(screen.getByText("Edit: test-key")).toBeTruthy();
   });
 });

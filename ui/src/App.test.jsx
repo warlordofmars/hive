@@ -33,6 +33,9 @@ vi.mock("./components/Dashboard.jsx", () => ({
 vi.mock("./components/LogViewer.jsx", () => ({
   default: () => <div data-testid="log-viewer" />,
 }));
+vi.mock("./components/ApiKeysPanel.jsx", () => ({
+  default: () => <div data-testid="api-keys-panel" />,
+}));
 
 /** Build a syntactically-valid mgmt JWT with given claims. */
 function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
@@ -142,6 +145,7 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     expect(screen.getByText("Memories")).toBeTruthy();
     expect(screen.getByText("OAuth Clients")).toBeTruthy();
+    expect(screen.getByText("API Keys")).toBeTruthy();
     expect(screen.getByText("Activity Log")).toBeTruthy();
     expect(screen.getByText("Setup")).toBeTruthy();
     expect(screen.queryByText("Users")).toBeNull();
@@ -207,6 +211,13 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     fireEvent.click(screen.getByText("OAuth Clients"));
     expect(screen.getByTestId("client-manager")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("switches to ApiKeysPanel when API Keys tab is clicked", async () => {
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("API Keys"));
+    expect(screen.getByTestId("api-keys-panel")).toBeTruthy();
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
@@ -355,10 +366,10 @@ describe("AppShell", () => {
     expect(screen.getByRole("button", { name: /switch to light mode/i })).toBeTruthy();
   });
 
-  it("active tab has orange bottom border", async () => {
+  it("active tab has brand bottom border class", async () => {
     await act(async () => render(<App />));
     const memoriesBtn = screen.getByText("Memories");
-    expect(memoriesBtn.style.borderBottom).toContain("rgb(232, 160, 32)");
+    expect(memoriesBtn.className).toContain("border-b-brand");
   });
 
   it("version in footer links to /changelog", async () => {
@@ -376,23 +387,41 @@ describe("AppShell", () => {
     expect(screen.getByTestId("client-manager")).toBeTruthy();
   });
 
-  it("footer changelog link underlines on hover and resets on mouse out", async () => {
+  it("footer changelog link has hover:underline class", async () => {
     await act(async () => render(<App />));
     await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
     const link = screen.getByText("Hive 1.2.3").closest("a");
-    fireEvent.mouseOver(link);
-    expect(link.style.textDecoration).toBe("underline");
-    fireEvent.mouseOut(link);
-    expect(link.style.textDecoration).toBe("none");
+    expect(link.className).toContain("hover:underline");
   });
 
-  it("footer changelog link underlines on focus and resets on blur", async () => {
+  it("footer changelog link has focus:underline class", async () => {
     await act(async () => render(<App />));
     await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
     const link = screen.getByText("Hive 1.2.3").closest("a");
-    fireEvent.focus(link);
-    expect(link.style.textDecoration).toBe("underline");
-    fireEvent.blur(link);
-    expect(link.style.textDecoration).toBe("none");
+    expect(link.className).toContain("focus:underline");
+  });
+
+  it("renders hamburger toggle button", async () => {
+    await act(async () => render(<App />));
+    expect(screen.getByRole("button", { name: /toggle navigation/i })).toBeTruthy();
+  });
+
+  it("hamburger click shows mobile nav", async () => {
+    await act(async () => render(<App />));
+    expect(screen.queryByTestId("mobile-nav")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /toggle navigation/i }));
+    expect(screen.getByTestId("mobile-nav")).toBeTruthy();
+  });
+
+  it("clicking tab in mobile nav switches panel and closes menu", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /toggle navigation/i }));
+    const mobileNav = screen.getByTestId("mobile-nav");
+    // Click "OAuth Clients" (second tab button in mobile nav)
+    const mobileButtons = mobileNav.querySelectorAll("button[type='button']");
+    fireEvent.click(mobileButtons[1]);
+    expect(screen.queryByTestId("mobile-nav")).toBeNull();
+    expect(screen.getByTestId("client-manager")).toBeTruthy();
   });
 });

@@ -2,18 +2,37 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import { AlertDialog } from "./ui/alert-dialog.jsx";
+import { Badge } from "./ui/badge.jsx";
+import { Button } from "./ui/button.jsx";
+import { Card } from "./ui/card.jsx";
+import { Input } from "./ui/input.jsx";
+import { Label } from "./ui/label.jsx";
+import { Select } from "./ui/select.jsx";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table.jsx";
 
 export default function UsersPanel() {
   const [users, setUsers] = useState([]);
+  const [nextCursor, setNextCursor] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [emailFilter, setEmailFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [userStats, setUserStats] = useState(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [roleUpdating, setRoleUpdating] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setNextCursor(null);
     try {
-      const data = await api.listUsers();
+      const data = await api.listUsers({ limit: 50 });
       setUsers(data ? data.items : []);
+      setNextCursor(data?.next_cursor ?? null);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -25,55 +44,227 @@ export default function UsersPanel() {
     load();
   }, [load]);
 
-  async function handleDelete(userId) {
-    if (!globalThis.confirm("Delete this user?")) return;
+  async function loadMore() {
+    if (!nextCursor) return; /* c8 ignore next */
+    setLoadingMore(true);
     try {
-      await api.deleteUser(userId);
-      setUsers((prev) => prev.filter((u) => u.user_id !== userId));
+      const data = await api.listUsers({ cursor: nextCursor });
+      setUsers((prev) => [...prev, ...(data?.items ?? [])]);
+      setNextCursor(data?.next_cursor ?? null);
     } catch (e) {
       setError(e.message);
+    } finally {
+      setLoadingMore(false);
     }
   }
 
+  async function handleDelete(userId) {
+    try {
+      await api.deleteUser(userId);
+      setUsers((prev) => prev.filter((u) => u.user_id !== userId));
+      if (selectedUser?.user_id === userId) setSelectedUser(null);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPendingDelete(null);
+    }
+  }
+
+  async function openDetail(user) {
+    setSelectedUser(user);
+    setUserStats(null);
+    setStatsLoading(true);
+    try {
+      const stats = await api.getUserStats(user.user_id);
+      setUserStats(stats);
+    } catch {
+      setUserStats(null);
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
+  async function handleRoleChange(userId, newRole) {
+    setRoleUpdating(true);
+    setError(null);
+    try {
+      const updated = await api.updateUserRole(userId, newRole);
+      setUsers((prev) => prev.map((u) => (u.user_id === userId ? updated : u)));
+      setSelectedUser(updated);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRoleUpdating(false);
+    }
+  }
+
+  const filtered = users.filter((u) => {
+    const emailMatch = !emailFilter || u.email.toLowerCase().includes(emailFilter.toLowerCase());
+    const roleMatch = !roleFilter || u.role === roleFilter;
+    return emailMatch && roleMatch;
+  });
+
   if (loading) return <p>Loading…</p>;
-  if (error) return <p style={{ color: "var(--danger)" }}>{error}</p>;
+  if (error) return <p className="text-[var(--danger)]">{error}</p>;
 
   return (
-    <div>
-      <h2 style={{ marginBottom: 16 }}>Users</h2>
-      {users.length === 0 ? (
-        <EmptyState
-          variant="users"
-          title="No users found"
-          description="Users appear here after they sign in for the first time via Google OAuth."
-        />
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid var(--border)", textAlign: "left" }}>
-              <th style={{ padding: "8px 12px" }}>Email</th>
-              <th style={{ padding: "8px 12px" }}>Role</th>
-              <th style={{ padding: "8px 12px" }}>Last Login</th>
-              <th style={{ padding: "8px 12px" }} />
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.user_id} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={{ padding: "8px 12px" }}>{u.email}</td>
-                <td style={{ padding: "8px 12px" }}>{u.role}</td>
-                <td style={{ padding: "8px 12px" }}>
-                  {new Date(u.last_login_at).toLocaleString()}
-                </td>
-                <td style={{ padding: "8px 12px" }}>
-                  <button className="danger" onClick={() => handleDelete(u.user_id)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="flex flex-col md:flex-row gap-5">
+      <AlertDialog
+        open={pendingDelete !== null}
+        title="Delete user?"
+        description="This will permanently remove the user account."
+        onConfirm={() => handleDelete(pendingDelete)}
+        onCancel={() => setPendingDelete(null)}
+      />
+
+      <div className="flex-1">
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <h2 className="flex-1 font-semibold text-lg">Users</h2>
+          <Input
+            data-testid="email-search"
+            className="w-48"
+            placeholder="Search by email…"
+            value={emailFilter}
+            onChange={(e) => setEmailFilter(e.target.value)}
+          />
+          <Select
+            data-testid="role-filter"
+            className="w-32"
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+          >
+            <option value="">All roles</option>
+            <option value="admin">admin</option>
+            <option value="user">user</option>
+          </Select>
+        </div>
+
+        {users.length === 0 ? (
+          <EmptyState
+            variant="users"
+            title="No users found"
+            description="Users appear here after they sign in for the first time via Google OAuth."
+          />
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Role</TableHead>
+                    <TableHead>Joined</TableHead>
+                    <TableHead>Last Login</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filtered.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center text-[var(--text-muted)] text-sm py-6">
+                        No users match your filters.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {filtered.map((u) => (
+                    <TableRow
+                      key={u.user_id}
+                      className="cursor-pointer"
+                      onClick={() => openDetail(u)}
+                    >
+                      <TableCell>{u.email}</TableCell>
+                      <TableCell>
+                        <Badge>{u.role}</Badge>
+                      </TableCell>
+                      <TableCell className="text-[var(--text-muted)] text-xs whitespace-nowrap">
+                        {new Date(u.created_at).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell className="text-[var(--text-muted)] text-xs whitespace-nowrap">
+                        {new Date(u.last_login_at).toLocaleString()}
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Button variant="danger" size="sm" onClick={() => setPendingDelete(u.user_id)}>
+                          Delete
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            {nextCursor && (
+              <div className="text-center mt-4">
+                <Button variant="secondary" onClick={loadMore} disabled={loadingMore}>
+                  {loadingMore ? "Loading…" : "Load more"}
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {selectedUser && (
+        <div className="w-full md:w-[300px]">
+          <Card data-testid="user-detail">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-base font-semibold">User Detail</h3>
+              <button
+                type="button"
+                aria-label="Close detail panel"
+                className="bg-transparent border-none cursor-pointer text-[var(--text-muted)] p-0"
+                onClick={() => setSelectedUser(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-sm font-medium">{selectedUser.display_name}</p>
+            <p className="text-xs text-[var(--text-muted)] mb-3">{selectedUser.email}</p>
+
+            {statsLoading && <p className="text-xs text-[var(--text-muted)]">Loading stats…</p>}
+            {userStats && (
+              <div className="flex gap-4 mb-3">
+                <div className="text-center flex-1">
+                  <div className="text-lg font-bold">{userStats.memory_count}</div>
+                  <div className="text-xs text-[var(--text-muted)]">Memories</div>
+                </div>
+                <div className="text-center flex-1">
+                  <div className="text-lg font-bold">{userStats.client_count}</div>
+                  <div className="text-xs text-[var(--text-muted)]">Clients</div>
+                </div>
+              </div>
+            )}
+
+            <div className="text-xs text-[var(--text-muted)] mb-1">
+              Joined {new Date(selectedUser.created_at).toLocaleDateString()}
+            </div>
+            <div className="text-xs text-[var(--text-muted)] mb-4">
+              Last login {new Date(selectedUser.last_login_at).toLocaleString()}
+            </div>
+
+            <Label htmlFor="detail-role">Role</Label>
+            <div className="flex gap-2 mt-1">
+              <Select
+                id="detail-role"
+                value={selectedUser.role}
+                disabled={roleUpdating}
+                onChange={(e) => handleRoleChange(selectedUser.user_id, e.target.value)}
+              >
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </Select>
+            </div>
+
+            <Button
+              variant="danger"
+              size="sm"
+              className="mt-4 w-full"
+              onClick={() => { setPendingDelete(selectedUser.user_id); setSelectedUser(null); }}
+            >
+              Delete user
+            </Button>
+          </Card>
+        </div>
       )}
     </div>
   );

@@ -41,13 +41,23 @@ export default function StatusPage() {
   const isOk = status === "ok";
   const isLoading = status === "loading";
 
-  const statusIcon = isLoading
-    ? <RefreshCw size={32} className="text-[var(--text-muted)] animate-spin" />
-    : isOk
-    ? <CheckCircle size={32} className="text-green-500" />
-    : <AlertCircle size={32} className="text-red-500" />;
+  let statusIcon;
+  if (isLoading) {
+    statusIcon = <RefreshCw size={32} className="text-[var(--text-muted)] animate-spin" />;
+  } else if (isOk) {
+    statusIcon = <CheckCircle size={32} className="text-green-500" />;
+  } else {
+    statusIcon = <AlertCircle size={32} className="text-red-500" />;
+  }
 
-  const statusText = isLoading ? "Checking…" : isOk ? "All systems operational" : "Service unavailable";
+  let statusText;
+  if (isLoading) {
+    statusText = "Checking…";
+  } else if (isOk) {
+    statusText = "All systems operational";
+  } else {
+    statusText = "Service unavailable";
+  }
 
   return (
     <PageLayout>

@@ -15,7 +15,9 @@ from __future__ import annotations
 import base64
 import json
 import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 import boto3
@@ -24,8 +26,10 @@ from botocore.exceptions import ClientError
 
 from hive.models import (
     ActivityEvent,
+    ApiKey,
     AuthorizationCode,
     Memory,
+    MemoryVersion,
     MgmtPendingState,
     OAuthClient,
     PendingAuth,
@@ -37,6 +41,14 @@ from hive.models import (
 TABLE_NAME = os.environ.get("HIVE_TABLE_NAME", "hive")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
+
+# Reusable DynamoDB filter expression fragments
+_UID_FILTER = " AND owner_user_id = :uid"
+_PK_PREFIX_KEY = ":prefix"
+_SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
+
+# Version retention
+_VERSION_RETENTION_DAYS = int(os.environ.get("HIVE_VERSION_RETENTION_DAYS", "30"))
 
 # Token lifetimes
 ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
@@ -82,11 +94,17 @@ class HiveStorage:
     # ------------------------------------------------------------------
 
     def put_memory(self, memory: Memory) -> None:
-        """Write (create or replace) a memory and all its tag items."""
+        """Write (create or replace) a memory and all its tag items.
+
+        When replacing an existing memory, the previous state is snapshotted
+        as a VERSION item so it can be retrieved via list_memory_versions.
+        """
         # First delete old tag items if the memory already exists
         existing_raw = self._get_memory_meta(memory.memory_id)
         if existing_raw:
-            self._delete_tag_items(Memory.from_dynamo(existing_raw))
+            old = Memory.from_dynamo(existing_raw)
+            self._delete_tag_items(old)
+            self.save_memory_version(old)
 
         try:
             with self.table.batch_writer() as batch:
@@ -106,7 +124,10 @@ class HiveStorage:
         item = self._get_memory_meta(memory_id)
         if item is None:
             return None
-        return Memory.from_dynamo(item)
+        memory = Memory.from_dynamo(item)
+        if memory.is_expired:
+            return None
+        return memory
 
     def get_memory_by_key(self, key: str) -> Memory | None:
         """Look up a memory by its human-readable key using GSI1."""
@@ -131,6 +152,39 @@ class HiveStorage:
         self._delete_tag_items(memory)
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         return True
+
+    # ------------------------------------------------------------------
+    # Memory version history
+    # ------------------------------------------------------------------
+
+    def save_memory_version(self, memory: Memory) -> MemoryVersion:
+        """Snapshot the current state of a memory as a VERSION item."""
+        version = MemoryVersion.from_memory(memory)
+        item = version.to_dynamo()
+        # Set TTL so old versions are auto-pruned
+        expires = _now() + timedelta(days=_VERSION_RETENTION_DAYS)
+        item["ttl"] = int(expires.timestamp())
+        self.table.put_item(Item=item)
+        return version
+
+    def list_memory_versions(self, memory_id: str) -> list[MemoryVersion]:
+        """Return all version snapshots for a memory, newest first."""
+        resp = self.table.query(
+            KeyConditionExpression=Key("PK").eq(f"MEMORY#{memory_id}")
+            & Key("SK").begins_with("VERSION#"),
+            ScanIndexForward=False,
+        )
+        return [MemoryVersion.from_dynamo(item) for item in resp.get("Items", [])]
+
+    def get_memory_version(self, memory_id: str, version_timestamp: str) -> MemoryVersion | None:
+        """Fetch a specific version snapshot."""
+        resp = self.table.get_item(
+            Key={"PK": f"MEMORY#{memory_id}", "SK": f"VERSION#{version_timestamp}"}
+        )
+        item = resp.get("Item")
+        if item is None:
+            return None
+        return MemoryVersion.from_dynamo(item)
 
     def hydrate_memory_ids(
         self, id_score_pairs: list[tuple[str, float]]
@@ -198,7 +252,7 @@ class HiveStorage:
             filter_expr += " AND owner_client_id = :cid"
             expr_vals[":cid"] = client_id
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
 
         start_key = _decode_cursor(cursor) if cursor else None
@@ -227,6 +281,72 @@ class HiveStorage:
                 return memories, None
             start_key = lek
 
+    def delete_memories_by_tag(
+        self,
+        tag: str,
+        owner_user_id: str | None = None,
+    ) -> int:
+        """Delete all memories with the given tag.
+
+        If owner_user_id is provided, only memories owned by that user are deleted.
+        Returns the count of memories deleted.
+        """
+        deleted = 0
+        cursor: str | None = None
+        while True:
+            items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
+            for memory in items:
+                if owner_user_id and memory.owner_user_id != owner_user_id:
+                    continue
+                self._delete_tag_items(memory)
+                self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
+                deleted += 1
+            if cursor is None:
+                break
+        return deleted
+
+    def iter_all_memories(
+        self,
+        owner_user_id: str | None = None,
+        tag: str | None = None,
+    ) -> Iterator[Memory]:
+        """Yield all memories, optionally filtered by owner or tag.
+
+        For tag-filtered export, iterates TagIndex pages.
+        For unfiltered export, scans all META items.
+        This is a generator — use for streaming exports only.
+        """
+        if tag:
+            cursor: str | None = None
+            while True:
+                items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
+                for memory in items:
+                    if owner_user_id and memory.owner_user_id != owner_user_id:
+                        continue
+                    yield memory
+                if cursor is None:
+                    break
+        else:
+            filter_expr = "SK = :sk AND begins_with(PK, :pk_prefix)"
+            expr_vals: dict[str, Any] = {":sk": "META", ":pk_prefix": "MEMORY#"}
+            if owner_user_id:
+                filter_expr += _UID_FILTER
+                expr_vals[":uid"] = owner_user_id
+            start_key: dict[str, Any] | None = None
+            while True:
+                kwargs: dict[str, Any] = {
+                    "FilterExpression": filter_expr,
+                    "ExpressionAttributeValues": expr_vals,
+                }
+                if start_key:
+                    kwargs["ExclusiveStartKey"] = start_key
+                resp = self.table.scan(**kwargs)
+                for item in resp.get("Items", []):
+                    yield Memory.from_dynamo(item)
+                start_key = resp.get("LastEvaluatedKey")
+                if start_key is None:
+                    break
+
     # ------------------------------------------------------------------
     # OAuth Client management
     # ------------------------------------------------------------------
@@ -253,9 +373,9 @@ class HiveStorage:
         cursor: str | None = None,
     ) -> tuple[list[OAuthClient], str | None]:
         filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
-        expr_vals: dict[str, Any] = {":prefix": "CLIENT#", ":sk": "META"}
+        expr_vals: dict[str, Any] = {_PK_PREFIX_KEY: "CLIENT#", ":sk": "META"}
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
 
         start_key = _decode_cursor(cursor) if cursor else None
@@ -424,6 +544,18 @@ class HiveStorage:
             return None
         return self.get_user_by_id(items[0]["user_id"])
 
+    def update_user_role(self, user_id: str, role: str) -> bool:
+        resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+        self.table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": "META"},
+            UpdateExpression="SET #r = :role",
+            ExpressionAttributeNames={"#r": "role"},
+            ExpressionAttributeValues={":role": role},
+        )
+        return True
+
     def delete_user(self, user_id: str) -> bool:
         resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
         if not resp.get("Item"):
@@ -437,7 +569,7 @@ class HiveStorage:
         cursor: str | None = None,
     ) -> tuple[list[User], str | None]:
         filter_expr = "begins_with(PK, :prefix) AND SK = :sk"
-        expr_vals: dict[str, Any] = {":prefix": "USER#", ":sk": "META"}
+        expr_vals: dict[str, Any] = {_PK_PREFIX_KEY: "USER#", ":sk": "META"}
 
         start_key = _decode_cursor(cursor) if cursor else None
         users: list[User] = []
@@ -537,9 +669,9 @@ class HiveStorage:
 
     def count_memories(self, owner_user_id: str | None = None) -> int:
         filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
-        expr_vals: dict[str, Any] = {":sk": "META", ":prefix": "MEMORY#"}
+        expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "MEMORY#"}
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
         resp = self.table.scan(
             Select="COUNT",
@@ -550,9 +682,9 @@ class HiveStorage:
 
     def count_clients(self, owner_user_id: str | None = None) -> int:
         filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
-        expr_vals: dict[str, Any] = {":sk": "META", ":prefix": "CLIENT#"}
+        expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "CLIENT#"}
         if owner_user_id:
-            filter_expr += " AND owner_user_id = :uid"
+            filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
         resp = self.table.scan(
             Select="COUNT",
@@ -565,9 +697,136 @@ class HiveStorage:
         resp = self.table.scan(
             Select="COUNT",
             FilterExpression="SK = :sk AND begins_with(PK, :prefix)",
-            ExpressionAttributeValues={":sk": "META", ":prefix": "USER#"},
+            ExpressionAttributeValues={":sk": "META", _PK_PREFIX_KEY: "USER#"},
         )
         return resp.get("Count", 0)
+
+    # ------------------------------------------------------------------
+    # API Keys
+    # ------------------------------------------------------------------
+
+    def put_api_key(self, key: ApiKey) -> None:
+        self.table.put_item(Item=key.to_dynamo())
+
+    def get_api_key_by_id(self, key_id: str) -> ApiKey | None:
+        resp = self.table.get_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})
+        item = resp.get("Item")
+        return ApiKey.from_dynamo(item) if item else None
+
+    def get_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
+        """Look up an API key by its SHA-256 hash (full table scan — keys are rare)."""
+        resp = self.table.scan(
+            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
+            ExpressionAttributeValues={
+                _PK_PREFIX_KEY: "APIKEY#",
+                ":sk": "META",
+                ":hash": key_hash,
+            },
+        )
+        items = resp.get("Items", [])
+        return ApiKey.from_dynamo(items[0]) if items else None
+
+    def list_api_keys_for_user(self, owner_user_id: str) -> list[ApiKey]:
+        resp = self.table.scan(
+            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
+            ExpressionAttributeValues={
+                _PK_PREFIX_KEY: "APIKEY#",
+                ":sk": "META",
+                ":uid": owner_user_id,
+            },
+        )
+        return [ApiKey.from_dynamo(item) for item in resp.get("Items", [])]
+
+    def delete_api_key(self, key_id: str) -> bool:
+        resp = self.table.get_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+        self.table.delete_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})
+        return True
+
+    # ------------------------------------------------------------------
+    # Rate limiting
+    # ------------------------------------------------------------------
+
+    def increment_rate_limit_counter(
+        self, client_id: str, window_key: str, ttl_seconds: int
+    ) -> int:
+        """Atomically increment a rate limit counter and return the new value.
+
+        The counter item is created on first access. TTL is set only on the
+        first write (``if_not_exists``) so DynamoDB TTL can clean up expired
+        counters automatically.
+
+        Args:
+            client_id:   The OAuth client being rate-limited.
+            window_key:  Window identifier, e.g. ``min#2026-04-12T10:30``.
+            ttl_seconds: Seconds from now after which the item should expire.
+        """
+        import time
+
+        pk = f"RATELIMIT#{client_id}#{window_key}"
+        ttl_epoch = int(time.time()) + ttl_seconds
+        resp = self.table.update_item(
+            Key={"PK": pk, "SK": "META"},
+            UpdateExpression="SET #ttl = if_not_exists(#ttl, :ttl) ADD #c :one",
+            ExpressionAttributeNames={"#c": "count", "#ttl": "ttl"},
+            ExpressionAttributeValues={":one": Decimal("1"), ":ttl": ttl_epoch},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(resp["Attributes"]["count"])
+
+    # ------------------------------------------------------------------
+    # Audit log (separate from user activity log)
+    # ------------------------------------------------------------------
+
+    def log_audit_event(self, event: ActivityEvent) -> None:
+        """Write an audit event to the immutable audit log (AUDIT# PK prefix).
+
+        Audit events use a separate PK prefix from activity log events (LOG#)
+        and are never deleted, even when a user's activity log is purged.
+        """
+        item = event.to_dynamo()
+        # Override the PK prefix so audit events are stored separately
+        date_hour_str = event.timestamp.strftime("%Y-%m-%d#%H")
+        item["PK"] = f"AUDIT#{date_hour_str}"
+        self.table.put_item(Item=item)
+
+    # ------------------------------------------------------------------
+    # Account deletion
+    # ------------------------------------------------------------------
+
+    def delete_user_data(self, user_id: str) -> dict[str, int]:
+        """Delete all data owned by a user.
+
+        Deletes all memories, OAuth clients, and the user record.
+        Tokens are not explicitly revoked — they carry short TTLs and
+        will expire naturally. Returns counts of deleted items.
+        """
+        deleted_memories = 0
+        cursor: str | None = None
+        while True:
+            memories, cursor = self.list_all_memories(
+                owner_user_id=user_id, limit=200, cursor=cursor
+            )
+            for memory in memories:
+                self.delete_memory(memory.memory_id)
+                deleted_memories += 1
+            if cursor is None:
+                break
+
+        deleted_clients = 0
+        cursor = None
+        while True:
+            clients, cursor = self.list_clients(owner_user_id=user_id, limit=200, cursor=cursor)
+            for client in clients:
+                self.delete_client(client.client_id)
+                deleted_clients += 1
+            if cursor is None:
+                break
+
+        self.delete_user(user_id)
+
+        return {"deleted_memories": deleted_memories, "deleted_clients": deleted_clients}
 
     # ------------------------------------------------------------------
     # Internal helpers

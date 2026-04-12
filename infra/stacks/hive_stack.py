@@ -331,7 +331,15 @@ class HiveStack(cdk.Stack):
             tracing=lambda_.Tracing.ACTIVE,
         )
 
-        mcp_url = mcp_fn.add_function_url(
+        mcp_alias = lambda_.Alias(
+            self,
+            "McpAlias",
+            alias_name="live",
+            version=mcp_fn.current_version,
+            provisioned_concurrent_executions=1 if is_prod else 0,
+        )
+
+        mcp_url = mcp_alias.add_function_url(
             auth_type=lambda_.FunctionUrlAuthType.NONE,
             cors=lambda_.FunctionUrlCorsOptions(
                 allowed_origins=["*"],
@@ -361,7 +369,7 @@ class HiveStack(cdk.Stack):
         origin_verify_param.grant_read(api_role)
         api_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["cloudwatch:GetMetricData"],
+                actions=["cloudwatch:GetMetricData", "cloudwatch:DescribeAlarms"],
                 resources=["*"],
             )
         )
@@ -506,137 +514,135 @@ class HiveStack(cdk.Stack):
         )
 
         # ----------------------------------------------------------------
-        # WAF WebACL (prod only — see issue #86 for dev)
+        # WAF WebACL (all environments)
         # ----------------------------------------------------------------
-        web_acl_arn: str | None = None
-        if is_prod:
-            waf_log_group = logs.LogGroup(
-                self,
-                "WafLogGroup",
-                log_group_name=f"aws-waf-logs-hive-{env_name}",
-                retention=logs.RetentionDays.ONE_MONTH,
-                removal_policy=cdk.RemovalPolicy.DESTROY,
-            )
-            # WAFv2 needs permission to write to the CloudWatch log group
-            waf_log_group.add_to_resource_policy(
-                iam.PolicyStatement(
-                    principals=[iam.ServicePrincipal("delivery.logs.amazonaws.com")],
-                    actions=["logs:CreateLogStream", "logs:PutLogEvents"],
-                    resources=[f"{waf_log_group.log_group_arn}:*"],
-                    conditions={
-                        "StringEquals": {"aws:SourceAccount": self.account},
-                        "ArnLike": {
-                            "aws:SourceArn": f"arn:aws:logs:{self.region}:{self.account}:*"
-                        },
+        waf_log_group = logs.LogGroup(
+            self,
+            "WafLogGroup",
+            log_group_name=f"aws-waf-logs-hive-{env_name}",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+        # WAFv2 needs permission to write to the CloudWatch log group
+        waf_log_group.add_to_resource_policy(
+            iam.PolicyStatement(
+                principals=[iam.ServicePrincipal("delivery.logs.amazonaws.com")],
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[f"{waf_log_group.log_group_arn}:*"],
+                conditions={
+                    "StringEquals": {"aws:SourceAccount": self.account},
+                    "ArnLike": {
+                        "aws:SourceArn": f"arn:aws:logs:{self.region}:{self.account}:*"
                     },
-                )
+                },
             )
+        )
 
-            web_acl = wafv2.CfnWebACL(
-                self,
-                "WebAcl",
-                name=f"hive-{env_name}",
-                scope="CLOUDFRONT",
-                default_action=wafv2.CfnWebACL.DefaultActionProperty(allow={}),
-                visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                    cloud_watch_metrics_enabled=True,
-                    metric_name=f"hive-{env_name}-waf",
-                    sampled_requests_enabled=True,
+        web_acl = wafv2.CfnWebACL(
+            self,
+            "WebAcl",
+            name=f"hive-{env_name}",
+            scope="CLOUDFRONT",
+            default_action=wafv2.CfnWebACL.DefaultActionProperty(allow={}),
+            visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                cloud_watch_metrics_enabled=True,
+                metric_name=f"hive-{env_name}-waf",
+                sampled_requests_enabled=True,
+            ),
+            rules=[
+                # Managed: OWASP Top 10 protections
+                wafv2.CfnWebACL.RuleProperty(
+                    name="AWSManagedRulesCommonRuleSet",
+                    priority=0,
+                    override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
+                            vendor_name="AWS",
+                            name="AWSManagedRulesCommonRuleSet",
+                        ),
+                    ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="AWSManagedRulesCommonRuleSet",
+                        sampled_requests_enabled=True,
+                    ),
                 ),
-                rules=[
-                    # Managed: OWASP Top 10 protections
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="AWSManagedRulesCommonRuleSet",
-                        priority=0,
-                        override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
-                                vendor_name="AWS",
-                                name="AWSManagedRulesCommonRuleSet",
+                # Managed: known malicious input patterns
+                wafv2.CfnWebACL.RuleProperty(
+                    name="AWSManagedRulesKnownBadInputsRuleSet",
+                    priority=1,
+                    override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
+                            vendor_name="AWS",
+                            name="AWSManagedRulesKnownBadInputsRuleSet",
+                        ),
+                    ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="AWSManagedRulesKnownBadInputsRuleSet",
+                        sampled_requests_enabled=True,
+                    ),
+                ),
+                # Rate limit: 100 req/5min per IP on /oauth/* (auth endpoints)
+                wafv2.CfnWebACL.RuleProperty(
+                    name="OAuthRateLimit",
+                    priority=2,
+                    action=wafv2.CfnWebACL.RuleActionProperty(block={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
+                            limit=100,
+                            aggregate_key_type="IP",
+                            scope_down_statement=wafv2.CfnWebACL.StatementProperty(
+                                byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
+                                    search_string="/oauth/",
+                                    field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
+                                        uri_path={}
+                                    ),
+                                    text_transformations=[
+                                        wafv2.CfnWebACL.TextTransformationProperty(
+                                            priority=0, type="NONE"
+                                        )
+                                    ],
+                                    positional_constraint="STARTS_WITH",
+                                )
                             ),
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="AWSManagedRulesCommonRuleSet",
-                            sampled_requests_enabled=True,
-                        ),
+                        )
                     ),
-                    # Managed: known malicious input patterns
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="AWSManagedRulesKnownBadInputsRuleSet",
-                        priority=1,
-                        override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
-                                vendor_name="AWS",
-                                name="AWSManagedRulesKnownBadInputsRuleSet",
-                            ),
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="AWSManagedRulesKnownBadInputsRuleSet",
-                            sampled_requests_enabled=True,
-                        ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="OAuthRateLimit",
+                        sampled_requests_enabled=True,
                     ),
-                    # Rate limit: 100 req/5min per IP on /oauth/* (auth endpoints)
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="OAuthRateLimit",
-                        priority=2,
-                        action=wafv2.CfnWebACL.RuleActionProperty(block={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
-                                limit=100,
-                                aggregate_key_type="IP",
-                                scope_down_statement=wafv2.CfnWebACL.StatementProperty(
-                                    byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
-                                        search_string="/oauth/",
-                                        field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
-                                            uri_path={}
-                                        ),
-                                        text_transformations=[
-                                            wafv2.CfnWebACL.TextTransformationProperty(
-                                                priority=0, type="NONE"
-                                            )
-                                        ],
-                                        positional_constraint="STARTS_WITH",
-                                    )
-                                ),
-                            )
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="OAuthRateLimit",
-                            sampled_requests_enabled=True,
-                        ),
+                ),
+                # Rate limit: 1000 req/5min per IP globally
+                wafv2.CfnWebACL.RuleProperty(
+                    name="GlobalRateLimit",
+                    priority=3,
+                    action=wafv2.CfnWebACL.RuleActionProperty(block={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
+                            limit=1000,
+                            aggregate_key_type="IP",
+                        )
                     ),
-                    # Rate limit: 1000 req/5min per IP globally
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="GlobalRateLimit",
-                        priority=3,
-                        action=wafv2.CfnWebACL.RuleActionProperty(block={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
-                                limit=1000,
-                                aggregate_key_type="IP",
-                            )
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="GlobalRateLimit",
-                            sampled_requests_enabled=True,
-                        ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="GlobalRateLimit",
+                        sampled_requests_enabled=True,
                     ),
-                ],
-            )
+                ),
+            ],
+        )
 
-            wafv2.CfnLoggingConfiguration(
-                self,
-                "WafLogging",
-                log_destination_configs=[waf_log_group.log_group_arn],
-                resource_arn=web_acl.attr_arn,
-            )
+        wafv2.CfnLoggingConfiguration(
+            self,
+            "WafLogging",
+            log_destination_configs=[waf_log_group.log_group_arn],
+            resource_arn=web_acl.attr_arn,
+        )
 
-            web_acl_arn = web_acl.attr_arn
+        web_acl_arn = web_acl.attr_arn
 
         # CloudFront Function: rewrite clean /docs URLs to the S3 .html files.
         # VitePress with cleanUrls:true outputs flat .html files (e.g.
@@ -762,12 +768,11 @@ function handler(event) {
             ],
         )
 
-        # Associate WAF WebACL with distribution (prod only)
-        if web_acl_arn:
-            cfn_distribution = distribution.node.default_child
-            cfn_distribution.add_property_override(  # type: ignore[union-attr]
-                "DistributionConfig.WebACLId", web_acl_arn
-            )
+        # Associate WAF WebACL with distribution
+        cfn_distribution = distribution.node.default_child
+        cfn_distribution.add_property_override(  # type: ignore[union-attr]
+            "DistributionConfig.WebACLId", web_acl_arn
+        )
 
         # Deploy built UI assets — only if ui/dist exists (built in CI before cdk deploy)
         # prune=False: do not delete objects outside ui/dist (e.g. the docs/ prefix).
@@ -930,6 +935,13 @@ function handler(event) {
         # ----------------------------------------------------------------
         dashboard_name = "Hive" if is_prod else f"Hive-{env_name}"
 
+        # SLO targets and derived error budgets
+        # MCP availability: 99.5% success → 0.5% error budget
+        # API availability: 99.0% success → 1.0% error budget
+        # MCP p95 latency: < 2000 ms over 1-hour window
+        _MCP_ERROR_BUDGET_PCT = 0.5
+        _API_ERROR_BUDGET_PCT = 1.0
+
         # SNS topic for alarm notifications — prod only gets an email subscription
         # (subscription address can be set via the console after first deploy).
         alarm_topic = sns.Topic(
@@ -957,6 +969,7 @@ function handler(event) {
             alarm = cw.Alarm(
                 self,
                 construct_id,
+                alarm_name=f"Hive-{env_name}-{construct_id.removesuffix('Alarm')}",
                 metric=error_rate,
                 threshold=5,
                 evaluation_periods=2,
@@ -976,6 +989,7 @@ function handler(event) {
         mcp_p99_alarm = cw.Alarm(
             self,
             "McpP99DurationAlarm",
+            alarm_name=f"Hive-{env_name}-McpP99Duration",
             metric=mcp_fn.metric_duration(
                 period=cdk.Duration.minutes(5), statistic="p99"
             ),
@@ -993,6 +1007,7 @@ function handler(event) {
         ddb_throttle_alarm = cw.Alarm(
             self,
             "DdbThrottleAlarm",
+            alarm_name=f"Hive-{env_name}-DdbThrottles",
             metric=cw.Metric(
                 namespace="AWS/DynamoDB",
                 metric_name="ThrottledRequests",
@@ -1013,6 +1028,7 @@ function handler(event) {
         cf_5xx_alarm = cw.Alarm(
             self,
             "CloudFront5xxAlarm",
+            alarm_name=f"Hive-{env_name}-CloudFront5xx",
             metric=cw.Metric(
                 namespace="AWS/CloudFront",
                 metric_name="5xxErrorRate",
@@ -1031,6 +1047,126 @@ function handler(event) {
         )
         if is_prod:
             cf_5xx_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # Custom EMF metric alarms
+        tool_errors_alarm = cw.Alarm(
+            self,
+            "ToolErrorsAlarm",
+            alarm_name=f"Hive-{env_name}-ToolErrors",
+            metric=cw.Metric(
+                namespace="Hive",
+                metric_name="ToolErrors",
+                dimensions_map={"Environment": env_name},
+                period=cdk.Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=10,
+            evaluation_periods=2,
+            datapoints_to_alarm=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive tool errors > 10 in 5 min ({env_name})",
+        )
+        if is_prod:
+            tool_errors_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        storage_latency_alarm = cw.Alarm(
+            self,
+            "StorageLatencyAlarm",
+            alarm_name=f"Hive-{env_name}-StorageLatencyHigh",
+            metric=cw.Metric(
+                namespace="Hive",
+                metric_name="StorageLatencyMs",
+                dimensions_map={"Environment": env_name},
+                period=cdk.Duration.minutes(5),
+                statistic="p99",
+            ),
+            threshold=2000,
+            evaluation_periods=2,
+            datapoints_to_alarm=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive storage latency p99 > 2000ms ({env_name})",
+        )
+        if is_prod:
+            storage_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # SLO burn rate alarms
+        # Fast burn (>5×): error rate exceeds 5 × error_budget over 1 hour
+        # If MCP error budget = 0.5%, fast-burn threshold = 2.5%
+        # Slow burn (>2×): error rate exceeds 2 × error_budget over 6 hours
+        def _burn_rate_alarm(
+            construct_id: str,
+            fn: lambda_.Function,
+            label: str,
+            error_budget_pct: float,
+            burn_multiplier: float,
+            window_minutes: int,
+        ) -> cw.Alarm:
+            """Burn rate alarm using error rate vs SLO error budget."""
+            errors = fn.metric_errors(
+                period=cdk.Duration.minutes(window_minutes), statistic="Sum"
+            )
+            invocations = fn.metric_invocations(
+                period=cdk.Duration.minutes(window_minutes), statistic="Sum"
+            )
+            error_rate_pct = cw.MathExpression(
+                expression="100 * errors / MAX([errors, invocations])",
+                using_metrics={"errors": errors, "invocations": invocations},
+                label=f"{label} error rate %",
+                period=cdk.Duration.minutes(window_minutes),
+            )
+            threshold = burn_multiplier * error_budget_pct
+            burn_type = "fast" if burn_multiplier >= 5 else "slow"
+            alarm = cw.Alarm(
+                self,
+                construct_id,
+                alarm_name=f"Hive-{env_name}-{construct_id.removesuffix('Alarm')}",
+                metric=error_rate_pct,
+                threshold=threshold,
+                evaluation_periods=1,
+                datapoints_to_alarm=1,
+                comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+                treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+                alarm_description=(
+                    f"Hive {label} SLO {burn_type}-burn: error rate > {threshold}% "
+                    f"over {window_minutes}m (budget={error_budget_pct}% × {burn_multiplier}×) ({env_name})"
+                ),
+            )
+            if is_prod:
+                alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+            return alarm
+
+        mcp_fast_burn_alarm = _burn_rate_alarm(
+            "McpFastBurnAlarm", mcp_fn, "MCP", _MCP_ERROR_BUDGET_PCT, 5, 60
+        )
+        mcp_slow_burn_alarm = _burn_rate_alarm(
+            "McpSlowBurnAlarm", mcp_fn, "MCP", _MCP_ERROR_BUDGET_PCT, 2, 360
+        )
+        api_fast_burn_alarm = _burn_rate_alarm(
+            "ApiFastBurnAlarm", api_fn, "API", _API_ERROR_BUDGET_PCT, 5, 60
+        )
+        api_slow_burn_alarm = _burn_rate_alarm(
+            "ApiSlowBurnAlarm", api_fn, "API", _API_ERROR_BUDGET_PCT, 2, 360
+        )
+
+        # MCP p95 latency SLO alarm (1-hour window, p95 > 2000ms)
+        mcp_p95_latency_alarm = cw.Alarm(
+            self,
+            "McpP95LatencyAlarm",
+            alarm_name=f"Hive-{env_name}-McpP95Latency",
+            metric=mcp_fn.metric_duration(
+                period=cdk.Duration.minutes(60), statistic="p95"
+            ),
+            threshold=2000,
+            evaluation_periods=1,
+            datapoints_to_alarm=1,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive MCP p95 latency > 2000ms over 1h (SLO breach) ({env_name})",
+        )
+        if is_prod:
+            mcp_p95_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
 
         # Dashboard
         dashboard = cw.Dashboard(
@@ -1322,6 +1458,58 @@ function handler(event) {
                 cw.AlarmWidget(alarm=mcp_p99_alarm, title="MCP P99 Duration", width=6),
                 cw.AlarmWidget(alarm=ddb_throttle_alarm, title="DDB Throttles", width=6),
             ),
+            # SLO / Error Budget row
+            cw.Row(
+                cw.TextWidget(
+                    markdown=(
+                        "## SLO Error Budget\n"
+                        f"MCP availability: 99.5% (budget={_MCP_ERROR_BUDGET_PCT}%)  "
+                        f"| API availability: 99.0% (budget={_API_ERROR_BUDGET_PCT}%)  "
+                        "| MCP p95 latency: < 2000 ms (1-hour window)"
+                    ),
+                    width=24,
+                    height=2,
+                ),
+            ),
+            cw.Row(
+                cw.AlarmWidget(alarm=mcp_fast_burn_alarm, title="MCP Fast Burn (5×, 1h)", width=6),
+                cw.AlarmWidget(alarm=mcp_slow_burn_alarm, title="MCP Slow Burn (2×, 6h)", width=6),
+                cw.AlarmWidget(alarm=api_fast_burn_alarm, title="API Fast Burn (5×, 1h)", width=6),
+                cw.AlarmWidget(alarm=api_slow_burn_alarm, title="API Slow Burn (2×, 6h)", width=6),
+            ),
+            cw.Row(
+                cw.AlarmWidget(alarm=mcp_p95_latency_alarm, title="MCP p95 Latency SLO (1h)", width=8),
+                cw.GraphWidget(
+                    title="MCP Error Rate % (SLO threshold = 0.5%)",
+                    left=[
+                        cw.MathExpression(
+                            expression="100 * errors / MAX([errors, invocations])",
+                            using_metrics={
+                                "errors": mcp_fn.metric_errors(
+                                    period=cdk.Duration.minutes(60), statistic="Sum"
+                                ),
+                                "invocations": mcp_fn.metric_invocations(
+                                    period=cdk.Duration.minutes(60), statistic="Sum"
+                                ),
+                            },
+                            label="MCP error rate %",
+                            period=cdk.Duration.minutes(60),
+                        )
+                    ],
+                    left_y_axis=cw.YAxisProps(min=0, max=10),
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="MCP p95 Latency (SLO threshold = 2000 ms)",
+                    left=[
+                        mcp_fn.metric_duration(
+                            period=cdk.Duration.minutes(60), statistic="p95"
+                        )
+                    ],
+                    left_y_axis=cw.YAxisProps(min=0),
+                    width=8,
+                ),
+            ),
         )
 
         # ----------------------------------------------------------------
@@ -1354,13 +1542,12 @@ function handler(event) {
             value=deploy_role.role_arn,
             description=f"GitHub Actions OIDC deploy role ARN ({env_name})",
         )
-        if web_acl_arn:
-            cdk.CfnOutput(
-                self,
-                "WebAclArn",
-                value=web_acl_arn,
-                description=f"WAFv2 WebACL ARN ({env_name})",
-            )
+        cdk.CfnOutput(
+            self,
+            "WebAclArn",
+            value=web_acl_arn,
+            description=f"WAFv2 WebACL ARN ({env_name})",
+        )
         cdk.CfnOutput(
             self,
             "AppVersion",

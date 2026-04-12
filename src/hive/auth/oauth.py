@@ -17,6 +17,7 @@ import hashlib
 import os
 import secrets
 from datetime import datetime, timezone
+from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
@@ -83,10 +84,14 @@ async def oauth_metadata(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/oauth/register", status_code=201)
+@router.post(
+    "/oauth/register",
+    status_code=201,
+    responses={400: {"description": "Invalid client registration request"}},
+)
 async def register(
     req: ClientRegistrationRequest,
-    storage: HiveStorage = Depends(get_storage),
+    storage: Annotated[HiveStorage, Depends(get_storage)],
 ) -> JSONResponse:
     try:
         resp = register_client(req, storage)
@@ -108,8 +113,9 @@ async def register(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/oauth/authorize")
+@router.get("/oauth/authorize", responses={400: {"description": "Invalid authorization request"}})
 async def authorize(
+    storage: Annotated[HiveStorage, Depends(get_storage)],
     response_type: str,
     client_id: str,
     redirect_uri: str,
@@ -117,7 +123,6 @@ async def authorize(
     scope: str = "memories:read memories:write",
     code_challenge: str = "",
     code_challenge_method: str = "S256",
-    storage: HiveStorage = Depends(get_storage),
 ) -> RedirectResponse:
     # Validate client
     client = storage.get_client(client_id)
@@ -154,7 +159,9 @@ async def authorize(
         params: dict[str, str] = {"code": auth_code.code}
         if state:
             params["state"] = state
-        return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
+        return RedirectResponse(  # NOSONAR — redirect_uri validated above (line 126)
+            f"{redirect_uri}?{urlencode(params)}", status_code=302
+        )
 
     # Production: store PKCE state, then redirect to Google for identity verification.
     from hive.auth.google import google_authorization_url
@@ -178,12 +185,18 @@ async def authorize(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/oauth/google/callback")
+@router.get(
+    "/oauth/google/callback",
+    responses={
+        400: {"description": "Invalid or expired Google OAuth callback"},
+        403: {"description": "Email not authorised"},
+    },
+)
 async def google_callback(
+    storage: Annotated[HiveStorage, Depends(get_storage)],
     code: str = "",
     state: str = "",
     error: str = "",
-    storage: HiveStorage = Depends(get_storage),
 ) -> RedirectResponse:
     """Handle the redirect from Google after user authentication."""
     from hive.auth.google import exchange_google_code, is_email_allowed, verify_google_id_token
@@ -238,7 +251,9 @@ async def google_callback(
     params: dict[str, str] = {"code": auth_code.code}
     if pending.original_state:
         params["state"] = pending.original_state
-    return RedirectResponse(f"{pending.redirect_uri}?{urlencode(params)}", status_code=302)
+    return RedirectResponse(
+        f"{pending.redirect_uri}?{urlencode(params)}", status_code=302
+    )  # NOSONAR — redirect_uri validated at authorize
 
 
 # ---------------------------------------------------------------------------
@@ -252,17 +267,23 @@ def _verify_pkce(code_verifier: str, stored_challenge: str) -> bool:
     return secrets.compare_digest(computed, stored_challenge)
 
 
-@router.post("/oauth/token")
-async def token(
-    grant_type: str = Form(...),
-    code: str | None = Form(None),
-    redirect_uri: str | None = Form(None),
-    client_id: str | None = Form(None),
-    client_secret: str | None = Form(None),
-    code_verifier: str | None = Form(None),
-    refresh_token: str | None = Form(None),
+@router.post(
+    "/oauth/token",
+    responses={
+        400: {"description": "Invalid grant request"},
+        401: {"description": "Invalid client credentials"},
+    },
+)
+async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
+    storage: Annotated[HiveStorage, Depends(get_storage)],
+    grant_type: Annotated[str, Form(...)],
+    code: Annotated[str | None, Form()] = None,
+    redirect_uri: Annotated[str | None, Form()] = None,
+    client_id: Annotated[str | None, Form()] = None,
+    client_secret: Annotated[str | None, Form()] = None,
+    code_verifier: Annotated[str | None, Form()] = None,
+    refresh_token: Annotated[str | None, Form()] = None,
     request: Request = None,  # type: ignore[assignment]  # FastAPI injects this; None satisfies Python's default-after-default rule
-    storage: HiveStorage = Depends(get_storage),
 ) -> JSONResponse:
     # --- Client authentication ---
     # Try HTTP Basic first, then form params
@@ -375,8 +396,8 @@ async def token(
 
 @router.post("/oauth/revoke")
 async def revoke(
-    token: str = Form(...),
-    storage: HiveStorage = Depends(get_storage),
+    storage: Annotated[HiveStorage, Depends(get_storage)],
+    token: Annotated[str, Form(...)],
 ) -> Response:
     from jose import JWTError
 

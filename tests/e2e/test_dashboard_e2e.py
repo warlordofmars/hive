@@ -71,3 +71,39 @@ class TestDashboardE2E:
             assert not page.locator("text=Failed to load metrics").is_visible(), (
                 f"Error banner appeared after switching to {period}"
             )
+
+    def test_cost_section_renders_without_error(self, admin_browser_page):
+        """Cost section must reach a resolved state — data, placeholder, or error banner."""
+        page = admin_browser_page
+        page.locator("nav button:has-text('Dashboard')").click()
+        page.wait_for_load_state("networkidle")
+        # networkidle can fire before React's useEffect has started the fetch calls.
+        # Wait until all loading skeletons (divs with pulse animation) disappear, which
+        # confirms the cost API calls have completed (success or error).
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('div')]"
+            "  .every(d => !d.style.animation || !d.style.animation.includes('pulse'))",
+            timeout=15000,
+        )
+        # Cost section heading is present
+        assert page.locator("text=Monthly AWS Spend").is_visible()
+        # Section must be in one of three valid resolved states (not a stuck spinner):
+        #   1. recharts chart is rendered (costs loaded with data)
+        #   2. "no data" placeholder is visible (costs loaded but empty)
+        #   3. error banner is visible (costs API failed, but UI handled it gracefully)
+        has_data = page.locator(".recharts-responsive-container").count() > 0
+        has_placeholder = (
+            page.locator("text=No cost data available yet.").is_visible()
+            or page.locator("text=No daily cost data available yet.").is_visible()
+        )
+        # CSS attribute selectors don't reliably match React inline-style CSS custom
+        # properties in Chromium, so evaluate via JavaScript instead.
+        has_error = page.evaluate(
+            "() => [...document.querySelectorAll('div')].some("
+            "  d => d.style.color === 'var(--danger)'"
+            ")"
+        )
+        assert has_data or has_placeholder or has_error, (
+            "Cost section shows neither a chart, a no-data placeholder, nor an error banner — "
+            "the spinner may be stuck or the section failed silently"
+        )
