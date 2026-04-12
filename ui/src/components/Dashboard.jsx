@@ -305,7 +305,7 @@ function ToolAreaChart({ loading, metrics, data, error, tools, xAxisProps, heigh
   if (data.length === 0) return error ? null : <EmptyState icon={TrendingUp} message={emptyMessage} />;
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={data} margin={{ bottom: 10 }}>
+      <AreaChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 60 }}>
         <defs>
           {tools.map((t) => (
             <linearGradient key={t} id={`${gradientPrefix}_${t}`} x1="0" y1="0" x2="0" y2="1">
@@ -332,7 +332,7 @@ function DailyCostChart({ loading, costs, data, error }) {
   if (data.length === 0) return error ? null : <EmptyState icon={BarChart2} message="No daily cost data available yet." />;
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <AreaChart data={data} margin={{ bottom: 10 }}>
+      <AreaChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 60 }}>
         <defs>
           <linearGradient id="daily_cost_grad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="#e8a020" stopOpacity={0.4} />
@@ -340,7 +340,7 @@ function DailyCostChart({ loading, costs, data, error }) {
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-        <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--text-muted)" }} interval="preserveStartEnd" angle={-25} textAnchor="end" height={40} />
+        <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--text-muted)" }} interval="preserveStartEnd" angle={-45} textAnchor="end" height={70} />
         <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
         <Tooltip content={<CustomDailyCostTooltip />} />
         <Area type="monotone" dataKey="total" stroke="#e8a020" fill="url(#daily_cost_grad)" strokeWidth={2} dot={false} animationDuration={400} />
@@ -354,9 +354,9 @@ function MonthlyCostChart({ loading, costs, data, error, services }) {
   if (data.length === 0) return error ? null : <EmptyState icon={BarChart2} message="No cost data available yet." />;
   return (
     <ResponsiveContainer width="100%" height={260}>
-      <BarChart data={data} margin={{ bottom: 10 }}>
+      <BarChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 60 }}>
         <CartesianGrid strokeDasharray="" vertical={false} stroke="var(--border)" />
-        <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+        <XAxis dataKey="month" tick={{ fontSize: 11, fill: "var(--text-muted)" }} angle={-45} textAnchor="end" height={70} />
         <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} tickFormatter={formatCostTick} />
         <Tooltip content={<CustomCostTooltip />} />
         <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, color: "var(--text-muted)" }} />
@@ -446,9 +446,9 @@ export default function Dashboard() {
     dataKey: "ts",
     tick: { fontSize: 11, fill: "var(--text-muted)" },
     interval: "preserveStartEnd",
-    angle: -25,
+    angle: -45,
     textAnchor: "end",
-    height: 40,
+    height: 70,
   };
 
   return (
