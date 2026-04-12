@@ -331,7 +331,15 @@ class HiveStack(cdk.Stack):
             tracing=lambda_.Tracing.ACTIVE,
         )
 
-        mcp_url = mcp_fn.add_function_url(
+        mcp_alias = lambda_.Alias(
+            self,
+            "McpAlias",
+            alias_name="live",
+            version=mcp_fn.current_version,
+            provisioned_concurrent_executions=1 if is_prod else 0,
+        )
+
+        mcp_url = mcp_alias.add_function_url(
             auth_type=lambda_.FunctionUrlAuthType.NONE,
             cors=lambda_.FunctionUrlCorsOptions(
                 allowed_origins=["*"],
