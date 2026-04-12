@@ -47,7 +47,7 @@ describe("Button", () => {
   });
 
   it("renders all variants without error", () => {
-    const variants = ["default", "brand", "outline", "ghost", "danger", "secondary"];
+    const variants = ["default", "brand", "outline", "ghost", "danger", "secondary", "nav"];
     variants.forEach((variant) => {
       const { unmount } = render(<Button variant={variant}>{variant}</Button>);
       expect(screen.getByText(variant)).toBeTruthy();

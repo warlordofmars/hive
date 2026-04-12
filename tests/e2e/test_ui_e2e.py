@@ -48,6 +48,35 @@ def browser_page():
         browser.close()
 
 
+class TestMarketingNav:
+    def test_signin_btn_border_is_visible(self):
+        """Sign in button on marketing navbar has a visible border (not transparent).
+
+        Asserts the computed border-color so CSS regressions can't sneak past a
+        class-name check.  The nav variant bakes border-white/60 into the variant
+        itself — no className override needed.
+        """
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"{UI_URL}/", timeout=30_000, wait_until="networkidle")
+            signin_btn = page.locator(".marketing-signin-btn")
+            if not signin_btn.is_visible():
+                browser.close()
+                pytest.skip("Sign in button not visible (may be mobile viewport)")
+            border_color = signin_btn.evaluate("el => getComputedStyle(el).borderColor")
+            import re
+
+            nums = [float(x) for x in re.findall(r"[\d.]+", border_color)]
+            assert len(nums) >= 4 and nums[3] > 0, (
+                f"Sign in button border is transparent: {border_color!r}. "
+                "Check that the nav variant in button.jsx applies border-white/60."
+            )
+            browser.close()
+
+
 class TestUIE2E:
     def test_memories_tab_visible(self, browser_page):
         page = browser_page
