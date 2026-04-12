@@ -389,4 +389,28 @@ describe("AppShell", () => {
     const link = screen.getByText("Hive 1.2.3").closest("a");
     expect(link.className).toContain("focus:underline");
   });
+
+  it("renders hamburger toggle button", async () => {
+    await act(async () => render(<App />));
+    expect(screen.getByRole("button", { name: /toggle navigation/i })).toBeTruthy();
+  });
+
+  it("hamburger click shows mobile nav", async () => {
+    await act(async () => render(<App />));
+    expect(screen.queryByTestId("mobile-nav")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /toggle navigation/i }));
+    expect(screen.getByTestId("mobile-nav")).toBeTruthy();
+  });
+
+  it("clicking tab in mobile nav switches panel and closes menu", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /toggle navigation/i }));
+    const mobileNav = screen.getByTestId("mobile-nav");
+    // Click "OAuth Clients" (second tab button in mobile nav)
+    const mobileButtons = mobileNav.querySelectorAll("button[type='button']");
+    fireEvent.click(mobileButtons[1]);
+    expect(screen.queryByTestId("mobile-nav")).toBeNull();
+    expect(screen.getByTestId("client-manager")).toBeTruthy();
+  });
 });

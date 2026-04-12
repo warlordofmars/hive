@@ -349,7 +349,7 @@ export default function MemoryBrowser() {
   }
 
   return (
-    <div className="flex gap-5">
+    <div className="flex flex-col md:flex-row gap-5">
       <AlertDialog
         open={pendingDelete !== null}
         title="Delete this memory?"
@@ -437,7 +437,7 @@ export default function MemoryBrowser() {
 
       {/* Side form */}
       {(creating || editing) && (
-        <div className="w-[360px]">
+        <div className="w-full md:w-[360px]">
           <Card>
             <h3 className="mb-4 text-base font-semibold">
               {creating ? "New Memory" : `Edit: ${editing.key}`}

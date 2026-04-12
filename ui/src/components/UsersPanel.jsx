@@ -61,6 +61,7 @@ export default function UsersPanel() {
           description="Users appear here after they sign in for the first time via Google OAuth."
         />
       ) : (
+        <div className="overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -85,6 +86,7 @@ export default function UsersPanel() {
             ))}
           </TableBody>
         </Table>
+        </div>
       )}
     </div>
   );

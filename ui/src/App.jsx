@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { Moon, Sun } from "lucide-react";
+import { Menu, Moon, Sun, X } from "lucide-react";
 import { trackEvent, trackPageView } from "./analytics.js";
 import { api } from "./api.js";
 import ActivityLog from "./components/ActivityLog.jsx";
@@ -58,6 +58,7 @@ function signOut() {
 
 function AppShell() {
   const [tab, setTab] = useState("memories");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   function switchTab(id) {
     setTab(id);
@@ -103,7 +104,7 @@ function AppShell() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="bg-navy text-white px-6 flex items-center gap-6 h-14">
+      <header className="bg-navy text-white px-4 md:px-6 flex items-center gap-3 md:gap-6 h-14 relative">
         <button
           onClick={() => navigate("/")}
           className="flex items-center gap-2 cursor-pointer bg-transparent border-none p-0 text-inherit"
@@ -112,7 +113,8 @@ function AppShell() {
           <span className="font-bold text-xl tracking-wide">Hive</span>
         </button>
 
-        <nav className="flex gap-1 flex-1">
+        {/* Desktop tab nav — hidden on mobile */}
+        <nav className="hidden md:flex gap-1 flex-1">
           {tabs.map((t) => (
             <Button
               key={t.id}
@@ -128,15 +130,18 @@ function AppShell() {
           ))}
         </nav>
 
+        {/* Spacer on mobile so right-side items stay right */}
+        <div className="flex-1 md:hidden" />
+
         <a
           href="/docs/"
-          className="text-[13px] text-white/60 no-underline hover:text-white/90"
+          className="hidden md:block text-[13px] text-white/60 no-underline hover:text-white/90"
         >
           Docs
         </a>
 
         {userEmail && (
-          <span className="text-[13px] text-white/70">{userEmail}</span>
+          <span className="hidden md:inline text-[13px] text-white/70">{userEmail}</span>
         )}
 
         <Button variant="outline" size="sm" onClick={signOut}>
@@ -151,9 +156,42 @@ function AppShell() {
         >
           {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
         </Button>
+
+        {/* Hamburger — mobile only */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="md:hidden text-white hover:bg-white/10"
+          onClick={() => setMenuOpen(!menuOpen)}
+          aria-label="Toggle navigation"
+          aria-expanded={menuOpen}
+        >
+          {menuOpen ? <X size={20} /> : <Menu size={20} />}
+        </Button>
+
+        {/* Mobile nav dropdown */}
+        {menuOpen && (
+          <nav
+            data-testid="mobile-nav"
+            className="absolute top-14 left-0 right-0 bg-navy border-t border-white/10 z-50"
+          >
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`w-full text-left px-6 py-3 text-sm text-white bg-transparent border-none cursor-pointer font-[inherit] min-h-[44px] hover:bg-white/10 ${
+                  tab === t.id ? "font-semibold bg-white/5" : ""
+                }`}
+                onClick={() => { switchTab(t.id); setMenuOpen(false); }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        )}
       </header>
 
-      <main className="flex-1 p-6 max-w-[1100px] mx-auto w-full">
+      <main className="flex-1 p-4 md:p-6 max-w-[1100px] mx-auto w-full">
         {tab === "memories" && <MemoryBrowser />}
         {tab === "clients" && <ClientManager />}
         {tab === "activity" && <ActivityLog />}
