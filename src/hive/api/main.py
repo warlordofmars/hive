@@ -20,6 +20,7 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 
 from hive.api._auth import require_admin
+from hive.api.account import router as account_router
 from hive.api.admin import router as admin_router
 from hive.api.clients import router as clients_router
 from hive.api.logs import router as logs_router
@@ -130,6 +131,7 @@ app.include_router(memories_router, prefix="/api")
 app.include_router(clients_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
+app.include_router(account_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(logs_router, prefix="/api")
 
