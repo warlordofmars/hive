@@ -614,20 +614,30 @@ If the same check fails 3 times without a clear fix, stop and ask.
 
 #### 8. Monitor development branch CI/CD post-merge
 
-After the PR merges, the `development` branch pipeline triggers. Poll until
-a new run appears, then watch it:
+After the PR merges, the `development` branch pipeline triggers. Record the
+merge time and poll until a matching run appears, then watch it:
 
 ```bash
-# Poll until a run is queued or in progress on development (every 15s)
+# Record merge time, then poll until an active run created after merge appears
+MERGE_TIME=$(date -u +%s)
 while true; do
-  RUN_ID=$(gh run list --branch development --limit 1 \
-    --json databaseId,status \
-    --jq '.[] | select(.status == "in_progress" or .status == "queued") | .databaseId')
+  RUN_ID=$(gh run list --branch development --limit 5 \
+    --json databaseId,status,createdAt | \
+    jq -r --argjson since "$MERGE_TIME" \
+    '.[] | select(
+        (.status == "in_progress" or .status == "queued") and
+        (.createdAt | fromdateiso8601) > $since
+      ) | .databaseId' | head -1)
   [ -n "$RUN_ID" ] && break
   sleep 15
 done
 gh run watch "$RUN_ID"
 ```
+
+This uses `jq`'s built-in `fromdateiso8601` for portable timestamp parsing —
+avoids the `date -r` vs `date -d` incompatibility between macOS and Linux,
+and ensures we only latch onto a run triggered by this merge rather than a
+pre-existing in-flight run from a concurrent PR.
 
 If the pipeline fails:
 1. Read the failure: `gh run view <run-id> --log-failed`
