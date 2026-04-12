@@ -428,7 +428,10 @@ class TestDocsNavbar:
 
         border_color = page.evaluate("el => window.getComputedStyle(el).borderTopColor", el)
         _, _, _, alpha = _parse_rgb(border_color)
-        assert alpha > 0, f"Sign in button border is transparent ({border_color!r})."
+        assert alpha >= 0.5, (
+            f"Sign in button border alpha {alpha:.2f} ({border_color!r}) — "
+            "expected >= 0.5 to match marketing site (rgba(255,255,255,0.6))."
+        )
 
         padding = page.evaluate("el => window.getComputedStyle(el).padding", el)
         assert padding == "6px 16px", (

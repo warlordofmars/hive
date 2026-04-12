@@ -35,7 +35,7 @@ export default function PageLayout({ children }) {
             <a href="/pricing" className={`text-white/75 ${NAV_LINK_BASE}`} style={navLinkStyle("/pricing")}>Pricing</a>
             <a href="/faq" className={`text-white/75 ${NAV_LINK_BASE}`} style={navLinkStyle("/faq")}>FAQ</a>
             <a href="/docs/" className={`text-white/75 ${NAV_LINK_BASE}`} style={{ borderBottom: "2px solid transparent", paddingBottom: 2 }}>Docs</a>
-            <Button variant="outline" size="sm" className="border-white/60 hover:border-white" onClick={() => navigate("/app")}>
+            <Button variant="nav" size="sm" className="marketing-signin-btn" onClick={() => navigate("/app")}>
               Sign in
             </Button>
           </div>

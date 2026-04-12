@@ -100,11 +100,12 @@ describe("PageLayout", () => {
     expect(faqLink.style.borderBottomColor).toBe("transparent");
   });
 
-  it("Sign in button has visible border", async () => {
+  it("Sign in button uses nav variant with visible border", async () => {
     await act(async () =>
       renderInRouter(<PageLayout><span /></PageLayout>)
     );
     const btn = screen.getByRole("button", { name: "Sign in" });
     expect(btn.className).toContain("border-white/60");
+    expect(btn.className).toContain("marketing-signin-btn");
   });
 });
