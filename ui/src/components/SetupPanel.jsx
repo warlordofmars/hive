@@ -1,6 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useState } from "react";
-import { Check } from "lucide-react";
+import { AlertTriangle, Check } from "lucide-react";
 import { api } from "../api.js";
 
 const STEP1_KEY = "hive_setup_step1_done";
@@ -13,6 +13,9 @@ export default function SetupPanel() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null); // "ok" | "error"
   const [testError, setTestError] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const step2Done = testResult === "ok";
 
@@ -38,6 +41,19 @@ export default function SetupPanel() {
     localStorage.setItem(STEP1_KEY, "1");
     setStep1Done(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function handleDeleteAccount() {
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await api.deleteAccount();
+      localStorage.removeItem("hive_mgmt_token");
+      globalThis.location.replace("/");
+    } catch (e) {
+      setDeleteError(e.message ?? "Deletion failed");
+      setDeleting(false);
+    }
   }
 
   async function handleTest() {
@@ -185,6 +201,59 @@ export default function SetupPanel() {
             <span style={{ fontSize: 13, color: "var(--danger)" }}>{testError}</span>
           )}
         </div>
+      </section>
+
+      <section style={{ marginTop: 48, borderTop: "1px solid var(--border)", paddingTop: 32 }}>
+        <h3 style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, color: "var(--danger)" }}>
+          <AlertTriangle size={18} />
+          Danger Zone
+        </h3>
+        <p style={{ color: "var(--text-muted)", marginBottom: 16, fontSize: 14 }}>
+          Permanently delete your account and all associated data — memories, OAuth clients, and
+          your user profile. This action cannot be undone.
+        </p>
+
+        {!showDeleteConfirm ? (
+          <button
+            className="secondary"
+            style={{ borderColor: "var(--danger)", color: "var(--danger)" }}
+            onClick={() => setShowDeleteConfirm(true)}
+          >
+            Delete my account
+          </button>
+        ) : (
+          <div
+            className="card"
+            style={{ borderLeft: "4px solid var(--danger)", maxWidth: 480 }}
+          >
+            <p style={{ marginBottom: 16, fontWeight: 600 }}>
+              Are you sure? This will permanently erase all your data.
+            </p>
+            {deleteError && (
+              <p style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>{deleteError}</p>
+            )}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                style={{
+                  background: "var(--danger)",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "8px 16px",
+                  cursor: deleting ? "not-allowed" : "pointer",
+                  opacity: deleting ? 0.7 : 1,
+                }}
+                onClick={handleDeleteAccount}
+                disabled={deleting}
+              >
+                {deleting ? "Deleting…" : "Yes, delete everything"}
+              </button>
+              <button className="secondary" onClick={() => { setShowDeleteConfirm(false); setDeleteError(""); }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );

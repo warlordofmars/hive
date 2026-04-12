@@ -262,6 +262,14 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/api/users/u99");
   });
 
+  it("deleteAccount calls DELETE /api/account with confirm body", async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 204 });
+    await api.deleteAccount();
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/account");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ confirm: true });
+  });
+
   // ---------------------------------------------------------------------------
   // Admin
   // ---------------------------------------------------------------------------

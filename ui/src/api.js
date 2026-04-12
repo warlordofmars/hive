@@ -88,4 +88,7 @@ export const api = {
     return request("GET", `/api/users?${params}`);
   },
   deleteUser: (id) => request("DELETE", `/api/users/${id}`),
+
+  // Account
+  deleteAccount: () => request("DELETE", "/api/account", { confirm: true }),
 };

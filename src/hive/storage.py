@@ -575,6 +575,59 @@ class HiveStorage:
         return resp.get("Count", 0)
 
     # ------------------------------------------------------------------
+    # Audit log (separate from user activity log)
+    # ------------------------------------------------------------------
+
+    def log_audit_event(self, event: ActivityEvent) -> None:
+        """Write an audit event to the immutable audit log (AUDIT# PK prefix).
+
+        Audit events use a separate PK prefix from activity log events (LOG#)
+        and are never deleted, even when a user's activity log is purged.
+        """
+        item = event.to_dynamo()
+        # Override the PK prefix so audit events are stored separately
+        date_hour_str = event.timestamp.strftime("%Y-%m-%d#%H")
+        item["PK"] = f"AUDIT#{date_hour_str}"
+        self.table.put_item(Item=item)
+
+    # ------------------------------------------------------------------
+    # Account deletion
+    # ------------------------------------------------------------------
+
+    def delete_user_data(self, user_id: str) -> dict[str, int]:
+        """Delete all data owned by a user.
+
+        Deletes all memories, OAuth clients, and the user record.
+        Tokens are not explicitly revoked — they carry short TTLs and
+        will expire naturally. Returns counts of deleted items.
+        """
+        deleted_memories = 0
+        cursor: str | None = None
+        while True:
+            memories, cursor = self.list_all_memories(
+                owner_user_id=user_id, limit=200, cursor=cursor
+            )
+            for memory in memories:
+                self.delete_memory(memory.memory_id)
+                deleted_memories += 1
+            if cursor is None:
+                break
+
+        deleted_clients = 0
+        cursor = None
+        while True:
+            clients, cursor = self.list_clients(owner_user_id=user_id, limit=200, cursor=cursor)
+            for client in clients:
+                self.delete_client(client.client_id)
+                deleted_clients += 1
+            if cursor is None:
+                break
+
+        self.delete_user(user_id)
+
+        return {"deleted_memories": deleted_memories, "deleted_clients": deleted_clients}
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

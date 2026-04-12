@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.js", () => ({
-  api: { listMemories: vi.fn() },
+  api: { listMemories: vi.fn(), deleteAccount: vi.fn() },
 }));
 
 import { api } from "../api.js";
@@ -168,5 +168,46 @@ describe("SetupPanel", () => {
     expect(handler).toHaveBeenCalled();
     expect(handler.mock.calls[0][0].detail).toBe("memories");
     window.removeEventListener("hive:switch-tab", handler);
+  });
+
+  it("renders Danger Zone section with delete button", async () => {
+    await act(async () => render(<SetupPanel />));
+    expect(screen.getByText("Danger Zone")).toBeTruthy();
+    expect(screen.getByText("Delete my account")).toBeTruthy();
+  });
+
+  it("shows confirmation dialog when Delete my account is clicked", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Delete my account"));
+    expect(screen.getByText(/Are you sure/)).toBeTruthy();
+    expect(screen.getByText("Yes, delete everything")).toBeTruthy();
+    expect(screen.getByText("Cancel")).toBeTruthy();
+  });
+
+  it("hides confirmation dialog on Cancel", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Delete my account"));
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(screen.getByText("Delete my account")).toBeTruthy();
+    expect(screen.queryByText(/Are you sure/)).toBeNull();
+  });
+
+  it("calls api.deleteAccount and redirects on confirm", async () => {
+    api.deleteAccount.mockResolvedValue(null);
+    const replaceMock = vi.fn();
+    vi.stubGlobal("location", { replace: replaceMock });
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Delete my account"));
+    await act(async () => fireEvent.click(screen.getByText("Yes, delete everything")));
+    expect(api.deleteAccount).toHaveBeenCalled();
+    expect(replaceMock).toHaveBeenCalledWith("/");
+  });
+
+  it("shows error message when deleteAccount fails", async () => {
+    api.deleteAccount.mockRejectedValue(new Error("Server error"));
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Delete my account"));
+    await act(async () => fireEvent.click(screen.getByText("Yes, delete everything")));
+    await waitFor(() => expect(screen.getByText("Server error")).toBeTruthy());
   });
 });

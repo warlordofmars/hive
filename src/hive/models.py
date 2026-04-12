@@ -422,6 +422,7 @@ class EventType(str, Enum):
     token_revoked = "token_revoked"
     client_registered = "client_registered"
     client_deleted = "client_deleted"
+    account_deleted = "account_deleted"
 
 
 class ActivityEvent(BaseModel):
