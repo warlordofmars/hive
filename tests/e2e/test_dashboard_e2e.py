@@ -80,7 +80,7 @@ class TestDashboardE2E:
         # No cost error banner
         assert not page.locator("text=Failed to load costs").is_visible()
         # Cost section heading is present
-        assert page.locator("text=Cost").first.is_visible()
+        assert page.locator("text=Monthly AWS Spend").is_visible()
         # Either a cost chart or the "no data" placeholder must be visible (not a stuck spinner)
         has_data = page.locator(".recharts-responsive-container").count() > 0
         has_placeholder = (
