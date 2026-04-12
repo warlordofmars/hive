@@ -32,6 +32,7 @@ from hive.auth.tokens import _origin_verify_secret, validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
+from hive.rate_limiter import RateLimitExceeded, check_rate_limit
 from hive.storage import HiveStorage
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
@@ -120,6 +121,11 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
 
     if required_scope and required_scope not in set(token.scope.split()):
         raise ToolError(f"Insufficient scope: '{required_scope}' required")
+
+    try:
+        check_rate_limit(token.client_id, storage)
+    except RateLimitExceeded as exc:
+        raise ToolError(f"Rate limit exceeded. Retry after {exc.retry_after}s.") from exc
 
     set_request_context(request_id, token.client_id)
     return storage, token.client_id

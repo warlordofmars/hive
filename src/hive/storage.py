@@ -16,6 +16,7 @@ import base64
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 import boto3
@@ -573,6 +574,37 @@ class HiveStorage:
             ExpressionAttributeValues={":sk": "META", _PK_PREFIX_KEY: "USER#"},
         )
         return resp.get("Count", 0)
+
+    # ------------------------------------------------------------------
+    # Rate limiting
+    # ------------------------------------------------------------------
+
+    def increment_rate_limit_counter(
+        self, client_id: str, window_key: str, ttl_seconds: int
+    ) -> int:
+        """Atomically increment a rate limit counter and return the new value.
+
+        The counter item is created on first access. TTL is set only on the
+        first write (``if_not_exists``) so DynamoDB TTL can clean up expired
+        counters automatically.
+
+        Args:
+            client_id:   The OAuth client being rate-limited.
+            window_key:  Window identifier, e.g. ``min#2026-04-12T10:30``.
+            ttl_seconds: Seconds from now after which the item should expire.
+        """
+        import time
+
+        pk = f"RATELIMIT#{client_id}#{window_key}"
+        ttl_epoch = int(time.time()) + ttl_seconds
+        resp = self.table.update_item(
+            Key={"PK": pk, "SK": "META"},
+            UpdateExpression="SET #ttl = if_not_exists(#ttl, :ttl) ADD #c :one",
+            ExpressionAttributeNames={"#c": "count", "#ttl": "ttl"},
+            ExpressionAttributeValues={":one": Decimal("1"), ":ttl": ttl_epoch},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(resp["Attributes"]["count"])
 
     # ------------------------------------------------------------------
     # Audit log (separate from user activity log)
