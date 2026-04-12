@@ -165,7 +165,7 @@ export default function ClientManager() {
 
       {loading && <p className="text-[var(--text-muted)]">Loading…</p>}
 
-      <Card className="p-0 overflow-hidden">
+      <Card className="p-0 overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
