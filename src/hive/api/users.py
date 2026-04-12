@@ -29,6 +29,8 @@ def _storage() -> HiveStorage:
 
 @router.get(
     "/users/me",
+    summary="Get current user",
+    description="Return the profile of the currently authenticated management user.",
     responses={
         401: {"description": "Unauthorized"},
         404: {"description": "User not found"},
@@ -46,6 +48,8 @@ async def get_me(
 
 @router.get(
     "/users",
+    summary="List all users",
+    description="Return a paginated list of all registered users. Admin only.",
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Admin role required"},
@@ -68,6 +72,8 @@ async def list_users(
 
 @router.delete(
     "/users/{user_id}",
+    summary="Delete a user",
+    description="Permanently delete a user account by ID. Admin only.",
     status_code=204,
     responses={
         401: {"description": "Unauthorized"},

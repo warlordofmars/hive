@@ -48,7 +48,12 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
     return None if claims.get("role") == "admin" else claims["sub"]
 
 
-@router.get("/memories", responses={401: {"description": "Unauthorized"}})
+@router.get(
+    "/memories",
+    summary="List or search memories",
+    description="Return a paginated list of memories. Supports optional tag filtering and semantic search. Non-admins see only their own memories.",
+    responses={401: {"description": "Unauthorized"}},
+)
 async def list_memories(
     claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
     storage: Annotated[HiveStorage, Depends(_storage)],
@@ -102,6 +107,8 @@ async def list_memories(
 
 @router.post(
     "/memories",
+    summary="Create or update a memory",
+    description="Create a new memory or update an existing one with the same key. Returns 201 on create, 200 on update. Non-admins cannot overwrite another user's memory.",
     responses={
         401: {"description": "Unauthorized"},
         404: {"description": "Memory not found (non-admin cannot overwrite another user's memory)"},
@@ -167,6 +174,8 @@ async def create_memory(
 
 @router.get(
     "/memories/{memory_id}",
+    summary="Get a memory by ID",
+    description="Retrieve a single memory by its unique ID. Non-admins can only access their own memories.",
     responses={
         401: {"description": "Unauthorized"},
         404: {"description": _MEMORY_NOT_FOUND},
@@ -188,6 +197,8 @@ async def get_memory(
 
 @router.patch(
     "/memories/{memory_id}",
+    summary="Update a memory",
+    description="Partially update a memory's value and/or tags by ID. Non-admins can only update their own memories.",
     responses={
         401: {"description": "Unauthorized"},
         404: {"description": _MEMORY_NOT_FOUND},
@@ -229,6 +240,8 @@ async def update_memory(
 
 @router.delete(
     "/memories/{memory_id}",
+    summary="Delete a memory",
+    description="Permanently delete a memory by ID. Non-admins can only delete their own memories.",
     status_code=204,
     responses={
         401: {"description": "Unauthorized"},

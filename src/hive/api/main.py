@@ -14,9 +14,12 @@ import os
 import time
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import HTMLResponse
 
+from hive.api._auth import require_admin
 from hive.api.admin import router as admin_router
 from hive.api.clients import router as clients_router
 from hive.api.logs import router as logs_router
@@ -48,6 +51,8 @@ app = FastAPI(
     title="Hive Management API",
     version=APP_VERSION,
     description="REST API for managing Hive memories, OAuth clients, and viewing activity stats.",
+    docs_url=None,
+    redoc_url=None,
 )
 
 # Allow the React dev server (port 5173) and any configured UI origin
@@ -127,6 +132,18 @@ app.include_router(stats_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(logs_router, prefix="/api")
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui(_claims: dict = Depends(require_admin)) -> HTMLResponse:
+    """Swagger UI — admin only."""
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="Hive Management API")
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_ui(_claims: dict = Depends(require_admin)) -> HTMLResponse:
+    """ReDoc UI — admin only."""
+    return get_redoc_html(openapi_url="/openapi.json", title="Hive Management API")
 
 
 @app.get("/health", include_in_schema=False)
