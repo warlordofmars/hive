@@ -1256,3 +1256,169 @@ class TestOriginVerifyMiddleware:
             tc = TestClient(app, raise_server_exceptions=False)
             resp = tc.get("/health")
         assert resp.status_code == 200
+
+
+class TestBulkDeleteByTag:
+    def test_delete_by_tag_returns_count(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "a", "value": "1", "tags": ["bulk"]})
+        tc.post("/api/memories", json={"key": "b", "value": "2", "tags": ["bulk"]})
+        tc.post("/api/memories", json={"key": "c", "value": "3", "tags": ["other"]})
+        resp = tc.delete("/api/memories", params={"tag": "bulk"})
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 2
+
+    def test_delete_by_tag_requires_tag_param(self, client):
+        tc, *_ = client
+        resp = tc.delete("/api/memories")
+        assert resp.status_code == 400
+
+    def test_delete_by_tag_non_admin_only_owns_own(self, client):
+        tc, storage, claims = client
+        # Create memory owned by another user
+        from hive.models import Memory
+
+        other = Memory(
+            key="other-k", value="v", tags=["t"], owner_client_id="c2", owner_user_id="other-user"
+        )
+        storage.put_memory(other)
+        tc.post("/api/memories", json={"key": "mine", "value": "v", "tags": ["t"]})
+        resp = tc.delete("/api/memories", params={"tag": "t"})
+        assert resp.status_code == 200
+        # Only the owned memory should be deleted
+        assert resp.json()["deleted"] == 1
+        assert storage.get_memory_by_key("other-k") is not None
+
+    def test_delete_by_tag_requires_auth(self, unauthed_client):
+        resp = unauthed_client.delete("/api/memories", params={"tag": "t"})
+        assert resp.status_code in (401, 403)
+
+
+class TestExportMemories:
+    def test_export_returns_jsonl(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "exp-a", "value": "1", "tags": ["e"]})
+        tc.post("/api/memories", json={"key": "exp-b", "value": "2", "tags": ["e"]})
+        resp = tc.get("/api/memories/export")
+        assert resp.status_code == 200
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) >= 2
+
+    def test_export_with_tag_filter(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "in", "value": "1", "tags": ["export-tag"]})
+        tc.post("/api/memories", json={"key": "out", "value": "2", "tags": ["other"]})
+        resp = tc.get("/api/memories/export", params={"tag": "export-tag"})
+        assert resp.status_code == 200
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        assert len(lines) == 1
+        import json as _json
+
+        assert _json.loads(lines[0])["key"] == "in"
+
+    def test_export_content_disposition(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/memories/export")
+        assert resp.status_code == 200
+        assert "attachment" in resp.headers.get("content-disposition", "")
+
+    def test_export_requires_auth(self, unauthed_client):
+        resp = unauthed_client.get("/api/memories/export")
+        assert resp.status_code in (401, 403)
+
+
+class TestImportMemories:
+    def test_import_creates_memories(self, client):
+        import json as _json
+
+        tc, storage, _ = client
+        lines = "\n".join(
+            [
+                _json.dumps({"key": "imp-a", "value": "v1", "tags": ["imp"]}),
+                _json.dumps({"key": "imp-b", "value": "v2", "tags": []}),
+            ]
+        )
+        resp = tc.post(
+            "/api/memories/import", content=lines, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == 2
+        assert data["updated"] == 0
+        assert data["errors"] == []
+
+    def test_import_updates_existing(self, client):
+        import json as _json
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "upsert-k", "value": "old"})
+        line = _json.dumps({"key": "upsert-k", "value": "new", "tags": []})
+        resp = tc.post(
+            "/api/memories/import", content=line, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["updated"] == 1
+        assert data["created"] == 0
+
+    def test_import_records_errors_for_bad_lines(self, client):
+        tc, *_ = client
+        body = "not valid json\n"
+        resp = tc.post(
+            "/api/memories/import", content=body, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["errors"]) == 1
+
+    def test_import_skips_empty_lines(self, client):
+        import json as _json
+
+        tc, *_ = client
+        body = "\n" + _json.dumps({"key": "skip-empty", "value": "v", "tags": []}) + "\n\n"
+        resp = tc.post(
+            "/api/memories/import", content=body, headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["created"] == 1
+
+    def test_import_requires_auth(self, unauthed_client):
+        resp = unauthed_client.post(
+            "/api/memories/import", content="{}", headers={"Content-Type": "application/x-ndjson"}
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_import_records_error_for_oversized_create(self, client):
+        import json as _json
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        line = _json.dumps({"key": "big-new", "value": "x" * 1000, "tags": []})
+        with patch.object(storage, "put_memory", side_effect=ValueError("too large")):
+            resp = tc.post(
+                "/api/memories/import",
+                content=line,
+                headers={"Content-Type": "application/x-ndjson"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["errors"]) == 1
+        assert data["created"] == 0
+
+    def test_import_records_error_for_oversized_update(self, client):
+        import json as _json
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        tc.post("/api/memories", json={"key": "big-exist", "value": "small"})
+        line = _json.dumps({"key": "big-exist", "value": "x" * 1000, "tags": []})
+        with patch.object(storage, "put_memory", side_effect=ValueError("too large")):
+            resp = tc.post(
+                "/api/memories/import",
+                content=line,
+                headers={"Content-Type": "application/x-ndjson"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["errors"]) == 1
+        assert data["updated"] == 0

@@ -97,11 +97,15 @@ def _hosted_zone_id(ctx, zone_name: str = "warlordofmars.net") -> str:
     """
     if zone_id := os.environ.get("HOSTED_ZONE_ID"):
         return zone_id
-    return ctx.run(
-        f"aws route53 list-hosted-zones-by-name --dns-name {zone_name}"
-        " --query 'HostedZones[0].Id' --output text",
-        hide=True,
-    ).stdout.strip().split("/")[-1]
+    return (
+        ctx.run(
+            f"aws route53 list-hosted-zones-by-name --dns-name {zone_name}"
+            " --query 'HostedZones[0].Id' --output text",
+            hide=True,
+        )
+        .stdout.strip()
+        .split("/")[-1]
+    )
 
 
 def _cfn_output(ctx, key, env="prod"):
@@ -303,11 +307,7 @@ def e2e_local(ctx, tests="tests/e2e", n=1):
         "HIVE_UI_URL": ui_url,
     }
     # Docs tests require a deployed VitePress build — skip unless explicitly targeted
-    ignore = (
-        " --ignore=tests/e2e/test_docs_e2e.py"
-        if tests == "tests/e2e"
-        else ""
-    )
+    ignore = " --ignore=tests/e2e/test_docs_e2e.py" if tests == "tests/e2e" else ""
     for i in range(n):
         if n > 1:
             print(f"\n--- run {i + 1}/{n} ---")
@@ -503,6 +503,102 @@ def seed(ctx, env=None, token=None, reset=False):
 
     cmd = "uv run python scripts/seed_data.py " + " ".join(args)
     ctx.run(cmd, env=seed_env, pty=True)
+
+
+# ── Bulk memory operations ────────────────────────────────────────────────────
+
+
+@task
+def export(ctx, env=None, tag=None, output="-"):
+    """Export memories to JSON Lines (one memory per line).
+
+    Writes to stdout by default; use --output <file> to write to a file.
+    Use --env to target a deployed environment; defaults to local dev stack.
+    Use --tag to export only memories with that tag.
+
+    Example:
+        uv run inv export --env prod > memories.jsonl
+        uv run inv export --env prod --tag project > project.jsonl
+    """
+    import sys
+    import urllib.request
+
+    if env:
+        base_url = _cfn_output(ctx, "ApiFunctionUrl", env=env).rstrip("/")
+        token = os.environ.get("HIVE_EXPORT_TOKEN", "")
+        if not token:
+            print("Set HIVE_EXPORT_TOKEN to a valid management bearer token.", file=sys.stderr)
+            sys.exit(1)
+        url = f"{base_url}/api/memories/export"
+        if tag:
+            url += f"?tag={tag}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req) as resp:
+            data = resp.read()
+    else:
+        api_url = f"http://localhost:{API_PORT}/api/memories/export"
+        if tag:
+            api_url += f"?tag={tag}"
+        import os as _os
+
+        token = _os.environ.get("HIVE_EXPORT_TOKEN", "")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        req = urllib.request.Request(api_url, headers=headers)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = resp.read()
+        except urllib.error.URLError as exc:
+            print(f"Could not reach local API at {API_PORT}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    if output == "-":
+        sys.stdout.buffer.write(data)
+    else:
+        Path(output).write_bytes(data)
+        print(f"Exported to {output}", file=sys.stderr)
+
+
+@task
+def import_memories(ctx, env=None, input="-"):
+    """Import memories from JSON Lines (one memory per line).
+
+    Reads from stdin by default; use --input <file> to read from a file.
+    Use --env to target a deployed environment; defaults to local dev stack.
+
+    Example:
+        cat memories.jsonl | uv run inv import-memories --env dev
+        uv run inv import-memories --env dev --input memories.jsonl
+    """
+    import sys
+    import urllib.request
+
+    body = sys.stdin.buffer.read() if input == "-" else Path(input).read_bytes()
+
+    token = os.environ.get("HIVE_IMPORT_TOKEN", "")
+
+    if env:
+        base_url = _cfn_output(ctx, "ApiFunctionUrl", env=env).rstrip("/")
+        if not token:
+            print("Set HIVE_IMPORT_TOKEN to a valid management bearer token.", file=sys.stderr)
+            sys.exit(1)
+        url = f"{base_url}/api/memories/import"
+    else:
+        url = f"http://localhost:{API_PORT}/api/memories/import"
+
+    headers = {"Content-Type": "application/x-ndjson"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = resp.read().decode()
+        print(result)
+    except urllib.error.HTTPError as exc:
+        print(f"Import failed ({exc.code}): {exc.read().decode()}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as exc:
+        print(f"Could not reach API: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ── CDK ───────────────────────────────────────────────────────────────────────

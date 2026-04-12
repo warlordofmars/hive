@@ -9,10 +9,12 @@ Admins can access all memories.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 
 from hive.api._auth import require_mgmt_user
 from hive.models import (
@@ -178,6 +180,96 @@ async def create_memory(
 
 
 @router.get(
+    "/memories/export",
+    summary="Export memories as JSON Lines",
+    description="Stream all memories (or those with a given tag) as newline-delimited JSON. Sets Content-Disposition for browser download.",
+    responses={401: {"description": "Unauthorized"}},
+)
+async def export_memories(
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    tag: Annotated[str | None, Query(description="Filter by tag")] = None,
+) -> StreamingResponse:
+    owner_user_id = _user_filter(claims)
+
+    def _stream():
+        for memory in storage.iter_all_memories(owner_user_id=owner_user_id, tag=tag):
+            yield json.dumps(MemoryResponse.from_memory(memory).model_dump(), default=str) + "\n"
+
+    filename = f"memories-{tag}.jsonl" if tag else "memories.jsonl"
+    return StreamingResponse(
+        _stream(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post(
+    "/memories/import",
+    summary="Bulk import memories from JSON Lines",
+    description="Import memories from a newline-delimited JSON body. Each line must be a JSON object with key, value, and tags fields. Upserts by key.",
+    responses={401: {"description": "Unauthorized"}},
+)
+async def import_memories(
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    body: Annotated[str, Body(media_type="application/x-ndjson")],
+) -> dict[str, Any]:
+    owner_user_id: str = claims["sub"]
+    created = 0
+    updated = 0
+    errors: list[dict[str, Any]] = []
+
+    for i, line in enumerate(body.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            key = data["key"]
+            value = data["value"]
+            tags = data.get("tags", [])
+        except (json.JSONDecodeError, KeyError) as exc:
+            errors.append({"line": i + 1, "error": str(exc)})
+            continue
+
+        existing = storage.get_memory_by_key(key)
+        if existing:
+            existing.value = value
+            existing.tags = tags
+            existing.updated_at = datetime.now(timezone.utc)
+            try:
+                storage.put_memory(existing)
+            except ValueError as exc:
+                errors.append({"line": i + 1, "key": key, "error": str(exc)})
+                continue
+            updated += 1
+        else:
+            memory = Memory(
+                key=key,
+                value=value,
+                tags=tags,
+                owner_client_id=owner_user_id,
+                owner_user_id=owner_user_id,
+            )
+            try:
+                storage.put_memory(memory)
+            except ValueError as exc:
+                errors.append({"line": i + 1, "key": key, "error": str(exc)})
+                continue
+            created += 1
+
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_created,
+            client_id=owner_user_id,
+            metadata={"created": created, "updated": updated},
+        )
+    )
+    return {"created": created, "updated": updated, "errors": errors}
+
+
+@router.get(
     "/memories/{memory_id}",
     summary="Get a memory by ID",
     description="Retrieve a single memory by its unique ID. Non-admins can only access their own memories.",
@@ -273,3 +365,31 @@ async def delete_memory(
             metadata={"memory_id": memory_id},
         )
     )
+
+
+@router.delete(
+    "/memories",
+    summary="Bulk delete memories by tag",
+    description="Delete all memories with the given tag. Non-admins can only delete their own memories.",
+    responses={
+        400: {"description": "tag query parameter is required"},
+        401: {"description": "Unauthorized"},
+    },
+)
+async def delete_memories_by_tag(
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+    tag: Annotated[str | None, Query(description="Tag to bulk-delete")] = None,
+) -> dict[str, int]:
+    if not tag:
+        raise HTTPException(status_code=400, detail="tag query parameter is required")
+    owner_user_id = _user_filter(claims)
+    deleted = storage.delete_memories_by_tag(tag, owner_user_id=owner_user_id)
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_deleted,
+            client_id=claims["sub"],
+            metadata={"tag": tag, "count": deleted},
+        )
+    )
+    return {"deleted": deleted}

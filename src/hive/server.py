@@ -327,6 +327,44 @@ async def forget(
 
 
 @mcp.tool()
+async def forget_all(
+    tag: Annotated[str, "Tag of the memories to delete"],
+    ctx: Context | None = None,
+) -> str:
+    """Delete all memories that have the given tag."""
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:write")
+
+    deleted = storage.delete_memories_by_tag(tag)
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_deleted,
+            client_id=client_id,
+            metadata={"tag": tag, "count": deleted},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Deleted %d memories with tag '%s'",
+        deleted,
+        tag,
+        extra={
+            "tool": "forget_all",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="forget_all")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="forget_all",
+    )
+    return f"Deleted {deleted} memories with tag '{tag}'."
+
+
+@mcp.tool()
 async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,

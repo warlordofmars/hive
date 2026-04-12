@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -233,6 +234,72 @@ class HiveStorage:
             if lek is None:
                 return memories, None
             start_key = lek
+
+    def delete_memories_by_tag(
+        self,
+        tag: str,
+        owner_user_id: str | None = None,
+    ) -> int:
+        """Delete all memories with the given tag.
+
+        If owner_user_id is provided, only memories owned by that user are deleted.
+        Returns the count of memories deleted.
+        """
+        deleted = 0
+        cursor: str | None = None
+        while True:
+            items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
+            for memory in items:
+                if owner_user_id and memory.owner_user_id != owner_user_id:
+                    continue
+                self._delete_tag_items(memory)
+                self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
+                deleted += 1
+            if cursor is None:
+                break
+        return deleted
+
+    def iter_all_memories(
+        self,
+        owner_user_id: str | None = None,
+        tag: str | None = None,
+    ) -> Iterator[Memory]:
+        """Yield all memories, optionally filtered by owner or tag.
+
+        For tag-filtered export, iterates TagIndex pages.
+        For unfiltered export, scans all META items.
+        This is a generator — use for streaming exports only.
+        """
+        if tag:
+            cursor: str | None = None
+            while True:
+                items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
+                for memory in items:
+                    if owner_user_id and memory.owner_user_id != owner_user_id:
+                        continue
+                    yield memory
+                if cursor is None:
+                    break
+        else:
+            filter_expr = "SK = :sk AND begins_with(PK, :pk_prefix)"
+            expr_vals: dict[str, Any] = {":sk": "META", ":pk_prefix": "MEMORY#"}
+            if owner_user_id:
+                filter_expr += _UID_FILTER
+                expr_vals[":uid"] = owner_user_id
+            start_key: dict[str, Any] | None = None
+            while True:
+                kwargs: dict[str, Any] = {
+                    "FilterExpression": filter_expr,
+                    "ExpressionAttributeValues": expr_vals,
+                }
+                if start_key:
+                    kwargs["ExclusiveStartKey"] = start_key
+                resp = self.table.scan(**kwargs)
+                for item in resp.get("Items", []):
+                    yield Memory.from_dynamo(item)
+                start_key = resp.get("LastEvaluatedKey")
+                if start_key is None:
+                    break
 
     # ------------------------------------------------------------------
     # OAuth Client management
