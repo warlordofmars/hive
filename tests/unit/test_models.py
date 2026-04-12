@@ -149,3 +149,105 @@ class TestAuthorizationCode:
         code2 = AuthorizationCode.from_dynamo(item)
         assert code2.code == code.code
         assert code2.code_challenge == code.code_challenge
+
+
+class TestApiKey:
+    def test_to_and_from_dynamo_no_expiry(self):
+        from datetime import datetime, timezone
+
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="CI",
+            key_hash="abc123",
+            created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+        item = k.to_dynamo()
+        assert item["PK"] == f"APIKEY#{k.key_id}"
+        assert item["SK"] == "META"
+        assert "expires_at" not in item
+        assert "ttl" not in item
+
+        k2 = ApiKey.from_dynamo(item)
+        assert k2.key_id == k.key_id
+        assert k2.expires_at is None
+        assert k2.revoked is False
+
+    def test_to_and_from_dynamo_with_expiry(self):
+        from datetime import datetime, timezone
+
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="Expiring",
+            key_hash="def456",
+            created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+            expires_at=datetime(2027, 4, 1, tzinfo=timezone.utc),
+        )
+        item = k.to_dynamo()
+        assert "expires_at" in item
+        assert "ttl" in item
+
+        k2 = ApiKey.from_dynamo(item)
+        assert k2.expires_at is not None
+
+    def test_is_valid_active_key(self):
+        from datetime import datetime, timezone
+
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="Active",
+            key_hash="hash",
+            created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+        assert k.is_valid is True
+        assert k.is_expired is False
+
+    def test_is_valid_revoked(self):
+        from datetime import datetime, timezone
+
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="Revoked",
+            key_hash="hash",
+            revoked=True,
+            created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+        assert k.is_valid is False
+
+    def test_is_valid_expired(self):
+        from datetime import datetime, timezone
+
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="Expired",
+            key_hash="hash",
+            created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            expires_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+        )
+        assert k.is_expired is True
+        assert k.is_valid is False
+
+    def test_api_key_response_from_api_key(self):
+        from datetime import datetime, timezone
+
+        from hive.models import ApiKey, ApiKeyResponse
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="Test",
+            key_hash="hash",
+            created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        )
+        resp = ApiKeyResponse.from_api_key(k)
+        assert resp.key_id == k.key_id
+        assert resp.name == "Test"
+        assert "key_hash" not in resp.model_dump()

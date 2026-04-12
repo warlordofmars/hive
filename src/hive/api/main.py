@@ -23,6 +23,7 @@ from hive.api._auth import require_admin
 from hive.api.account import router as account_router
 from hive.api.admin import router as admin_router
 from hive.api.clients import router as clients_router
+from hive.api.keys import router as keys_router
 from hive.api.logs import router as logs_router
 from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
@@ -131,6 +132,7 @@ app.include_router(memories_router, prefix="/api")
 app.include_router(clients_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
+app.include_router(keys_router, prefix="/api")
 app.include_router(account_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(logs_router, prefix="/api")

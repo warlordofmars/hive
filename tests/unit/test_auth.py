@@ -1550,3 +1550,102 @@ class TestMgmtAuthRoutes:
         user = storage.get_user_by_email("bob@example.com")
         assert user is not None
         assert user.display_name == "Bob New"
+
+
+# ---------------------------------------------------------------------------
+# validate_bearer_token — API key path
+# ---------------------------------------------------------------------------
+
+
+class TestValidateBearerTokenApiKey:
+    def _storage_with_key(self, key):
+        from unittest.mock import MagicMock
+
+        storage = MagicMock()
+        storage.get_api_key_by_hash.return_value = key
+        return storage
+
+    def test_valid_api_key_returns_synthetic_token(self):
+        from datetime import datetime, timezone
+
+        from hive.auth.tokens import validate_bearer_token
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="CI",
+            key_hash="will-be-replaced",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        # Generate real key/hash pair
+
+        from hive.api.keys import generate_api_key
+
+        plaintext, real_hash = generate_api_key()
+        k.key_hash = real_hash
+        storage = self._storage_with_key(k)
+
+        token = validate_bearer_token(f"Bearer {plaintext}", storage)
+        assert token.client_id == f"apikey:{k.key_id}"
+        assert token.scope == k.scope
+
+    def test_api_key_not_found_raises(self):
+        from unittest.mock import MagicMock
+
+        from hive.auth.tokens import validate_bearer_token
+
+        storage = MagicMock()
+        storage.get_api_key_by_hash.return_value = None
+        with pytest.raises(ValueError, match="not found"):
+            validate_bearer_token("Bearer hive_sk_notfound", storage)
+
+    def test_revoked_api_key_raises(self):
+        from datetime import datetime, timezone
+
+        from hive.auth.tokens import validate_bearer_token
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="Revoked",
+            key_hash="hash",
+            revoked=True,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        storage = self._storage_with_key(k)
+        with pytest.raises(ValueError, match="revoked or has expired"):
+            validate_bearer_token("Bearer hive_sk_revoked", storage)
+
+    def test_expired_api_key_raises(self):
+        from datetime import datetime, timezone
+
+        from hive.auth.tokens import validate_bearer_token
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="Expired",
+            key_hash="hash",
+            created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            expires_at=datetime(2025, 6, 1, tzinfo=timezone.utc),  # past
+        )
+        storage = self._storage_with_key(k)
+        with pytest.raises(ValueError, match="revoked or has expired"):
+            validate_bearer_token("Bearer hive_sk_expired", storage)
+
+    def test_api_key_with_no_expiry_gets_far_future_expires(self):
+        from datetime import datetime, timezone
+
+        from hive.auth.tokens import validate_bearer_token
+        from hive.models import ApiKey
+
+        k = ApiKey(
+            owner_user_id="u1",
+            name="NoExpiry",
+            key_hash="hash",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            expires_at=None,
+        )
+        storage = self._storage_with_key(k)
+        token = validate_bearer_token("Bearer hive_sk_noexpiry", storage)
+        assert token.expires_at > datetime(2030, 1, 1, tzinfo=timezone.utc)

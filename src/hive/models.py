@@ -10,6 +10,7 @@ DynamoDB single-table design:
   Activity log:  PK=LOG#{date}#{hour}     SK={timestamp}#{event_id}  (hour sharding)
   User items:    PK=USER#{user_id}        SK=META
   Mgmt state:    PK=MGMT_STATE#{state}    SK=META          (TTL enabled)
+  API key items: PK=APIKEY#{key_id}       SK=META
 
 GSIs:
   TagIndex:       PK=tag, SK=memory_id    — for list_memories(tag)
@@ -582,6 +583,95 @@ class UserResponse(BaseModel):
             created_at=u.created_at,
             last_login_at=u.last_login_at,
         )
+
+
+# ---------------------------------------------------------------------------
+# API Keys (long-lived auth alternative to OAuth)
+# ---------------------------------------------------------------------------
+
+
+class ApiKey(BaseModel):
+    """A long-lived API key for server-to-server authentication."""
+
+    key_id: str = Field(default_factory=_new_id)
+    owner_user_id: str
+    name: str
+    key_hash: str  # SHA-256 hex digest — never store plaintext
+    scope: str = "memories:read memories:write"
+    created_at: datetime = Field(default_factory=_now_utc)
+    expires_at: datetime | None = None
+    revoked: bool = False
+
+    def to_dynamo(self) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "PK": f"APIKEY#{self.key_id}",
+            "SK": "META",
+            "key_id": self.key_id,
+            "owner_user_id": self.owner_user_id,
+            "name": self.name,
+            "key_hash": self.key_hash,
+            "scope": self.scope,
+            "created_at": self.created_at.isoformat(),
+            "revoked": self.revoked,
+        }
+        if self.expires_at is not None:
+            item["expires_at"] = self.expires_at.isoformat()
+            item["ttl"] = int(self.expires_at.timestamp())
+        return item
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> ApiKey:
+        expires_at = None
+        if ea := item.get("expires_at"):
+            expires_at = datetime.fromisoformat(ea)
+        return cls(
+            key_id=item["key_id"],
+            owner_user_id=item["owner_user_id"],
+            name=item["name"],
+            key_hash=item["key_hash"],
+            scope=item.get("scope", "memories:read memories:write"),
+            created_at=datetime.fromisoformat(item["created_at"]),
+            expires_at=expires_at,
+            revoked=item.get("revoked", False),
+        )
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and _now_utc() >= self.expires_at
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.revoked and not self.is_expired
+
+
+class ApiKeyResponse(BaseModel):
+    """Public metadata for an API key — never includes the plaintext key or hash."""
+
+    key_id: str
+    owner_user_id: str
+    name: str
+    scope: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    revoked: bool
+
+    @classmethod
+    def from_api_key(cls, k: ApiKey) -> ApiKeyResponse:
+        return cls(
+            key_id=k.key_id,
+            owner_user_id=k.owner_user_id,
+            name=k.name,
+            scope=k.scope,
+            created_at=k.created_at,
+            expires_at=k.expires_at,
+            revoked=k.revoked,
+        )
+
+
+class ApiKeyCreateResponse(ApiKeyResponse):
+    """Returned only on key creation — includes the plaintext key (shown once)."""
+
+    plaintext_key: str
 
 
 class MemorySearchResult(BaseModel):

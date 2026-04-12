@@ -277,6 +277,28 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][1].method).toBe("GET");
   });
 
+  it("listApiKeys calls GET /api/keys", async () => {
+    mockOk([]);
+    await api.listApiKeys();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/keys");
+    expect(fetchMock.mock.calls[0][1].method).toBe("GET");
+  });
+
+  it("createApiKey calls POST /api/keys with name and scope", async () => {
+    mockOk({ key_id: "k1", plaintext_key: "hive_sk_abc" });
+    await api.createApiKey("My Key", "memories:read");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/keys");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ name: "My Key", scope: "memories:read" });
+  });
+
+  it("deleteApiKey calls DELETE /api/keys/{id}", async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 204 });
+    await api.deleteApiKey("k1");
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/keys/k1");
+  });
+
   it("deleteAccount calls DELETE /api/account with confirm body", async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 204 });
     await api.deleteAccount();

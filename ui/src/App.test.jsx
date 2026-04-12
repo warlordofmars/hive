@@ -33,6 +33,9 @@ vi.mock("./components/Dashboard.jsx", () => ({
 vi.mock("./components/LogViewer.jsx", () => ({
   default: () => <div data-testid="log-viewer" />,
 }));
+vi.mock("./components/ApiKeysPanel.jsx", () => ({
+  default: () => <div data-testid="api-keys-panel" />,
+}));
 
 /** Build a syntactically-valid mgmt JWT with given claims. */
 function makeToken({ expOffsetSeconds = 3600, role = "user", email = "u@example.com" } = {}) {
@@ -142,6 +145,7 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     expect(screen.getByText("Memories")).toBeTruthy();
     expect(screen.getByText("OAuth Clients")).toBeTruthy();
+    expect(screen.getByText("API Keys")).toBeTruthy();
     expect(screen.getByText("Activity Log")).toBeTruthy();
     expect(screen.getByText("Setup")).toBeTruthy();
     expect(screen.queryByText("Users")).toBeNull();
@@ -207,6 +211,13 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     fireEvent.click(screen.getByText("OAuth Clients"));
     expect(screen.getByTestId("client-manager")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("switches to ApiKeysPanel when API Keys tab is clicked", async () => {
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("API Keys"));
+    expect(screen.getByTestId("api-keys-panel")).toBeTruthy();
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
