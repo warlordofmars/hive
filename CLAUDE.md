@@ -531,8 +531,8 @@ pre-push gate.
 Apply the "when to run local e2e tests" rules above to decide whether to
 run e2e before opening the PR.
 
-**Important:** `inv dev` is a long-lived blocking process. In an autonomous
-session, do not attempt to start it in the background. Instead:
+**Important:** `inv dev` is a long-lived blocking process. Do not attempt
+to start it in the background during an autonomous session. Instead:
 
 - If the local stack is already running (started externally), run:
 
@@ -618,8 +618,15 @@ After the PR merges, the `development` branch pipeline triggers. Poll until
 a new run appears, then watch it:
 
 ```bash
-gh run list --branch development --limit 3   # repeat until a new run appears
-gh run watch <run-id>
+# Poll until a run is queued or in progress on development (every 15s)
+while true; do
+  RUN_ID=$(gh run list --branch development --limit 1 \
+    --json databaseId,status \
+    --jq '.[] | select(.status == "in_progress" or .status == "queued") | .databaseId')
+  [ -n "$RUN_ID" ] && break
+  sleep 15
+done
+gh run watch "$RUN_ID"
 ```
 
 If the pipeline fails:
