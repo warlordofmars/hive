@@ -423,10 +423,10 @@ touches any of the following:
 - MCP tool logic (`server.py`) — remember, recall, forget, search, list
 - Management API endpoints (`api/`) that the UI or MCP tests exercise
 
-**Use judgement:**
+**Use judgement (run the relevant `--tests` file at minimum):**
 
 - UI component changes that affect user-visible flows (memory CRUD, client
-  management, activity log) — run the relevant `--tests` file at minimum
+  management, activity log)
 - Vite proxy config or API base URL changes
 
 **Not needed:**
@@ -447,3 +447,232 @@ This is enforced automatically if you install the git hook:
 `uv run inv install-hooks`
 
 If infra files changed, also run: `uv run inv synth`
+
+---
+
+## Autonomous issue workflow
+
+This section governs how Claude Code operates when given a batch of issues
+to work through unattended.
+
+### Core principle
+
+Work autonomously. Do not ask for confirmation unless the situation is
+explicitly listed under **Stop and ask** below. Make reasonable judgment
+calls and document them in the PR description.
+
+### Issue cycle
+
+When given one or more GitHub issue numbers, process them **sequentially**.
+Complete the full cycle for each issue before starting the next.
+
+#### 1. Understand the issue
+
+```bash
+gh issue view <number>
+```
+
+Read the issue fully. Before doing anything else, check it is still open
+and has no existing PR:
+
+```bash
+gh issue view <number> --json state -q .state          # must be OPEN
+gh pr list --search "issue-<number>" --state open      # must be empty
+```
+
+If the issue is closed or already has an open PR, skip it and move to the
+next. If the issue is ambiguous, make a reasonable interpretation, document
+it in the PR description, and proceed.
+
+#### 2. Branch
+
+Always branch off `origin/development`, never off another feature branch.
+Name the branch to match the issue type:
+
+```bash
+git fetch origin
+
+# bug fix
+git checkout -b fix/issue-<number>-<short-slug> origin/development
+# feature / enhancement
+git checkout -b feat/issue-<number>-<short-slug> origin/development
+# chore / docs / refactor
+git checkout -b chore/issue-<number>-<short-slug> origin/development
+```
+
+#### 3. Implement
+
+Make the necessary changes. Follow all conventions in this file.
+
+**Coverage:** 100% is required — CI fails below this.
+- Every new Python module needs tests in `tests/unit/` or `tests/integration/`.
+- Every new UI component needs a co-located `*.test.jsx` file.
+
+**Copyright, UI conventions, dependency management:** follow the rules
+defined in the sections above.
+
+#### 4. Run pre-push gate
+
+```bash
+uv run inv pre-push
+```
+
+If infra files changed, also run:
+
+```bash
+uv run inv synth
+```
+
+Fix all failures before proceeding. Do not open a PR with a failing
+pre-push gate.
+
+#### 5. Run local e2e if warranted
+
+Apply the "when to run local e2e tests" rules above to decide whether to
+run e2e before opening the PR.
+
+**Important:** `inv dev` is a long-lived blocking process. In an autonomous
+session, do not attempt to start it in the background. Instead:
+
+- If the local stack is already running (started externally), run:
+
+  ```bash
+  uv run inv e2e-local
+  # or for a specific test file:
+  uv run inv e2e-local --tests tests/e2e/<relevant_file>.py
+  ```
+
+- If the local stack is **not** running, skip local e2e and note in the PR
+  description: *"Local e2e not run — CI will cover this on the development
+  branch deploy."* The `development` pipeline deploys and runs the full e2e
+  suite, which is an adequate safety net for most changes.
+
+Fix any failures before proceeding.
+
+**Decision rules for "use judgement" cases:**
+
+- Any change to a UI component → run `tests/e2e/test_ui_e2e.py`
+- Any change to `api/` endpoints → run `tests/e2e/test_mcp_e2e.py` and/or
+  `tests/e2e/test_auth_e2e.py` depending on what's affected
+
+#### 6. Create PR
+
+Rebase and verify clean history:
+
+```bash
+git fetch origin
+git rebase origin/development
+git log --oneline origin/development..HEAD   # must show ONLY your commits
+```
+
+Push — use `-u` for a brand-new branch, `--force-with-lease` after a rebase
+on an already-pushed branch:
+
+```bash
+# first push of this branch
+git push -u origin <branch>
+
+# after a rebase on a branch already pushed
+git push --force-with-lease
+```
+
+Create the PR and enable squash auto-merge immediately:
+
+```bash
+gh pr create --base development \
+  --title "<concise title>" \
+  --body "Closes #<number>
+
+## Summary
+<what was changed and why>
+
+## Approach
+<any non-obvious decisions or interpretations of the issue>"
+
+gh pr merge --auto --squash --delete-branch
+```
+
+#### 7. Monitor PR CI
+
+Get the run ID and watch until all checks pass or a failure requires a fix:
+
+```bash
+gh run list --branch <branch> --limit 1   # get the run ID
+gh run watch <run-id>
+```
+
+If any check fails:
+1. Read the failure: `gh run view <run-id> --log-failed`
+2. Fix on the same branch
+3. `git push`
+4. Get the new run ID: `gh run list --branch <branch> --limit 1`
+5. Return to watching
+
+Repeat until all checks pass. Auto-merge fires automatically once they do.
+
+If the same check fails 3 times without a clear fix, stop and ask.
+
+#### 8. Monitor development branch CI/CD post-merge
+
+After the PR merges, the `development` branch pipeline triggers. Poll until
+a new run appears, then watch it:
+
+```bash
+gh run list --branch development --limit 3   # repeat until a new run appears
+gh run watch <run-id>
+```
+
+If the pipeline fails:
+1. Read the failure: `gh run view <run-id> --log-failed`
+2. Create a new fix branch off the updated `origin/development`
+3. Fix, run `inv pre-push`, run local e2e if warranted
+4. PR and repeat from step 6
+
+Only move to the next issue when the `development` pipeline is green.
+
+### Keeping CLAUDE.md current
+
+If you discover that CLAUDE.md is missing information needed to work
+effectively — a new inv task, an undocumented gotcha, a test convention —
+update it in the same PR as the change that surfaced it.
+
+**Permitted without asking:**
+- Adding or correcting inv task names, commands, or flags
+- Documenting a newly discovered gotcha or test convention
+- Updating the file structure map when new files are added
+
+**Requires human review (open a separate PR, do not auto-merge):**
+- Any change to the "Autonomous issue workflow" section
+- Any change to the "Stop and ask" list
+- Any change that expands what Claude is permitted to do unattended
+
+### Stop and ask
+
+When stopping, always emit a sentinel as the first line of your message:
+
+```
+HUMAN_INPUT_REQUIRED: <brief reason>
+```
+
+This allows automated monitoring to detect the stop and alert the operator.
+
+Halt and wait for human input **only** in these situations:
+
+- The PR is not auto-merging after CI passes and the reason is unclear
+- The `development` pipeline failure is in infrastructure (CDK / Lambda /
+  DynamoDB) and the root cause is not apparent from logs
+- A change requires modifying `infra/stacks/hive_stack.py` in a way that
+  could affect production resources
+- The same CI check has failed 3 times without a clear fix
+
+In all other cases, make a judgment call and proceed.
+
+### What you must never do
+
+- Push directly to `development` or `main`
+- Merge a PR manually — auto-merge handles this
+- Run `gh release create` — CI owns releases
+- Hardcode credentials, secrets, or AWS account IDs
+- Use `pip` or `requirements.txt` — always use `uv`
+- Skip `inv pre-push` before creating a PR
+- Pin GitHub Actions to mutable version tags — use full commit SHAs
