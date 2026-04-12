@@ -94,6 +94,7 @@ def _setup_app_overrides(app, storage, claims):
     from hive.api import memories as memories_mod
     from hive.api import stats as stats_mod
     from hive.api import users as users_mod
+    from hive.api import versions as versions_mod
 
     def _override_mgmt_user():
         return claims
@@ -102,7 +103,7 @@ def _setup_app_overrides(app, storage, claims):
         return storage
 
     app.dependency_overrides[auth_mod.require_mgmt_user] = _override_mgmt_user
-    for mod in (memories_mod, clients_mod, stats_mod, users_mod):
+    for mod in (memories_mod, clients_mod, stats_mod, users_mod, versions_mod):
         app.dependency_overrides[mod._storage] = _override_storage
 
 
@@ -479,6 +480,100 @@ class TestMemoryTTL:
         resp = tc.patch(f"/api/memories/{mid}", json={"ttl_seconds": 0})
         assert resp.status_code == 200
         assert resp.json()["expires_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Memory version endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestVersionEndpoints:
+    def test_list_versions_empty(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "ver-k", "value": "v1"}).json()["memory_id"]
+        resp = tc.get(f"/api/memories/{mid}/versions")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_list_versions_after_update(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "ver-upd", "value": "v1"}).json()["memory_id"]
+        tc.patch(f"/api/memories/{mid}", json={"value": "v2"})
+        resp = tc.get(f"/api/memories/{mid}/versions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["value"] == "v1"
+
+    def test_list_versions_memory_not_found(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/memories/no-such-id/versions")
+        assert resp.status_code == 404
+
+    def test_list_versions_non_admin_cannot_see_other_user_memory(self, client):
+        tc, storage, _ = client
+        from hive.models import Memory
+
+        other = Memory(key="other", value="v", owner_client_id="x", owner_user_id="other-user")
+        storage.put_memory(other)
+        resp = tc.get(f"/api/memories/{other.memory_id}/versions")
+        assert resp.status_code == 404
+
+    def test_restore_version(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "restore-k", "value": "v1"}).json()["memory_id"]
+        tc.patch(f"/api/memories/{mid}", json={"value": "v2"})
+        versions = tc.get(f"/api/memories/{mid}/versions").json()
+        assert len(versions) == 1
+        vts = versions[0]["version_timestamp"]
+        resp = tc.post(f"/api/memories/{mid}/restore?version_timestamp={vts}")
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "v1"
+        # Verify the memory was actually restored
+        current = tc.get(f"/api/memories/{mid}").json()
+        assert current["value"] == "v1"
+
+    def test_restore_memory_not_found(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories/no-such-id/restore?version_timestamp=ts")
+        assert resp.status_code == 404
+
+    def test_restore_version_not_found(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "rv-nf", "value": "v"}).json()["memory_id"]
+        resp = tc.post(f"/api/memories/{mid}/restore?version_timestamp=no-such-ts")
+        assert resp.status_code == 404
+
+    def test_restore_non_admin_cannot_restore_other_user_memory(self, client):
+        tc, storage, _ = client
+        from hive.models import Memory
+
+        other = Memory(key="other2", value="v", owner_client_id="x", owner_user_id="other-user")
+        storage.put_memory(other)
+        resp = tc.post(f"/api/memories/{other.memory_id}/restore?version_timestamp=ts")
+        assert resp.status_code == 404
+
+    def test_versions_dep_returns_storage(self):
+        import boto3
+        from moto import mock_aws
+
+        with mock_aws():
+            boto3.client("dynamodb", region_name="us-east-1").create_table(
+                TableName="hive",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            from hive.api.versions import _storage
+            from hive.storage import HiveStorage
+
+            assert isinstance(_storage(), HiveStorage)
 
 
 # ---------------------------------------------------------------------------

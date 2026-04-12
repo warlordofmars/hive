@@ -182,6 +182,9 @@ export default function MemoryBrowser() {
   const [editing, setEditing] = useState(null); // memory object or null
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ key: "", value: "", tags: "", ttl: "" });
+  const [viewingHistory, setViewingHistory] = useState(null); // memory object or null
+  const [versions, setVersions] = useState([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [pendingDelete, setPendingDelete] = useState(null);
   const searchDebounceRef = useRef(null);
@@ -322,17 +325,51 @@ export default function MemoryBrowser() {
     setEditing(m);
     setForm({ key: m.key, value: m.value, tags: m.tags.join(", "), ttl: "" });
     setCreating(false);
+    setViewingHistory(null);
+    setVersions([]);
   }
 
   function openCreate() {
     setCreating(true);
     setEditing(null);
     setForm({ key: "", value: "", tags: "", ttl: "" });
+    setViewingHistory(null);
+    setVersions([]);
   }
 
   function closePanel() {
     setEditing(null);
     setCreating(false);
+  }
+
+  async function openHistory(m) {
+    setViewingHistory(m);
+    setEditing(null);
+    setCreating(false);
+    setVersionsLoading(true);
+    try {
+      const vs = await api.listMemoryVersions(m.memory_id);
+      setVersions(vs);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setVersionsLoading(false);
+    }
+  }
+
+  function closeHistory() {
+    setViewingHistory(null);
+    setVersions([]);
+  }
+
+  async function handleRestore(versionTimestamp) {
+    try {
+      await api.restoreMemoryVersion(viewingHistory.memory_id, versionTimestamp);
+      closeHistory();
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   // Programmatically focus the card at focusedIndex when it changes
@@ -431,9 +468,17 @@ export default function MemoryBrowser() {
                 </div>
               </button>
               <Button
+                variant="secondary"
+                size="sm"
+                className="ml-2 shrink-0 self-center"
+                onClick={() => openHistory(m)}
+              >
+                History
+              </Button>
+              <Button
                 variant="danger"
                 size="sm"
-                className="ml-3 shrink-0 self-center"
+                className="ml-2 shrink-0 self-center"
                 onClick={() => setPendingDelete(m.memory_id)}
               >
                 Delete
@@ -510,6 +555,41 @@ export default function MemoryBrowser() {
                 </Button>
               </div>
             </form>
+          </Card>
+        </div>
+      )}
+
+      {/* Version history panel */}
+      {viewingHistory && (
+        <div className="w-full md:w-[360px]">
+          <Card>
+            <h3 className="mb-4 text-base font-semibold">History: {viewingHistory.key}</h3>
+            {versionsLoading && <p className="text-[var(--text-muted)]">Loading…</p>}
+            {!versionsLoading && versions.length === 0 && (
+              <p className="text-[var(--text-muted)] text-sm">No previous versions.</p>
+            )}
+            <ul className="flex flex-col gap-3 list-none m-0 p-0">
+              {versions.map((v) => (
+                <li key={v.version_timestamp} className="border border-[var(--border)] rounded-[var(--radius)] p-3">
+                  <div className="text-[11px] text-[var(--text-muted)] mb-1">
+                    {new Date(v.recorded_at).toLocaleString()}
+                  </div>
+                  <p className="text-[13px] whitespace-pre-wrap mb-2">
+                    {v.value.length > 120 ? v.value.slice(0, 120) + "…" : v.value}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => handleRestore(v.version_timestamp)}
+                  >
+                    Restore
+                  </Button>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4">
+              <Button variant="secondary" onClick={closeHistory}>Close</Button>
+            </div>
           </Card>
         </div>
       )}

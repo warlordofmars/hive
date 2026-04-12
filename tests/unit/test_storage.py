@@ -256,6 +256,82 @@ class TestMemoryStorage:
         m = Memory(key="k", value="v", owner_client_id="c1", expires_at=past)
         assert m.is_expired
 
+    def test_put_memory_saves_version_on_update(self, storage):
+        """Updating an existing memory should create a version snapshot."""
+        m = Memory(key="v-key", value="v1", owner_client_id="c1")
+        storage.put_memory(m)
+        m.value = "v2"
+        storage.put_memory(m)
+        versions = storage.list_memory_versions(m.memory_id)
+        assert len(versions) == 1
+        assert versions[0].value == "v1"
+
+    def test_put_new_memory_does_not_create_version(self, storage):
+        """Creating a brand-new memory should NOT create a version snapshot."""
+        m = Memory(key="fresh", value="x", owner_client_id="c1")
+        storage.put_memory(m)
+        assert storage.list_memory_versions(m.memory_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Memory version tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryVersionStorage:
+    def test_list_versions_newest_first(self, storage):
+
+        m = Memory(key="hist", value="v1", owner_client_id="c1")
+        storage.put_memory(m)
+        # two updates → two version snapshots
+        m.value = "v2"
+        storage.put_memory(m)
+        m.value = "v3"
+        storage.put_memory(m)
+        versions = storage.list_memory_versions(m.memory_id)
+        assert len(versions) == 2
+        # newest first (ScanIndexForward=False)
+        assert versions[0].value == "v2"
+        assert versions[1].value == "v1"
+
+    def test_get_memory_version_found(self, storage):
+        m = Memory(key="gv", value="original", owner_client_id="c1")
+        storage.put_memory(m)
+        m.value = "updated"
+        storage.put_memory(m)
+        versions = storage.list_memory_versions(m.memory_id)
+        assert len(versions) == 1
+        fetched = storage.get_memory_version(m.memory_id, versions[0].version_timestamp)
+        assert fetched is not None
+        assert fetched.value == "original"
+
+    def test_get_memory_version_not_found(self, storage):
+        m = Memory(key="missing-v", value="v", owner_client_id="c1")
+        storage.put_memory(m)
+        result = storage.get_memory_version(m.memory_id, "nonexistent-ts")
+        assert result is None
+
+    def test_version_serialise_deserialise(self):
+        from hive.models import MemoryVersion
+
+        m = Memory(key="ser", value="old-val", tags=["t1"], owner_client_id="c1")
+        v = MemoryVersion.from_memory(m)
+        item = v.to_dynamo()
+        restored = MemoryVersion.from_dynamo(item)
+        assert restored.memory_id == v.memory_id
+        assert restored.value == "old-val"
+        assert restored.tags == ["t1"]
+
+    def test_version_response_from_version(self):
+        from hive.models import MemoryVersion, MemoryVersionResponse
+
+        m = Memory(key="resp", value="v", tags=[], owner_client_id="c1")
+        v = MemoryVersion.from_memory(m)
+        resp = MemoryVersionResponse.from_version(v)
+        assert resp.memory_id == v.memory_id
+        assert resp.version_timestamp == v.version_timestamp
+        assert resp.value == "v"
+
 
 # ---------------------------------------------------------------------------
 # Client tests

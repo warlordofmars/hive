@@ -474,6 +474,58 @@ class ActivityEvent(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Memory version (snapshot of a memory value before overwrite)
+# ---------------------------------------------------------------------------
+
+
+class MemoryVersion(BaseModel):
+    """A point-in-time snapshot of a memory, written before an overwrite."""
+
+    memory_id: str
+    version_timestamp: str  # ISO-formatted UTC timestamp used as SK
+    key: str
+    value: str
+    tags: list[str]
+    recorded_at: datetime
+
+    def to_dynamo(self) -> dict[str, Any]:
+        return {
+            "PK": f"MEMORY#{self.memory_id}",
+            "SK": f"VERSION#{self.version_timestamp}",
+            "memory_id": self.memory_id,
+            "version_timestamp": self.version_timestamp,
+            "key": self.key,
+            "value": self.value,
+            "tags": self.tags,
+            "recorded_at": self.recorded_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> MemoryVersion:
+        return cls(
+            memory_id=item["memory_id"],
+            version_timestamp=item["version_timestamp"],
+            key=item["key"],
+            value=item["value"],
+            tags=item.get("tags", []),
+            recorded_at=datetime.fromisoformat(item["recorded_at"]),
+        )
+
+    @classmethod
+    def from_memory(cls, memory: Memory) -> MemoryVersion:
+        """Snapshot the current state of a memory."""
+        now = _now_utc()
+        return cls(
+            memory_id=memory.memory_id,
+            version_timestamp=now.strftime("%Y%m%dT%H%M%S%f"),
+            key=memory.key,
+            value=memory.value,
+            tags=memory.tags,
+            recorded_at=now,
+        )
+
+
+# ---------------------------------------------------------------------------
 # API request / response schemas (used by FastAPI routes)
 # ---------------------------------------------------------------------------
 
@@ -514,6 +566,26 @@ class MemoryResponse(BaseModel):
             created_at=m.created_at,
             updated_at=m.updated_at,
             expires_at=m.expires_at,
+        )
+
+
+class MemoryVersionResponse(BaseModel):
+    memory_id: str
+    version_timestamp: str
+    key: str
+    value: str
+    tags: list[str]
+    recorded_at: datetime
+
+    @classmethod
+    def from_version(cls, v: MemoryVersion) -> MemoryVersionResponse:
+        return cls(
+            memory_id=v.memory_id,
+            version_timestamp=v.version_timestamp,
+            key=v.key,
+            value=v.value,
+            tags=v.tags,
+            recorded_at=v.recorded_at,
         )
 
 

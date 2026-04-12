@@ -362,6 +362,24 @@ describe("api", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Version history endpoints
+  // ---------------------------------------------------------------------------
+
+  it("listMemoryVersions calls correct URL", async () => {
+    mockOk([]);
+    await api.listMemoryVersions("mem-123");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/memories/mem-123/versions");
+  });
+
+  it("restoreMemoryVersion calls correct URL with encoded timestamp", async () => {
+    mockOk({});
+    await api.restoreMemoryVersion("mem-123", "20260412T120000");
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      "/api/memories/mem-123/restore?version_timestamp=20260412T120000",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
   // 401 handling — clears token and redirects
   // ---------------------------------------------------------------------------
 
