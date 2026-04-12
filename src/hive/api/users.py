@@ -4,14 +4,17 @@ User management endpoints for the Hive management API.
 
 GET /users/me — any authenticated management user.
 GET /users — admin only, lists all users.
+PATCH /users/{user_id} — admin only, update role.
+GET /users/{user_id}/stats — admin only, per-user memory/client counts.
 DELETE /users/{user_id} — admin only.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from hive.api._auth import require_admin, require_mgmt_user
 from hive.models import PagedResponse, UserResponse
@@ -25,6 +28,16 @@ _LIMIT_MAX = 200
 
 def _storage() -> HiveStorage:
     return HiveStorage()
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role: Literal["admin", "user"]
+
+
+class UserStatsResponse(BaseModel):
+    user_id: str
+    memory_count: int
+    client_count: int
 
 
 @router.get(
@@ -67,6 +80,58 @@ async def list_users(
         count=len(users),
         has_more=next_cursor is not None,
         next_cursor=next_cursor,
+    )
+
+
+@router.patch(
+    "/users/{user_id}",
+    summary="Update user role",
+    description="Promote or demote a user's role. Admin only.",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+    },
+)
+async def update_user_role(
+    user_id: str,
+    body: UpdateUserRoleRequest,
+    claims: Annotated[dict[str, Any], Depends(require_admin)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+) -> UserResponse:
+    updated = storage.update_user_role(user_id, body.role)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    user = storage.get_user_by_id(user_id)
+    if user is None:  # pragma: no cover
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserResponse.from_user(user)
+
+
+@router.get(
+    "/users/{user_id}/stats",
+    summary="Get per-user statistics",
+    description="Return memory and client counts for a user. Admin only.",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+    },
+)
+async def get_user_stats(
+    user_id: str,
+    claims: Annotated[dict[str, Any], Depends(require_admin)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+) -> UserStatsResponse:
+    user = storage.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    memory_count = storage.count_memories(owner_user_id=user_id)
+    client_count = storage.count_clients(owner_user_id=user_id)
+    return UserStatsResponse(
+        user_id=user_id,
+        memory_count=memory_count,
+        client_count=client_count,
     )
 
 

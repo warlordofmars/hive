@@ -530,6 +530,16 @@ class TestUserStorage:
     def test_delete_nonexistent_returns_false(self, storage):
         assert storage.delete_user("no-such-id") is False
 
+    def test_update_user_role(self, storage):
+        u = self._user()
+        u.role = "user"
+        storage.put_user(u)
+        assert storage.update_user_role(u.user_id, "admin") is True
+        assert storage.get_user_by_id(u.user_id).role == "admin"
+
+    def test_update_user_role_nonexistent_returns_false(self, storage):
+        assert storage.update_user_role("no-such-id", "admin") is False
+
     def test_list_users(self, storage):
         storage.put_user(self._user("a@example.com"))
         storage.put_user(self._user("b@example.com"))

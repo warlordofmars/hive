@@ -626,6 +626,56 @@ class TestUsers:
         resp = tc.delete(f"/api/users/{_TEST_USER_ID}")
         assert resp.status_code == 403
 
+    def test_update_user_role_admin(self, admin_client):
+        tc, storage, _ = admin_client
+        from hive.models import User
+
+        u = User(email="promote@example.com", display_name="Promotee", role="user")
+        storage.put_user(u)
+        resp = tc.patch(f"/api/users/{u.user_id}", json={"role": "admin"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["role"] == "admin"
+        assert storage.get_user_by_id(u.user_id).role == "admin"
+
+    def test_update_user_role_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.patch("/api/users/no-such-user", json={"role": "admin"})
+        assert resp.status_code == 404
+
+    def test_update_user_role_non_admin_returns_403(self, client):
+        tc, *_ = client
+        resp = tc.patch(f"/api/users/{_TEST_USER_ID}", json={"role": "admin"})
+        assert resp.status_code == 403
+
+    def test_update_user_role_invalid_role_returns_422(self, admin_client):
+        tc, storage, _ = admin_client
+        from hive.models import User
+
+        u = User(email="invalid@example.com", display_name="Invalid")
+        storage.put_user(u)
+        resp = tc.patch(f"/api/users/{u.user_id}", json={"role": "superuser"})
+        assert resp.status_code == 422
+
+    def test_get_user_stats_admin(self, admin_client):
+        tc, storage, admin_id = admin_client
+        resp = tc.get(f"/api/users/{admin_id}/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == admin_id
+        assert "memory_count" in data
+        assert "client_count" in data
+
+    def test_get_user_stats_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/users/no-such-user/stats")
+        assert resp.status_code == 404
+
+    def test_get_user_stats_non_admin_returns_403(self, client):
+        tc, _, user_id = client
+        resp = tc.get(f"/api/users/{user_id}/stats")
+        assert resp.status_code == 403
+
 
 # ---------------------------------------------------------------------------
 # _app_version() branches — covers api/main.py:33 and 36-37

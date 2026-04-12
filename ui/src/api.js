@@ -87,6 +87,8 @@ export const api = {
     if (cursor) params.set("cursor", cursor);
     return request("GET", `/api/users?${params}`);
   },
+  updateUserRole: (id, role) => request("PATCH", `/api/users/${id}`, { role }),
+  getUserStats: (id) => request("GET", `/api/users/${id}/stats`),
   deleteUser: (id) => request("DELETE", `/api/users/${id}`),
 
   // Account
