@@ -356,6 +356,84 @@ gh pr merge --auto --merge
 
    **Never run `gh release create` manually** — the pipeline owns this.
 
+## Running the full stack locally
+
+```bash
+# 1. Start all services (DynamoDB Local, MCP server, API, Vite dev server)
+#    Add --seed to also seed demo data automatically once the API is ready
+uv run inv dev [--seed]
+```
+
+`inv dev` sets automatically:
+
+- `CORS_ORIGINS` — `localhost:5173` through `localhost:5179` (handles port
+  collisions if 5173 is already taken by another project)
+- `HIVE_VECTORS_BUCKET=local-dev` — prevents VectorStore from crashing on
+  every list-memories request (semantic search will still fail locally)
+- `HIVE_BYPASS_GOOGLE_AUTH=1` — enables the `?test_email=` auth shortcut
+  (only activates when that query param is present; normal browser flows
+  are unaffected)
+
+```bash
+# 2. Seed DynamoDB with demo data (also creates the table) — if not using --seed
+uv run inv seed
+```
+
+Must be re-run after every `inv dev` restart (DynamoDB Local is ephemeral).
+
+### Running UI e2e tests locally
+
+```bash
+# Auto-detects the Vite port — no env vars to set manually
+uv run inv e2e-local
+
+# Run a specific test file
+uv run inv e2e-local --tests tests/e2e/test_ui_e2e.py
+
+# Repeat N times to check for flakiness
+uv run inv e2e-local --n 5
+```
+
+`inv e2e-local` probes ports 5173–5179 for the Hive Vite dev server (via
+`/auth/login?test_email=probe`) and passes the detected URL as `HIVE_UI_URL`.
+
+Key local e2e gotchas:
+
+- The Vite proxy handles `/auth`, `/api`, `/oauth`, `/mcp` — tests must use
+  the Vite URL (not the API URL directly) so the auth bypass sets
+  `localStorage` at the correct origin.
+- If Vite lands on a port other than 5173, `CORS_ORIGINS` must include that
+  port. `inv dev` covers 5173–5179; if you're outside that range, pass
+  `CORS_ORIGINS=http://localhost:<port>` when starting the stack.
+- `inv seed` (or `inv dev --seed`) must succeed before running e2e tests —
+  if auth bypass returns 500, the table is likely missing.
+- `test_docs_e2e.py` is excluded automatically — those tests require a
+  deployed VitePress build; run them against the deployed stack with `inv e2e`.
+
+### When to run local e2e tests
+
+Not required on every PR — `uv run inv pre-push` (unit + frontend tests) is
+the standard gate. Run `inv e2e-local` before opening a PR when the change
+touches any of the following:
+
+**Always required:**
+
+- Fixing a failing e2e test — the fix must pass locally before the PR opens
+- Auth flows (`auth/`, `AuthCallback.jsx`, `LoginPage.jsx`, OAuth endpoints)
+- MCP tool logic (`server.py`) — remember, recall, forget, search, list
+- Management API endpoints (`api/`) that the UI or MCP tests exercise
+
+**Use judgement:**
+
+- UI component changes that affect user-visible flows (memory CRUD, client
+  management, activity log) — run the relevant `--tests` file at minimum
+- Vite proxy config or API base URL changes
+
+**Not needed:**
+
+- Pure unit test fixes, documentation, infra/CDK changes, style/CSS tweaks,
+  or any change fully covered by unit + frontend tests
+
 ## Pre-PR checklist (required before every push)
 
 Run `uv run inv pre-push` — this runs the same gate as CI:

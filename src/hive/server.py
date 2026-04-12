@@ -171,7 +171,10 @@ async def remember(
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_updated
         action = "Updated"
-        _vector_store().upsert_memory(existing)
+        try:
+            _vector_store().upsert_memory(existing)
+        except Exception:
+            logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
     else:
         memory = Memory(key=key, value=value, tags=tags, owner_client_id=client_id)
         try:
@@ -181,7 +184,10 @@ async def remember(
             raise ToolError(str(exc)) from exc
         event_type = EventType.memory_created
         action = "Stored"
-        _vector_store().upsert_memory(memory)
+        try:
+            _vector_store().upsert_memory(memory)
+        except Exception:
+            logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
     storage.log_event(
         ActivityEvent(
@@ -279,7 +285,10 @@ async def forget(
         raise ToolError(f"No memory found for key '{key}'.")
 
     storage.delete_memory(existing.memory_id)
-    _vector_store().delete_memory(existing.memory_id, client_id)
+    try:
+        _vector_store().delete_memory(existing.memory_id, client_id)
+    except Exception:
+        logger.warning("Vector delete failed (non-fatal)", exc_info=True)
     storage.log_event(
         ActivityEvent(
             event_type=EventType.memory_deleted,
@@ -433,6 +442,9 @@ async def search_memories(
     try:
         pairs = _vector_store().search(query, client_id, top_k=top_k)
     except VectorIndexNotFoundError:
+        return {"items": [], "count": 0, "query": query}
+    except Exception:
+        logger.warning("Vector search failed (non-fatal)", exc_info=True)
         return {"items": [], "count": 0, "query": query}
 
     results = storage.hydrate_memory_ids(pairs)
