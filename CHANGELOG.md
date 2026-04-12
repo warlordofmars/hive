@@ -4,6 +4,42 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.19.0 — 2026-04-12
+
+### Added
+
+- Python and JavaScript client SDKs (#349)
+- API key authentication (`hive_sk_` tokens) for programmatic access without OAuth (#339)
+- Memory versioning — previous values preserved on overwrite (#342)
+- Per-memory TTL at creation time (#341)
+- Bulk memory operations: `forget_all`, `export`, `import` (#340)
+- Per-user usage quotas for free tier (#333)
+- Per-client rate limiting with 429 + Retry-After (#331)
+- GDPR account deletion via `DELETE /api/account` (#330)
+- OpenAPI/Swagger UI on management API (#329)
+- Responsive mobile layout for management UI (#337)
+- Improved UsersPanel: pagination, search, and user detail (#338)
+- Migrated UI to shadcn/ui component library (#334)
+- SLO error budget burn rate alarms and CloudWatch dashboard (#346)
+- WAF enabled on dev environment (#344)
+- Lambda provisioned concurrency for MCP function in prod (#351)
+- Slack notifications for CI/CD pipeline events (#350)
+- Weekly DynamoDB PITR backup restore test (#348)
+- E2e tests for cost data in admin dashboard (#345)
+- Hardened repo against malicious contributions (#343)
+
+### Fixed
+
+- Sign in button border not visible in marketing site navbar (#327, #332)
+- Orange active indicator missing from Docs nav link on docs site (#326)
+- Dashboard chart x-axis labels cut off (#328)
+- E2e race conditions in memory creation and tag filter tests (#335, #336)
+- Dashboard e2e cost section assertions (#345, #347, #352, #353)
+
+### Chore
+
+- CLAUDE.md autonomous issue workflow guidelines (#324, #325)
+
 ## v0.18.0 — 2026-04-11
 
 ### Added
