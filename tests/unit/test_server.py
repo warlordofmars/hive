@@ -629,3 +629,67 @@ class TestSearchMemories:
             await forget("forget-dw-key", ctx=_make_ctx(jwt))
 
         mock_vs.delete_memory.assert_called_once()
+
+    async def test_remember_vector_upsert_failure_is_non_fatal(self, server_env):
+        """VectorStore errors during remember() are logged but do not raise."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.upsert_memory.side_effect = RuntimeError("no bucket")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await remember("vec-fail-new", "v", [], ctx=_make_ctx(jwt))
+
+        assert "Stored" in result
+
+    async def test_remember_vector_upsert_failure_on_update_is_non_fatal(self, server_env):
+        """VectorStore errors during remember() update are logged but do not raise."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("vec-fail-upd", "original", [], ctx=_make_ctx(jwt))
+
+        mock_vs.upsert_memory.side_effect = RuntimeError("no bucket")
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await remember("vec-fail-upd", "updated", [], ctx=_make_ctx(jwt))
+
+        assert "Updated" in result
+
+    async def test_forget_vector_delete_failure_is_non_fatal(self, server_env):
+        """VectorStore errors during forget() are logged but do not raise."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import forget, remember
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.delete_memory.side_effect = RuntimeError("no bucket")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("vec-fail-forget", "v", [], ctx=_make_ctx(jwt))
+            result = await forget("vec-fail-forget", ctx=_make_ctx(jwt))
+
+        assert "Deleted" in result
+
+    async def test_search_vector_failure_returns_empty(self, server_env):
+        """Unexpected VectorStore errors during search_memories() return empty results."""
+        from unittest.mock import patch
+
+        from hive.server import search_memories
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = RuntimeError("no bucket")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("anything", ctx=_make_ctx(jwt))
+
+        assert result == {"items": [], "count": 0, "query": "anything"}

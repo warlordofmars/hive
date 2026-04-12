@@ -11,6 +11,7 @@ Usage:
     uv run inv test-integration             # integration tests (requires DynamoDB Local)
     uv run inv dev                          # start DynamoDB Local + API + UI dev servers
     uv run inv e2e                          # run e2e tests against deployed stack
+    uv run inv e2e-local                    # run e2e tests against local dev stack (inv dev must be running)
     uv run inv deploy                       # deploy to AWS via CDK
     uv run inv synth                        # synthesize CDK template (no Docker bundling)
     uv run inv outputs                      # print CloudFormation stack outputs
@@ -123,6 +124,25 @@ def _wait_for_http(url: str, label: str, timeout: int = 30) -> bool:
             time.sleep(1)
     print(f"  {label} did not start in time")
     return False
+
+
+def _find_vite_port() -> int | None:
+    """Scan ports 5173-5179 to find the Hive Vite dev server.
+
+    Identifies Hive's Vite by probing /auth/login?test_email=probe — only the
+    Hive API (via Vite proxy) responds with the bypass HTML.  Other projects
+    on the same port range won't have this endpoint.
+    """
+    for port in range(5173, 5180):
+        try:
+            url = f"http://localhost:{port}/auth/login?test_email=probe"
+            resp = urllib.request.urlopen(url, timeout=2)
+            body = resp.read(512).decode("utf-8", errors="ignore")
+            if "localStorage.setItem" in body:
+                return port
+        except Exception:
+            pass
+    return None
 
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
@@ -252,6 +272,48 @@ def e2e(ctx, env="prod"):
     )
 
 
+@task
+def e2e_local(ctx, tests="tests/e2e", n=1):
+    """Run e2e tests against the local dev stack (inv dev must already be running).
+
+    Automatically detects the Vite port — no env vars to set manually.
+    Pass --n=N to run the suite N times (useful for flakiness detection).
+
+    test_docs_e2e.py is excluded by default — it requires a deployed VitePress
+    build which is not served in the local dev stack.
+    """
+    api_url = f"http://localhost:{API_PORT}"
+    if not _wait_for_http(f"{api_url}/health", "API", timeout=3):
+        print(f"ERROR: API not responding at {api_url} — is 'inv dev' running?")
+        sys.exit(1)
+    vite_port = _find_vite_port()
+    if not vite_port:
+        print("ERROR: Could not find Hive Vite dev server on ports 5173-5179")
+        print("       Make sure 'inv dev' is running and the UI has started.")
+        sys.exit(1)
+    ui_url = f"http://localhost:{vite_port}"
+    mcp_url = f"http://localhost:{MCP_PORT}"
+    print(f"  API: {api_url}")
+    print(f"  MCP: {mcp_url}")
+    print(f"  UI:  {ui_url}")
+    extra_env = {
+        **os.environ,
+        "HIVE_API_URL": api_url,
+        "HIVE_MCP_URL": mcp_url,
+        "HIVE_UI_URL": ui_url,
+    }
+    # Docs tests require a deployed VitePress build — skip unless explicitly targeted
+    ignore = (
+        " --ignore=tests/e2e/test_docs_e2e.py"
+        if tests == "tests/e2e"
+        else ""
+    )
+    for i in range(n):
+        if n > 1:
+            print(f"\n--- run {i + 1}/{n} ---")
+        ctx.run(f"uv run pytest {tests}{ignore} -v", env=extra_env, pty=True)
+
+
 # ── Local dev ─────────────────────────────────────────────────────────────────
 
 
@@ -275,8 +337,11 @@ def dynamo_stop(ctx):
 
 
 @task
-def dev(ctx):
-    """Start DynamoDB Local + MCP server + management API + UI dev server (Ctrl-C to stop all)"""
+def dev(ctx, seed=False):
+    """Start DynamoDB Local + MCP server + management API + UI dev server (Ctrl-C to stop all).
+
+    Pass --seed to automatically seed demo data once the API is ready.
+    """
     jwt_secret = os.environ.get("HIVE_JWT_SECRET", "dev-secret")
     # Allow all localhost Vite ports (5173–5179) so CORS doesn't break when
     # 5173 is already occupied by another project and Vite picks the next port.
@@ -293,6 +358,9 @@ def dev(ctx):
         # Prevents VectorStore instantiation from crashing on every request;
         # semantic search will still fail locally (no real S3 Vectors bucket).
         "HIVE_VECTORS_BUCKET": os.environ.get("HIVE_VECTORS_BUCKET", "local-dev"),
+        # Always enable auth bypass in local dev — the bypass only activates when
+        # ?test_email= is present, so normal browser flows are unaffected.
+        "HIVE_BYPASS_GOOGLE_AUTH": "1",
     }
     ui_env = {
         **os.environ,
@@ -358,11 +426,15 @@ def dev(ctx):
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    # Detect the actual Vite port (may differ from UI_PORT if that port is taken)
+    _wait_for_http(f"http://localhost:{API_PORT}/health", "API", timeout=20)
+    actual_ui_port = _find_vite_port() or UI_PORT
+
     print("\nServices starting:")
     print(f"  DynamoDB Local → http://localhost:{DYNAMO_PORT}")
     print(f"  MCP server      → http://localhost:{MCP_PORT}/mcp")
     print(f"  Management API  → http://localhost:{API_PORT}")
-    print(f"  UI dev server   → http://localhost:{UI_PORT}")
+    print(f"  UI dev server   → http://localhost:{actual_ui_port}")
     print()
     print("Claude Desktop stdio config (add to claude_desktop_config.json):")
     print("  {")
@@ -381,7 +453,22 @@ def dev(ctx):
     print("      }")
     print("    }")
     print("  }")
-    print("\nRun 'uv run inv seed' in a new terminal to populate with demo data.")
+    if seed:
+        print("Waiting for API to be ready before seeding…")
+        if _wait_for_http(f"http://localhost:{API_PORT}/health", "API", timeout=30):
+            seed_env = {
+                **dev_env,
+                "DYNAMODB_ENDPOINT": f"http://localhost:{DYNAMO_PORT}",
+            }
+            subprocess.run(
+                ["uv", "run", "python", "scripts/seed_data.py"],
+                cwd=ROOT,
+                env=seed_env,
+            )
+        else:
+            print("  API did not start — skipping seed")
+    else:
+        print("Run 'uv run inv seed' in a new terminal to populate with demo data.")
     print("Press Ctrl-C to stop all services.\n")
 
     for p in procs:
