@@ -25,6 +25,7 @@ from hive.models import (
     MemoryUpdate,
     PagedResponse,
 )
+from hive.quota import QuotaExceeded, check_memory_quota
 from hive.storage import HiveStorage
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
@@ -150,6 +151,10 @@ async def create_memory(
         response.status_code = 200
         return MemoryResponse.from_memory(existing)
 
+    try:
+        check_memory_quota(owner_user_id, storage)
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
     memory = Memory(
         key=body.key,
         value=body.value,

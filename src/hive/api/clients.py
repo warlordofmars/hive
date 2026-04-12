@@ -21,6 +21,7 @@ from hive.models import (
     EventType,
     PagedResponse,
 )
+from hive.quota import QuotaExceeded, check_client_quota
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["clients"])
@@ -78,6 +79,10 @@ async def create_client(
     storage: Annotated[HiveStorage, Depends(_storage)],
 ) -> ClientRegistrationResponse:
     owner_user_id: str = claims["sub"]
+    try:
+        check_client_quota(owner_user_id, storage)
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
     try:
         resp = register_client(body, storage)
     except ValueError as exc:

@@ -32,6 +32,7 @@ from hive.auth.tokens import _origin_verify_secret, validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
+from hive.quota import QuotaExceeded, check_memory_quota
 from hive.rate_limiter import RateLimitExceeded, check_rate_limit
 from hive.storage import HiveStorage
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
@@ -182,6 +183,12 @@ async def remember(
         except Exception:
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
     else:
+        client = storage.get_client(client_id)
+        owner_user_id = client.owner_user_id if client else None
+        try:
+            check_memory_quota(owner_user_id, storage)
+        except QuotaExceeded as exc:
+            raise ToolError(exc.detail) from exc
         memory = Memory(key=key, value=value, tags=tags, owner_client_id=client_id)
         try:
             storage.put_memory(memory)
