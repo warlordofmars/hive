@@ -77,6 +77,14 @@ class TestDashboardE2E:
         page = admin_browser_page
         page.locator("nav button:has-text('Dashboard')").click()
         page.wait_for_load_state("networkidle")
+        # networkidle can fire before React's useEffect has started the fetch calls.
+        # Wait until all loading skeletons (divs with pulse animation) disappear, which
+        # confirms the cost API calls have completed (success or error).
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('div')]"
+            "  .every(d => !d.style.animation || !d.style.animation.includes('pulse'))",
+            timeout=15000,
+        )
         # Cost section heading is present
         assert page.locator("text=Monthly AWS Spend").is_visible()
         # Section must be in one of three valid resolved states (not a stuck spinner):
