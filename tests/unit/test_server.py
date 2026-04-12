@@ -763,3 +763,97 @@ class TestForgetAll:
         read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
         with pytest.raises(ToolError, match="Insufficient scope"):
             await forget_all("t", ctx=_make_ctx(read_only_jwt))
+
+
+# ---------------------------------------------------------------------------
+# memory_history
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHistory:
+    async def test_memory_history_returns_versions(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import memory_history, remember
+
+        await remember("hist-k", "v1", [], ctx=_make_ctx(jwt))
+        await remember("hist-k", "v2", [], ctx=_make_ctx(jwt))
+        result = await memory_history("hist-k", ctx=_make_ctx(jwt))
+        assert len(result) == 1
+        assert result[0]["value"] == "v1"
+
+    async def test_memory_history_empty_for_new_memory(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import memory_history, remember
+
+        await remember("new-hist", "v1", [], ctx=_make_ctx(jwt))
+        result = await memory_history("new-hist", ctx=_make_ctx(jwt))
+        assert result == []
+
+    async def test_memory_history_raises_for_missing_key(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import memory_history
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="No memory found"):
+            await memory_history("no-such-key", ctx=_make_ctx(jwt))
+
+    async def test_memory_history_requires_read_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import memory_history
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await memory_history("k", ctx=_make_ctx(write_only_jwt))
+
+
+# ---------------------------------------------------------------------------
+# restore_memory
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreMemory:
+    async def test_restore_memory_reverts_value(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import memory_history, remember, restore_memory
+
+        await remember("rst-k", "v1", [], ctx=_make_ctx(jwt))
+        await remember("rst-k", "v2", [], ctx=_make_ctx(jwt))
+        versions = await memory_history("rst-k", ctx=_make_ctx(jwt))
+        vts = versions[0]["version_timestamp"]
+        result = await restore_memory("rst-k", vts, ctx=_make_ctx(jwt))
+        assert "rst-k" in result
+        m = storage.get_memory_by_key("rst-k")
+        assert m is not None
+        assert m.value == "v1"
+
+    async def test_restore_memory_raises_for_missing_key(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import restore_memory
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="No memory found"):
+            await restore_memory("no-such-key", "ts", ctx=_make_ctx(jwt))
+
+    async def test_restore_memory_raises_for_missing_version(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember, restore_memory
+
+        _, _, jwt = server_env
+        await remember("rv-k", "v", [], ctx=_make_ctx(jwt))
+        with pytest.raises(ToolError, match="not found"):
+            await restore_memory("rv-k", "bad-ts", ctx=_make_ctx(jwt))
+
+    async def test_restore_memory_requires_write_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import restore_memory
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await restore_memory("k", "ts", ctx=_make_ctx(read_only_jwt))

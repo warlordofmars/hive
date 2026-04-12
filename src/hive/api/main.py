@@ -28,6 +28,7 @@ from hive.api.logs import router as logs_router
 from hive.api.memories import router as memories_router
 from hive.api.stats import router as stats_router
 from hive.api.users import router as users_router
+from hive.api.versions import router as versions_router
 from hive.auth.mgmt_auth import router as mgmt_auth_router
 from hive.auth.oauth import router as oauth_router
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
@@ -129,6 +130,7 @@ app.include_router(mgmt_auth_router)
 
 # Management API endpoints (Bearer token required)
 app.include_router(memories_router, prefix="/api")
+app.include_router(versions_router, prefix="/api")
 app.include_router(clients_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(users_router, prefix="/api")

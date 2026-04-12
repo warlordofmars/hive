@@ -380,6 +380,77 @@ async def forget_all(
 
 
 @mcp.tool()
+async def memory_history(
+    key: Annotated[str, "Key of the memory to retrieve history for"],
+    ctx: Context | None = None,
+) -> list[dict[str, Any]]:
+    """Return the version history of a memory (previous values before each overwrite)."""
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:read")
+
+    memory = storage.get_memory_by_key(key)
+    if memory is None:
+        raise ToolError(f"No memory found for key '{key}'.")
+    versions = storage.list_memory_versions(memory.memory_id)
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    await emit_metric("ToolInvocations", operation="memory_history")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="memory_history",
+    )
+    return [
+        {
+            "version_timestamp": v.version_timestamp,
+            "value": v.value,
+            "tags": v.tags,
+            "recorded_at": v.recorded_at.isoformat(),
+        }
+        for v in versions
+    ]
+
+
+@mcp.tool()
+async def restore_memory(
+    key: Annotated[str, "Key of the memory to restore"],
+    version_timestamp: Annotated[str, "Version timestamp to restore (from memory_history)"],
+    ctx: Context | None = None,
+) -> str:
+    """Restore a memory to a previous version."""
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:write")
+
+    memory = storage.get_memory_by_key(key)
+    if memory is None:
+        raise ToolError(f"No memory found for key '{key}'.")
+    version = storage.get_memory_version(memory.memory_id, version_timestamp)
+    if version is None:
+        raise ToolError(f"Version '{version_timestamp}' not found for memory '{key}'.")
+
+    memory.value = version.value
+    memory.tags = version.tags
+    memory.updated_at = datetime.now(timezone.utc)
+    storage.put_memory(memory)
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_updated,
+            client_id=client_id,
+            metadata={"key": key, "version_timestamp": version_timestamp},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    await emit_metric("ToolInvocations", operation="restore_memory")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="restore_memory",
+    )
+    return f"Restored memory '{key}' to version '{version_timestamp}'."
+
+
+@mcp.tool()
 async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,

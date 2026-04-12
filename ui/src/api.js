@@ -53,6 +53,9 @@ export const api = {
   createMemory: (body) => request("POST", "/api/memories", body),
   updateMemory: (id, body) => request("PATCH", `/api/memories/${id}`, body),
   deleteMemory: (id) => request("DELETE", `/api/memories/${id}`),
+  listMemoryVersions: (id) => request("GET", `/api/memories/${id}/versions`),
+  restoreMemoryVersion: (id, versionTimestamp) =>
+    request("POST", `/api/memories/${id}/restore?version_timestamp=${encodeURIComponent(versionTimestamp)}`),
 
   // Clients
   listClients: ({ limit = 50, cursor } = {}) => {

@@ -29,6 +29,7 @@ from hive.models import (
     ApiKey,
     AuthorizationCode,
     Memory,
+    MemoryVersion,
     MgmtPendingState,
     OAuthClient,
     PendingAuth,
@@ -45,6 +46,9 @@ DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 _UID_FILTER = " AND owner_user_id = :uid"
 _PK_PREFIX_KEY = ":prefix"
 _SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
+
+# Version retention
+_VERSION_RETENTION_DAYS = int(os.environ.get("HIVE_VERSION_RETENTION_DAYS", "30"))
 
 # Token lifetimes
 ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
@@ -90,11 +94,17 @@ class HiveStorage:
     # ------------------------------------------------------------------
 
     def put_memory(self, memory: Memory) -> None:
-        """Write (create or replace) a memory and all its tag items."""
+        """Write (create or replace) a memory and all its tag items.
+
+        When replacing an existing memory, the previous state is snapshotted
+        as a VERSION item so it can be retrieved via list_memory_versions.
+        """
         # First delete old tag items if the memory already exists
         existing_raw = self._get_memory_meta(memory.memory_id)
         if existing_raw:
-            self._delete_tag_items(Memory.from_dynamo(existing_raw))
+            old = Memory.from_dynamo(existing_raw)
+            self._delete_tag_items(old)
+            self.save_memory_version(old)
 
         try:
             with self.table.batch_writer() as batch:
@@ -142,6 +152,39 @@ class HiveStorage:
         self._delete_tag_items(memory)
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         return True
+
+    # ------------------------------------------------------------------
+    # Memory version history
+    # ------------------------------------------------------------------
+
+    def save_memory_version(self, memory: Memory) -> MemoryVersion:
+        """Snapshot the current state of a memory as a VERSION item."""
+        version = MemoryVersion.from_memory(memory)
+        item = version.to_dynamo()
+        # Set TTL so old versions are auto-pruned
+        expires = _now() + timedelta(days=_VERSION_RETENTION_DAYS)
+        item["ttl"] = int(expires.timestamp())
+        self.table.put_item(Item=item)
+        return version
+
+    def list_memory_versions(self, memory_id: str) -> list[MemoryVersion]:
+        """Return all version snapshots for a memory, newest first."""
+        resp = self.table.query(
+            KeyConditionExpression=Key("PK").eq(f"MEMORY#{memory_id}")
+            & Key("SK").begins_with("VERSION#"),
+            ScanIndexForward=False,
+        )
+        return [MemoryVersion.from_dynamo(item) for item in resp.get("Items", [])]
+
+    def get_memory_version(self, memory_id: str, version_timestamp: str) -> MemoryVersion | None:
+        """Fetch a specific version snapshot."""
+        resp = self.table.get_item(
+            Key={"PK": f"MEMORY#{memory_id}", "SK": f"VERSION#{version_timestamp}"}
+        )
+        item = resp.get("Item")
+        if item is None:
+            return None
+        return MemoryVersion.from_dynamo(item)
 
     def hydrate_memory_ids(
         self, id_score_pairs: list[tuple[str, float]]
