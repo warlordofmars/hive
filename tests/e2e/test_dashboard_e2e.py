@@ -88,7 +88,13 @@ class TestDashboardE2E:
             page.locator("text=No cost data available yet.").is_visible()
             or page.locator("text=No daily cost data available yet.").is_visible()
         )
-        has_error = page.locator("[style*='var(--danger)']").count() > 0
+        # CSS attribute selectors don't reliably match React inline-style CSS custom
+        # properties in Chromium, so evaluate via JavaScript instead.
+        has_error = page.evaluate(
+            "() => [...document.querySelectorAll('div')].some("
+            "  d => d.style.color === 'var(--danger)'"
+            ")"
+        )
         assert has_data or has_placeholder or has_error, (
             "Cost section shows neither a chart, a no-data placeholder, nor an error banner — "
             "the spinner may be stuck or the section failed silently"
