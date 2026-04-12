@@ -257,7 +257,7 @@ describe("SetupPanel", () => {
     await act(async () => render(<SetupPanel />));
     await waitFor(() => expect(screen.getByText("500 / 500")).toBeTruthy());
     const label = screen.getByText("500 / 500");
-    expect(label.style.color).toBe("var(--danger)");
+    expect(label.className).toContain("text-[var(--danger)]");
   });
 
   it("shows muted color for quota under 80%", async () => {
@@ -270,7 +270,7 @@ describe("SetupPanel", () => {
     await act(async () => render(<SetupPanel />));
     await waitFor(() => expect(screen.getByText("10 / 500")).toBeTruthy());
     const label = screen.getByText("10 / 500");
-    expect(label.style.color).toBe("var(--text-muted)");
+    expect(label.className).toContain("text-[var(--text-muted)]");
   });
 
   it("shows amber bar color for quota between 80% and 99%", async () => {
