@@ -927,6 +927,13 @@ function handler(event) {
         # ----------------------------------------------------------------
         dashboard_name = "Hive" if is_prod else f"Hive-{env_name}"
 
+        # SLO targets and derived error budgets
+        # MCP availability: 99.5% success → 0.5% error budget
+        # API availability: 99.0% success → 1.0% error budget
+        # MCP p95 latency: < 2000 ms over 1-hour window
+        _MCP_ERROR_BUDGET_PCT = 0.5
+        _API_ERROR_BUDGET_PCT = 1.0
+
         # SNS topic for alarm notifications — prod only gets an email subscription
         # (subscription address can be set via the console after first deploy).
         alarm_topic = sns.Topic(
@@ -1075,6 +1082,83 @@ function handler(event) {
         )
         if is_prod:
             storage_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # SLO burn rate alarms
+        # Fast burn (>5×): error rate exceeds 5 × error_budget over 1 hour
+        # If MCP error budget = 0.5%, fast-burn threshold = 2.5%
+        # Slow burn (>2×): error rate exceeds 2 × error_budget over 6 hours
+        def _burn_rate_alarm(
+            construct_id: str,
+            fn: lambda_.Function,
+            label: str,
+            error_budget_pct: float,
+            burn_multiplier: float,
+            window_minutes: int,
+        ) -> cw.Alarm:
+            """Burn rate alarm using error rate vs SLO error budget."""
+            errors = fn.metric_errors(
+                period=cdk.Duration.minutes(window_minutes), statistic="Sum"
+            )
+            invocations = fn.metric_invocations(
+                period=cdk.Duration.minutes(window_minutes), statistic="Sum"
+            )
+            error_rate_pct = cw.MathExpression(
+                expression="100 * errors / MAX([errors, invocations])",
+                using_metrics={"errors": errors, "invocations": invocations},
+                label=f"{label} error rate %",
+                period=cdk.Duration.minutes(window_minutes),
+            )
+            threshold = burn_multiplier * error_budget_pct
+            burn_type = "fast" if burn_multiplier >= 5 else "slow"
+            alarm = cw.Alarm(
+                self,
+                construct_id,
+                alarm_name=f"Hive-{env_name}-{construct_id.removesuffix('Alarm')}",
+                metric=error_rate_pct,
+                threshold=threshold,
+                evaluation_periods=1,
+                datapoints_to_alarm=1,
+                comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+                treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+                alarm_description=(
+                    f"Hive {label} SLO {burn_type}-burn: error rate > {threshold}% "
+                    f"over {window_minutes}m (budget={error_budget_pct}% × {burn_multiplier}×) ({env_name})"
+                ),
+            )
+            if is_prod:
+                alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+            return alarm
+
+        mcp_fast_burn_alarm = _burn_rate_alarm(
+            "McpFastBurnAlarm", mcp_fn, "MCP", _MCP_ERROR_BUDGET_PCT, 5, 60
+        )
+        mcp_slow_burn_alarm = _burn_rate_alarm(
+            "McpSlowBurnAlarm", mcp_fn, "MCP", _MCP_ERROR_BUDGET_PCT, 2, 360
+        )
+        api_fast_burn_alarm = _burn_rate_alarm(
+            "ApiFastBurnAlarm", api_fn, "API", _API_ERROR_BUDGET_PCT, 5, 60
+        )
+        api_slow_burn_alarm = _burn_rate_alarm(
+            "ApiSlowBurnAlarm", api_fn, "API", _API_ERROR_BUDGET_PCT, 2, 360
+        )
+
+        # MCP p95 latency SLO alarm (1-hour window, p95 > 2000ms)
+        mcp_p95_latency_alarm = cw.Alarm(
+            self,
+            "McpP95LatencyAlarm",
+            alarm_name=f"Hive-{env_name}-McpP95Latency",
+            metric=mcp_fn.metric_duration(
+                period=cdk.Duration.minutes(60), statistic="p95"
+            ),
+            threshold=2000,
+            evaluation_periods=1,
+            datapoints_to_alarm=1,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive MCP p95 latency > 2000ms over 1h (SLO breach) ({env_name})",
+        )
+        if is_prod:
+            mcp_p95_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
 
         # Dashboard
         dashboard = cw.Dashboard(
@@ -1365,6 +1449,58 @@ function handler(event) {
                 cw.AlarmWidget(alarm=api_error_alarm, title="API Error Rate", width=6),
                 cw.AlarmWidget(alarm=mcp_p99_alarm, title="MCP P99 Duration", width=6),
                 cw.AlarmWidget(alarm=ddb_throttle_alarm, title="DDB Throttles", width=6),
+            ),
+            # SLO / Error Budget row
+            cw.Row(
+                cw.TextWidget(
+                    markdown=(
+                        "## SLO Error Budget\n"
+                        f"MCP availability: 99.5% (budget={_MCP_ERROR_BUDGET_PCT}%)  "
+                        f"| API availability: 99.0% (budget={_API_ERROR_BUDGET_PCT}%)  "
+                        "| MCP p95 latency: < 2000 ms (1-hour window)"
+                    ),
+                    width=24,
+                    height=2,
+                ),
+            ),
+            cw.Row(
+                cw.AlarmWidget(alarm=mcp_fast_burn_alarm, title="MCP Fast Burn (5×, 1h)", width=6),
+                cw.AlarmWidget(alarm=mcp_slow_burn_alarm, title="MCP Slow Burn (2×, 6h)", width=6),
+                cw.AlarmWidget(alarm=api_fast_burn_alarm, title="API Fast Burn (5×, 1h)", width=6),
+                cw.AlarmWidget(alarm=api_slow_burn_alarm, title="API Slow Burn (2×, 6h)", width=6),
+            ),
+            cw.Row(
+                cw.AlarmWidget(alarm=mcp_p95_latency_alarm, title="MCP p95 Latency SLO (1h)", width=8),
+                cw.GraphWidget(
+                    title="MCP Error Rate % (SLO threshold = 0.5%)",
+                    left=[
+                        cw.MathExpression(
+                            expression="100 * errors / MAX([errors, invocations])",
+                            using_metrics={
+                                "errors": mcp_fn.metric_errors(
+                                    period=cdk.Duration.minutes(60), statistic="Sum"
+                                ),
+                                "invocations": mcp_fn.metric_invocations(
+                                    period=cdk.Duration.minutes(60), statistic="Sum"
+                                ),
+                            },
+                            label="MCP error rate %",
+                            period=cdk.Duration.minutes(60),
+                        )
+                    ],
+                    left_y_axis=cw.YAxisProps(min=0, max=10),
+                    width=8,
+                ),
+                cw.GraphWidget(
+                    title="MCP p95 Latency (SLO threshold = 2000 ms)",
+                    left=[
+                        mcp_fn.metric_duration(
+                            period=cdk.Duration.minutes(60), statistic="p95"
+                        )
+                    ],
+                    left_y_axis=cw.YAxisProps(min=0),
+                    width=8,
+                ),
             ),
         )
 
