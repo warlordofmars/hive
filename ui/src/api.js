@@ -91,6 +91,11 @@ export const api = {
   getUserStats: (id) => request("GET", `/api/users/${id}/stats`),
   deleteUser: (id) => request("DELETE", `/api/users/${id}`),
 
+  // API Keys
+  listApiKeys: () => request("GET", "/api/keys"),
+  createApiKey: (name, scope) => request("POST", "/api/keys", { name, scope }),
+  deleteApiKey: (id) => request("DELETE", `/api/keys/${id}`),
+
   // Account
   deleteAccount: () => request("DELETE", "/api/account", { confirm: true }),
 };

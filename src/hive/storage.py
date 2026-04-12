@@ -25,6 +25,7 @@ from botocore.exceptions import ClientError
 
 from hive.models import (
     ActivityEvent,
+    ApiKey,
     AuthorizationCode,
     Memory,
     MgmtPendingState,
@@ -586,6 +587,49 @@ class HiveStorage:
             ExpressionAttributeValues={":sk": "META", _PK_PREFIX_KEY: "USER#"},
         )
         return resp.get("Count", 0)
+
+    # ------------------------------------------------------------------
+    # API Keys
+    # ------------------------------------------------------------------
+
+    def put_api_key(self, key: ApiKey) -> None:
+        self.table.put_item(Item=key.to_dynamo())
+
+    def get_api_key_by_id(self, key_id: str) -> ApiKey | None:
+        resp = self.table.get_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})
+        item = resp.get("Item")
+        return ApiKey.from_dynamo(item) if item else None
+
+    def get_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
+        """Look up an API key by its SHA-256 hash (full table scan — keys are rare)."""
+        resp = self.table.scan(
+            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
+            ExpressionAttributeValues={
+                _PK_PREFIX_KEY: "APIKEY#",
+                ":sk": "META",
+                ":hash": key_hash,
+            },
+        )
+        items = resp.get("Items", [])
+        return ApiKey.from_dynamo(items[0]) if items else None
+
+    def list_api_keys_for_user(self, owner_user_id: str) -> list[ApiKey]:
+        resp = self.table.scan(
+            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
+            ExpressionAttributeValues={
+                _PK_PREFIX_KEY: "APIKEY#",
+                ":sk": "META",
+                ":uid": owner_user_id,
+            },
+        )
+        return [ApiKey.from_dynamo(item) for item in resp.get("Items", [])]
+
+    def delete_api_key(self, key_id: str) -> bool:
+        resp = self.table.get_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+        self.table.delete_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})
+        return True
 
     # ------------------------------------------------------------------
     # Rate limiting

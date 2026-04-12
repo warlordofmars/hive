@@ -122,13 +122,23 @@ def decode_mgmt_jwt(token_str: str) -> dict[str, Any]:
     return claims
 
 
+_API_KEY_PREFIX = "hive_sk_"
+
+
 def validate_bearer_token(authorization_header: str | None, storage: HiveStorage) -> Token:
     """
     Validate a Bearer token from an Authorization header.
 
-    Returns the Token record if valid.
+    Supports two token types:
+    - hive_sk_... API keys: looked up by SHA-256 hash in DynamoDB
+    - JWT access tokens: validated cryptographically then confirmed in DynamoDB
+
+    Returns a Token record (real or synthetic) if valid.
     Raises ValueError with a descriptive message on any failure.
     """
+    import hashlib
+    from datetime import timedelta
+
     if not authorization_header:
         raise ValueError("Missing Authorization header")
     parts = authorization_header.split()
@@ -137,6 +147,24 @@ def validate_bearer_token(authorization_header: str | None, storage: HiveStorage
 
     raw_token = parts[1]
 
+    # --- API key path ---
+    if raw_token.startswith(_API_KEY_PREFIX):
+        key_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        api_key = storage.get_api_key_by_hash(key_hash)
+        if api_key is None:
+            raise ValueError("API key not found")
+        if not api_key.is_valid:
+            raise ValueError("API key has been revoked or has expired")
+        # Synthesize a Token so callers need no changes
+        return Token(
+            jti=f"apikey:{api_key.key_id}",
+            client_id=f"apikey:{api_key.key_id}",
+            scope=api_key.scope,
+            issued_at=api_key.created_at,
+            expires_at=api_key.expires_at or (api_key.created_at + timedelta(days=3650)),
+        )
+
+    # --- JWT path ---
     try:
         claims = decode_jwt(raw_token)
     except JWTError as exc:
