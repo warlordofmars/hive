@@ -506,137 +506,135 @@ class HiveStack(cdk.Stack):
         )
 
         # ----------------------------------------------------------------
-        # WAF WebACL (prod only — see issue #86 for dev)
+        # WAF WebACL (all environments)
         # ----------------------------------------------------------------
-        web_acl_arn: str | None = None
-        if is_prod:
-            waf_log_group = logs.LogGroup(
-                self,
-                "WafLogGroup",
-                log_group_name=f"aws-waf-logs-hive-{env_name}",
-                retention=logs.RetentionDays.ONE_MONTH,
-                removal_policy=cdk.RemovalPolicy.DESTROY,
-            )
-            # WAFv2 needs permission to write to the CloudWatch log group
-            waf_log_group.add_to_resource_policy(
-                iam.PolicyStatement(
-                    principals=[iam.ServicePrincipal("delivery.logs.amazonaws.com")],
-                    actions=["logs:CreateLogStream", "logs:PutLogEvents"],
-                    resources=[f"{waf_log_group.log_group_arn}:*"],
-                    conditions={
-                        "StringEquals": {"aws:SourceAccount": self.account},
-                        "ArnLike": {
-                            "aws:SourceArn": f"arn:aws:logs:{self.region}:{self.account}:*"
-                        },
+        waf_log_group = logs.LogGroup(
+            self,
+            "WafLogGroup",
+            log_group_name=f"aws-waf-logs-hive-{env_name}",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+        # WAFv2 needs permission to write to the CloudWatch log group
+        waf_log_group.add_to_resource_policy(
+            iam.PolicyStatement(
+                principals=[iam.ServicePrincipal("delivery.logs.amazonaws.com")],
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[f"{waf_log_group.log_group_arn}:*"],
+                conditions={
+                    "StringEquals": {"aws:SourceAccount": self.account},
+                    "ArnLike": {
+                        "aws:SourceArn": f"arn:aws:logs:{self.region}:{self.account}:*"
                     },
-                )
+                },
             )
+        )
 
-            web_acl = wafv2.CfnWebACL(
-                self,
-                "WebAcl",
-                name=f"hive-{env_name}",
-                scope="CLOUDFRONT",
-                default_action=wafv2.CfnWebACL.DefaultActionProperty(allow={}),
-                visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                    cloud_watch_metrics_enabled=True,
-                    metric_name=f"hive-{env_name}-waf",
-                    sampled_requests_enabled=True,
+        web_acl = wafv2.CfnWebACL(
+            self,
+            "WebAcl",
+            name=f"hive-{env_name}",
+            scope="CLOUDFRONT",
+            default_action=wafv2.CfnWebACL.DefaultActionProperty(allow={}),
+            visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                cloud_watch_metrics_enabled=True,
+                metric_name=f"hive-{env_name}-waf",
+                sampled_requests_enabled=True,
+            ),
+            rules=[
+                # Managed: OWASP Top 10 protections
+                wafv2.CfnWebACL.RuleProperty(
+                    name="AWSManagedRulesCommonRuleSet",
+                    priority=0,
+                    override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
+                            vendor_name="AWS",
+                            name="AWSManagedRulesCommonRuleSet",
+                        ),
+                    ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="AWSManagedRulesCommonRuleSet",
+                        sampled_requests_enabled=True,
+                    ),
                 ),
-                rules=[
-                    # Managed: OWASP Top 10 protections
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="AWSManagedRulesCommonRuleSet",
-                        priority=0,
-                        override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
-                                vendor_name="AWS",
-                                name="AWSManagedRulesCommonRuleSet",
+                # Managed: known malicious input patterns
+                wafv2.CfnWebACL.RuleProperty(
+                    name="AWSManagedRulesKnownBadInputsRuleSet",
+                    priority=1,
+                    override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
+                            vendor_name="AWS",
+                            name="AWSManagedRulesKnownBadInputsRuleSet",
+                        ),
+                    ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="AWSManagedRulesKnownBadInputsRuleSet",
+                        sampled_requests_enabled=True,
+                    ),
+                ),
+                # Rate limit: 100 req/5min per IP on /oauth/* (auth endpoints)
+                wafv2.CfnWebACL.RuleProperty(
+                    name="OAuthRateLimit",
+                    priority=2,
+                    action=wafv2.CfnWebACL.RuleActionProperty(block={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
+                            limit=100,
+                            aggregate_key_type="IP",
+                            scope_down_statement=wafv2.CfnWebACL.StatementProperty(
+                                byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
+                                    search_string="/oauth/",
+                                    field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
+                                        uri_path={}
+                                    ),
+                                    text_transformations=[
+                                        wafv2.CfnWebACL.TextTransformationProperty(
+                                            priority=0, type="NONE"
+                                        )
+                                    ],
+                                    positional_constraint="STARTS_WITH",
+                                )
                             ),
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="AWSManagedRulesCommonRuleSet",
-                            sampled_requests_enabled=True,
-                        ),
+                        )
                     ),
-                    # Managed: known malicious input patterns
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="AWSManagedRulesKnownBadInputsRuleSet",
-                        priority=1,
-                        override_action=wafv2.CfnWebACL.OverrideActionProperty(none={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
-                                vendor_name="AWS",
-                                name="AWSManagedRulesKnownBadInputsRuleSet",
-                            ),
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="AWSManagedRulesKnownBadInputsRuleSet",
-                            sampled_requests_enabled=True,
-                        ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="OAuthRateLimit",
+                        sampled_requests_enabled=True,
                     ),
-                    # Rate limit: 100 req/5min per IP on /oauth/* (auth endpoints)
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="OAuthRateLimit",
-                        priority=2,
-                        action=wafv2.CfnWebACL.RuleActionProperty(block={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
-                                limit=100,
-                                aggregate_key_type="IP",
-                                scope_down_statement=wafv2.CfnWebACL.StatementProperty(
-                                    byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
-                                        search_string="/oauth/",
-                                        field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
-                                            uri_path={}
-                                        ),
-                                        text_transformations=[
-                                            wafv2.CfnWebACL.TextTransformationProperty(
-                                                priority=0, type="NONE"
-                                            )
-                                        ],
-                                        positional_constraint="STARTS_WITH",
-                                    )
-                                ),
-                            )
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="OAuthRateLimit",
-                            sampled_requests_enabled=True,
-                        ),
+                ),
+                # Rate limit: 1000 req/5min per IP globally
+                wafv2.CfnWebACL.RuleProperty(
+                    name="GlobalRateLimit",
+                    priority=3,
+                    action=wafv2.CfnWebACL.RuleActionProperty(block={}),
+                    statement=wafv2.CfnWebACL.StatementProperty(
+                        rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
+                            limit=1000,
+                            aggregate_key_type="IP",
+                        )
                     ),
-                    # Rate limit: 1000 req/5min per IP globally
-                    wafv2.CfnWebACL.RuleProperty(
-                        name="GlobalRateLimit",
-                        priority=3,
-                        action=wafv2.CfnWebACL.RuleActionProperty(block={}),
-                        statement=wafv2.CfnWebACL.StatementProperty(
-                            rate_based_statement=wafv2.CfnWebACL.RateBasedStatementProperty(
-                                limit=1000,
-                                aggregate_key_type="IP",
-                            )
-                        ),
-                        visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
-                            cloud_watch_metrics_enabled=True,
-                            metric_name="GlobalRateLimit",
-                            sampled_requests_enabled=True,
-                        ),
+                    visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
+                        cloud_watch_metrics_enabled=True,
+                        metric_name="GlobalRateLimit",
+                        sampled_requests_enabled=True,
                     ),
-                ],
-            )
+                ),
+            ],
+        )
 
-            wafv2.CfnLoggingConfiguration(
-                self,
-                "WafLogging",
-                log_destination_configs=[waf_log_group.log_group_arn],
-                resource_arn=web_acl.attr_arn,
-            )
+        wafv2.CfnLoggingConfiguration(
+            self,
+            "WafLogging",
+            log_destination_configs=[waf_log_group.log_group_arn],
+            resource_arn=web_acl.attr_arn,
+        )
 
-            web_acl_arn = web_acl.attr_arn
+        web_acl_arn = web_acl.attr_arn
 
         # CloudFront Function: rewrite clean /docs URLs to the S3 .html files.
         # VitePress with cleanUrls:true outputs flat .html files (e.g.
@@ -762,12 +760,11 @@ function handler(event) {
             ],
         )
 
-        # Associate WAF WebACL with distribution (prod only)
-        if web_acl_arn:
-            cfn_distribution = distribution.node.default_child
-            cfn_distribution.add_property_override(  # type: ignore[union-attr]
-                "DistributionConfig.WebACLId", web_acl_arn
-            )
+        # Associate WAF WebACL with distribution
+        cfn_distribution = distribution.node.default_child
+        cfn_distribution.add_property_override(  # type: ignore[union-attr]
+            "DistributionConfig.WebACLId", web_acl_arn
+        )
 
         # Deploy built UI assets — only if ui/dist exists (built in CI before cdk deploy)
         # prune=False: do not delete objects outside ui/dist (e.g. the docs/ prefix).
@@ -1401,13 +1398,12 @@ function handler(event) {
             value=deploy_role.role_arn,
             description=f"GitHub Actions OIDC deploy role ARN ({env_name})",
         )
-        if web_acl_arn:
-            cdk.CfnOutput(
-                self,
-                "WebAclArn",
-                value=web_acl_arn,
-                description=f"WAFv2 WebACL ARN ({env_name})",
-            )
+        cdk.CfnOutput(
+            self,
+            "WebAclArn",
+            value=web_acl_arn,
+            description=f"WAFv2 WebACL ARN ({env_name})",
+        )
         cdk.CfnOutput(
             self,
             "AppVersion",
