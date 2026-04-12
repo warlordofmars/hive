@@ -746,3 +746,102 @@ class TestApiKeyStorage:
 
     def test_delete_nonexistent(self, storage):
         assert storage.delete_api_key("no-such-key") is False
+
+
+# ---------------------------------------------------------------------------
+# Bulk memory operations
+# ---------------------------------------------------------------------------
+
+
+class TestBulkMemoryOperations:
+    def test_delete_memories_by_tag_returns_count(self, storage):
+        m1 = Memory(key="a", value="1", tags=["bulk"], owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="b", value="2", tags=["bulk"], owner_client_id="c1", owner_user_id="u1")
+        m3 = Memory(key="c", value="3", tags=["other"], owner_client_id="c1", owner_user_id="u1")
+        for m in [m1, m2, m3]:
+            storage.put_memory(m)
+        deleted = storage.delete_memories_by_tag("bulk")
+        assert deleted == 2
+        assert storage.get_memory_by_key("a") is None
+        assert storage.get_memory_by_key("b") is None
+        assert storage.get_memory_by_key("c") is not None
+
+    def test_delete_memories_by_tag_with_owner_filter(self, storage):
+        m1 = Memory(key="x", value="1", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="y", value="2", tags=["t"], owner_client_id="c2", owner_user_id="u2")
+        for m in [m1, m2]:
+            storage.put_memory(m)
+        deleted = storage.delete_memories_by_tag("t", owner_user_id="u1")
+        assert deleted == 1
+        assert storage.get_memory_by_key("x") is None
+        assert storage.get_memory_by_key("y") is not None
+
+    def test_delete_memories_by_tag_empty(self, storage):
+        assert storage.delete_memories_by_tag("no-such-tag") == 0
+
+    def test_iter_all_memories_no_filter(self, storage):
+        for i in range(3):
+            storage.put_memory(Memory(key=f"k{i}", value=f"v{i}", owner_client_id="c1"))
+        result = list(storage.iter_all_memories())
+        assert len(result) == 3
+
+    def test_iter_all_memories_with_tag(self, storage):
+        m1 = Memory(key="tagged", value="1", tags=["export"], owner_client_id="c1")
+        m2 = Memory(key="untagged", value="2", tags=[], owner_client_id="c1")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        result = list(storage.iter_all_memories(tag="export"))
+        assert len(result) == 1
+        assert result[0].key == "tagged"
+
+    def test_iter_all_memories_with_owner_filter(self, storage):
+        m1 = Memory(key="mine", value="1", owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="theirs", value="2", owner_client_id="c2", owner_user_id="u2")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        result = list(storage.iter_all_memories(owner_user_id="u1"))
+        assert len(result) == 1
+        assert result[0].key == "mine"
+
+    def test_iter_all_memories_tag_and_owner_filter(self, storage):
+        m1 = Memory(key="a", value="1", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="b", value="2", tags=["t"], owner_client_id="c2", owner_user_id="u2")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        result = list(storage.iter_all_memories(tag="t", owner_user_id="u2"))
+        assert len(result) == 1
+        assert result[0].key == "b"
+
+    def test_iter_all_memories_follows_scan_pages(self, storage):
+        """iter_all_memories should follow DynamoDB scan pages via ExclusiveStartKey."""
+
+        memories = [Memory(key=f"page-{i}", value=f"v{i}", owner_client_id="c1") for i in range(3)]
+        for m in memories:
+            storage.put_memory(m)
+
+        # Capture calls to prove pagination works by using real storage
+        # (moto handles pagination internally, so just verify all items returned)
+        result = list(storage.iter_all_memories())
+        assert len(result) == 3
+
+    def test_iter_all_memories_multi_page(self, storage):
+        """iter_all_memories handles scan responses with ExclusiveStartKey."""
+        from unittest.mock import patch
+
+        from hive.models import Memory as _Memory
+
+        m1 = _Memory(key="page1", value="v1", owner_client_id="c1")
+        m1_item = m1.to_dynamo_meta()
+
+        page1_resp = {
+            "Items": [m1_item],
+            "LastEvaluatedKey": {"PK": "MEMORY#page1", "SK": "META"},
+        }
+        m2 = _Memory(key="page2", value="v2", owner_client_id="c1")
+        m2_item = m2.to_dynamo_meta()
+        page2_resp = {"Items": [m2_item]}
+
+        with patch.object(storage.table, "scan", side_effect=[page1_resp, page2_resp]):
+            result = list(storage.iter_all_memories())
+
+        assert len(result) == 2

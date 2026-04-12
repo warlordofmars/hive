@@ -693,3 +693,40 @@ class TestSearchMemories:
             result = await search_memories("anything", ctx=_make_ctx(jwt))
 
         assert result == {"items": [], "count": 0, "query": "anything"}
+
+
+# ---------------------------------------------------------------------------
+# forget_all
+# ---------------------------------------------------------------------------
+
+
+class TestForgetAll:
+    async def test_forget_all_deletes_tagged_memories(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import forget_all, remember
+
+        await remember("fa-a", "v1", ["purge"], ctx=_make_ctx(jwt))
+        await remember("fa-b", "v2", ["purge"], ctx=_make_ctx(jwt))
+        await remember("fa-c", "v3", ["keep"], ctx=_make_ctx(jwt))
+        result = await forget_all("purge", ctx=_make_ctx(jwt))
+        assert "2" in result
+        assert storage.get_memory_by_key("fa-a") is None
+        assert storage.get_memory_by_key("fa-b") is None
+        assert storage.get_memory_by_key("fa-c") is not None
+
+    async def test_forget_all_zero_when_tag_missing(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import forget_all
+
+        result = await forget_all("no-such-tag", ctx=_make_ctx(jwt))
+        assert "0" in result
+
+    async def test_forget_all_requires_write_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import forget_all
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await forget_all("t", ctx=_make_ctx(read_only_jwt))
