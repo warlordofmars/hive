@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.js", () => ({
-  api: { listMemories: vi.fn(), deleteAccount: vi.fn() },
+  api: { listMemories: vi.fn(), deleteAccount: vi.fn(), getStats: vi.fn() },
 }));
 
 import { api } from "../api.js";
@@ -24,6 +24,7 @@ describe("SetupPanel", () => {
       clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
     api.listMemories.mockResolvedValue({ items: [] });
+    api.getStats.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -217,5 +218,78 @@ describe("SetupPanel", () => {
     fireEvent.click(screen.getByText("Delete my account"));
     await act(async () => fireEvent.click(screen.getByText("Yes, delete everything")));
     await waitFor(() => expect(screen.getByText("Deletion failed")).toBeTruthy());
+  });
+
+  it("does not render Usage section when getStats returns null", async () => {
+    api.getStats.mockResolvedValue(null);
+    await act(async () => render(<SetupPanel />));
+    expect(screen.queryByText("Usage")).toBeNull();
+  });
+
+  it("does not render Usage section when stats have no memory_limit", async () => {
+    api.getStats.mockResolvedValue({ total_memories: 10, total_clients: 2, memory_limit: null });
+    await act(async () => render(<SetupPanel />));
+    expect(screen.queryByText("Usage")).toBeNull();
+  });
+
+  it("renders Usage section with quota bars when limits are present", async () => {
+    api.getStats.mockResolvedValue({
+      total_memories: 42,
+      total_clients: 3,
+      memory_limit: 500,
+      client_limit: 10,
+    });
+    await act(async () => render(<SetupPanel />));
+    await waitFor(() => expect(screen.getByText("Usage")).toBeTruthy());
+    expect(screen.getByText("Memories")).toBeTruthy();
+    expect(screen.getByText("Clients")).toBeTruthy();
+    expect(screen.getByText("42 / 500")).toBeTruthy();
+    expect(screen.getByText("3 / 10")).toBeTruthy();
+  });
+
+  it("shows danger color for quota at 100%", async () => {
+    api.getStats.mockResolvedValue({
+      total_memories: 500,
+      total_clients: 1,
+      memory_limit: 500,
+      client_limit: 10,
+    });
+    await act(async () => render(<SetupPanel />));
+    await waitFor(() => expect(screen.getByText("500 / 500")).toBeTruthy());
+    const label = screen.getByText("500 / 500");
+    expect(label.style.color).toBe("var(--danger)");
+  });
+
+  it("shows muted color for quota under 80%", async () => {
+    api.getStats.mockResolvedValue({
+      total_memories: 10,
+      total_clients: 1,
+      memory_limit: 500,
+      client_limit: 10,
+    });
+    await act(async () => render(<SetupPanel />));
+    await waitFor(() => expect(screen.getByText("10 / 500")).toBeTruthy());
+    const label = screen.getByText("10 / 500");
+    expect(label.style.color).toBe("var(--text-muted)");
+  });
+
+  it("shows amber bar color for quota between 80% and 99%", async () => {
+    api.getStats.mockResolvedValue({
+      total_memories: 420,
+      total_clients: 1,
+      memory_limit: 500,
+      client_limit: 10,
+    });
+    await act(async () => render(<SetupPanel />));
+    await waitFor(() => expect(screen.getByText("420 / 500")).toBeTruthy());
+    // bar fill div is the one with inline background = amber
+    const bars = document.querySelectorAll('[style*="background: var(--amber)"]');
+    expect(bars.length).toBeGreaterThan(0);
+  });
+
+  it("hides Usage section when getStats rejects", async () => {
+    api.getStats.mockRejectedValue(new Error("network error"));
+    await act(async () => render(<SetupPanel />));
+    expect(screen.queryByText("Usage")).toBeNull();
   });
 });

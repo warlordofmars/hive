@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Query
 
 from hive.api._auth import require_mgmt_user
 from hive.models import PagedResponse, StatsResponse
+from hive.quota import _exempt_users, get_client_limit, get_memory_limit
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["stats"])
@@ -42,12 +43,15 @@ async def get_stats(
     events_7 = storage.get_events_for_dates(last_7, limit=10000)
 
     is_admin = claims.get("role") == "admin"
+    is_exempt = claims["sub"] in _exempt_users()
     return StatsResponse(
         total_memories=storage.count_memories(owner_user_id=owner_user_id),
         total_clients=storage.count_clients(owner_user_id=owner_user_id),
         total_users=storage.count_users() if is_admin else None,
         events_today=len(events_today),
         events_last_7_days=len(events_7),
+        memory_limit=None if (is_admin or is_exempt) else get_memory_limit(),
+        client_limit=None if (is_admin or is_exempt) else get_client_limit(),
     )
 
 

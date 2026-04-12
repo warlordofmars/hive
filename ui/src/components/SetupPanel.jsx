@@ -1,5 +1,5 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AlertTriangle, Check } from "lucide-react";
 import { api } from "../api.js";
 
@@ -16,6 +16,13 @@ export default function SetupPanel() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [quota, setQuota] = useState(null);
+
+  useEffect(function loadQuota() {
+    api.getStats().then(function handleStats(s) {
+      if (s && s.memory_limit != null) setQuota(s);
+    }).catch(function handleError() {});
+  }, []);
 
   const step2Done = testResult === "ok";
 
@@ -203,6 +210,16 @@ export default function SetupPanel() {
         </div>
       </section>
 
+      {quota && (
+        <section style={{ marginTop: 48, borderTop: "1px solid var(--border)", paddingTop: 32 }}>
+          <h3 style={{ marginBottom: 16 }}>Usage</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <QuotaBar label="Memories" used={quota.total_memories} limit={quota.memory_limit} />
+            <QuotaBar label="Clients" used={quota.total_clients} limit={quota.client_limit} />
+          </div>
+        </section>
+      )}
+
       <section style={{ marginTop: 48, borderTop: "1px solid var(--border)", paddingTop: 32 }}>
         <h3 style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, color: "var(--danger)" }}>
           <AlertTriangle size={18} />
@@ -255,6 +272,26 @@ export default function SetupPanel() {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function QuotaBar({ label, used, limit }) {
+  const pct = Math.min((used / limit) * 100, 100);
+  const nearLimit = pct >= 80;
+  const atLimit = pct >= 100;
+  const color = atLimit ? "var(--danger)" : nearLimit ? "var(--amber)" : "var(--success)";
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+        <span>{label}</span>
+        <span style={{ color: atLimit ? "var(--danger)" : "var(--text-muted)" }}>
+          {used} / {limit}
+        </span>
+      </div>
+      <div style={{ height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 3, transition: "width 0.3s" }} />
+      </div>
     </div>
   );
 }

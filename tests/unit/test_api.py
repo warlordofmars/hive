@@ -272,6 +272,27 @@ class TestMemories:
         assert resp.status_code == 413
         assert "too large" in resp.json()["detail"]
 
+    def test_create_returns_429_when_memory_quota_exceeded(self, client):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "0"}):
+            tc, *_ = client
+            resp = tc.post("/api/memories", json={"key": "blocked", "value": "v"})
+        assert resp.status_code == 429
+        assert "quota" in resp.json()["detail"].lower()
+
+    def test_update_does_not_check_quota(self, client):
+        """Updating an existing memory must not be blocked by quota."""
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "existing", "value": "v1"})
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "0"}):
+            resp = tc.post("/api/memories", json={"key": "existing", "value": "v2"})
+        assert resp.status_code == 200
+
     def test_update_oversized_returns_413(self, client):
         from unittest.mock import patch
 
@@ -466,6 +487,16 @@ class TestClients:
         resp = tc.delete("/api/clients/no-such-id")
         assert resp.status_code == 404
 
+    def test_create_returns_429_when_client_quota_exceeded(self, client):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_CLIENTS": "0"}):
+            tc, *_ = client
+            resp = tc.post("/api/clients", json={"client_name": "Blocked"})
+        assert resp.status_code == 429
+        assert "quota" in resp.json()["detail"].lower()
+
 
 # ---------------------------------------------------------------------------
 # Stats + activity endpoints
@@ -483,6 +514,28 @@ class TestStats:
         assert "total_clients" in data
         assert "events_today" in data
         assert "events_last_7_days" in data
+
+    def test_get_stats_includes_quota_limits_for_user(self, client):
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        with patch.dict(
+            os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "500", "HIVE_QUOTA_MAX_CLIENTS": "10"}
+        ):
+            resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] == 500
+        assert data["client_limit"] == 10
+
+    def test_get_stats_admin_has_no_quota_limits(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] is None
+        assert data["client_limit"] is None
 
     def test_get_stats_admin_sees_all(self, admin_client):
         """Admin role passes owner_user_id=None so all items are counted."""

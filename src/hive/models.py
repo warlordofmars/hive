@@ -551,6 +551,8 @@ class StatsResponse(BaseModel):
     total_users: int | None = None  # admin only
     events_today: int
     events_last_7_days: int
+    memory_limit: int | None = None  # None = unlimited (admin or exempt)
+    client_limit: int | None = None  # None = unlimited (admin or exempt)
 
 
 class PagedResponse(BaseModel):
