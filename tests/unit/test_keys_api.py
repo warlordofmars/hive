@@ -23,6 +23,32 @@ def _make_claims(user_id: str = "user-1", role: str = "user") -> dict:
 # ---------------------------------------------------------------------------
 
 
+class TestStorageDep:
+    def test_storage_dep_returns_hive_storage(self):
+        from moto import mock_aws
+
+        with mock_aws():
+            import boto3
+
+            boto3.client("dynamodb", region_name="us-east-1").create_table(
+                TableName="hive",
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            from hive.api.keys import _storage
+            from hive.storage import HiveStorage
+
+            result = _storage()
+            assert isinstance(result, HiveStorage)
+
+
 class TestGenerateApiKey:
     def test_has_hive_sk_prefix(self):
         plaintext, _ = generate_api_key()
