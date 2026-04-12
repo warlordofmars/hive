@@ -116,18 +116,26 @@ class TestUIE2E:
         # Wait for the list to reload after save.
         page.wait_for_load_state("networkidle")
 
-        # Filter by the unique tag — type and press Enter.  Enter now commits
-        # any typed value even when the suggestion dropdown is empty (e.g. the
-        # new memory isn't on page 1 of an accumulated dev list).
-        tag_input = page.locator("input[placeholder='Filter by tag']")
-        tag_input.fill(unique_tag)
-        tag_input.press("Enter")
-
-        # Wait for the filtered list to fully load before asserting visibility.
-        # Without this, wait_for_selector can find the card in the *old* (unfiltered)
-        # list and then is_visible() checks after that list has been replaced.
-        page.wait_for_load_state("networkidle")
-        page.wait_for_selector(f"text={memory_key}", state="visible", timeout=30_000)
+        # Apply tag filter and retry to handle DynamoDB GSI eventual consistency.
+        # The TagIndex GSI may not immediately reflect a new write; if the filtered
+        # list comes back empty, clear the chip and reapply the filter until the
+        # memory appears (or we exhaust retries).
+        for attempt in range(6):
+            # If a chip is already showing, clear it first so we can re-type.
+            if page.locator("[aria-label='Clear tag filter']").count() > 0:
+                page.locator("[aria-label='Clear tag filter']").click()
+                page.wait_for_selector("input[placeholder='Filter by tag']")
+            tag_input = page.locator("input[placeholder='Filter by tag']")
+            tag_input.fill(unique_tag)
+            tag_input.press("Enter")
+            page.wait_for_load_state("networkidle")
+            if page.locator(f"text={memory_key}").count() > 0:
+                break
+            if attempt < 5:
+                time.sleep(5)  # wait for GSI propagation before retrying
+        assert page.locator(f"text={memory_key}").first.is_visible(), (
+            f"Memory '{memory_key}' not visible after filtering by tag '{unique_tag}'"
+        )
 
     def test_clients_tab(self, browser_page):
         page = browser_page
