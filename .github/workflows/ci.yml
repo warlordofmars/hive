@@ -108,6 +108,11 @@ jobs:
           sarif_file: trivy-deps.sarif
           category: trivy-deps
 
+      - name: Gitleaks — secret scan
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
