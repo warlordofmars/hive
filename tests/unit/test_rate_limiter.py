@@ -103,7 +103,9 @@ class TestCheckRateLimit:
             from hive.storage import HiveStorage
 
             storage = HiveStorage(table_name="hive-unit-ratelimit", region="us-east-1")
-            with patch.dict(os.environ, {"HIVE_RATE_LIMIT_RPM": "2", "HIVE_RATE_LIMIT_RPD": "1000"}):
+            with patch.dict(
+                os.environ, {"HIVE_RATE_LIMIT_RPM": "2", "HIVE_RATE_LIMIT_RPD": "1000"}
+            ):
                 check_rate_limit("client-x", storage)
                 check_rate_limit("client-x", storage)
                 with pytest.raises(RateLimitExceeded) as exc_info:
@@ -117,7 +119,9 @@ class TestCheckRateLimit:
             from hive.storage import HiveStorage
 
             storage = HiveStorage(table_name="hive-unit-ratelimit", region="us-east-1")
-            with patch.dict(os.environ, {"HIVE_RATE_LIMIT_RPM": "1000", "HIVE_RATE_LIMIT_RPD": "2"}):
+            with patch.dict(
+                os.environ, {"HIVE_RATE_LIMIT_RPM": "1000", "HIVE_RATE_LIMIT_RPD": "2"}
+            ):
                 check_rate_limit("client-y", storage)
                 check_rate_limit("client-y", storage)
                 with pytest.raises(RateLimitExceeded) as exc_info:
@@ -176,10 +180,11 @@ class TestMcpRateLimitIntegration:
 
         from hive.rate_limiter import RateLimitExceeded
 
-        with patch("hive.server.validate_bearer_token") as mock_validate, patch(
-            "hive.server.check_rate_limit"
-        ) as mock_rl, patch("hive.server.HiveStorage"), patch(
-            "hive.server.get_http_request", side_effect=RuntimeError("no request")
+        with (
+            patch("hive.server.validate_bearer_token") as mock_validate,
+            patch("hive.server.check_rate_limit") as mock_rl,
+            patch("hive.server.HiveStorage"),
+            patch("hive.server.get_http_request", side_effect=RuntimeError("no request")),
         ):
             mock_token = MagicMock()
             mock_token.client_id = "test-client"
@@ -206,9 +211,11 @@ class TestApiRateLimitIntegration:
 
         from hive.rate_limiter import RateLimitExceeded
 
-        with patch("hive.api._auth.validate_bearer_token") as mock_validate, patch(
-            "hive.api._auth.check_rate_limit"
-        ) as mock_rl, patch("hive.api._auth.emit_metric") as _:
+        with (
+            patch("hive.api._auth.validate_bearer_token") as mock_validate,
+            patch("hive.api._auth.check_rate_limit") as mock_rl,
+            patch("hive.api._auth.emit_metric") as _,
+        ):
             mock_token = MagicMock()
             mock_token.client_id = "test-client"
             mock_validate.return_value = mock_token

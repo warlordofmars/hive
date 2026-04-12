@@ -80,9 +80,7 @@ def check_rate_limit(client_id: str, storage: HiveStorage) -> None:
 
     # Per-minute window — counter expires 2 minutes after the window key
     min_key = now.strftime("%Y-%m-%dT%H:%M")
-    min_count = storage.increment_rate_limit_counter(
-        client_id, f"min#{min_key}", ttl_seconds=120
-    )
+    min_count = storage.increment_rate_limit_counter(client_id, f"min#{min_key}", ttl_seconds=120)
     if min_count > rpm:
         retry_after = 60 - now.second
         raise RateLimitExceeded(retry_after=retry_after)
