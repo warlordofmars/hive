@@ -210,4 +210,12 @@ describe("SetupPanel", () => {
     await act(async () => fireEvent.click(screen.getByText("Yes, delete everything")));
     await waitFor(() => expect(screen.getByText("Server error")).toBeTruthy());
   });
+
+  it("shows fallback error when deleteAccount rejects without message", async () => {
+    api.deleteAccount.mockRejectedValue({});
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Delete my account"));
+    await act(async () => fireEvent.click(screen.getByText("Yes, delete everything")));
+    await waitFor(() => expect(screen.getByText("Deletion failed")).toBeTruthy());
+  });
 });

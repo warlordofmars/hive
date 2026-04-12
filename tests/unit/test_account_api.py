@@ -116,6 +116,17 @@ def unauthed_client():
         yield TestClient(app, raise_server_exceptions=False)
 
 
+class TestStorageDep:
+    def test_storage_dep_returns_hive_storage(self):
+        with mock_aws():
+            _create_table()
+            from hive.api.account import _storage
+            from hive.storage import HiveStorage
+
+            result = _storage()
+            assert isinstance(result, HiveStorage)
+
+
 class TestDeleteAccount:
     def test_requires_confirm_true(self, client):
         tc, _ = client
@@ -144,6 +155,27 @@ class TestDeleteAccount:
         storage.delete_user(_USER_ID)
         resp = tc.request("DELETE", "/api/account", json={"confirm": True})
         assert resp.status_code == 404
+
+    def test_deletes_clients(self, client):
+        tc, storage = client
+        from hive.auth.dcr import register_client
+        from hive.models import ClientRegistrationRequest
+
+        req = ClientRegistrationRequest(
+            client_name="test-client",
+            redirect_uris=["https://example.com/cb"],
+            grant_types=["authorization_code"],
+        )
+        resp_dcr = register_client(req, storage)
+        c = storage.get_client(resp_dcr.client_id)
+        assert c is not None
+        c.owner_user_id = _USER_ID
+        storage.put_client(c)
+
+        resp = tc.request("DELETE", "/api/account", json={"confirm": True})
+        assert resp.status_code == 204
+        # Client should be deleted
+        assert storage.get_client(resp_dcr.client_id) is None
 
     def test_requires_auth(self, unauthed_client):
         resp = unauthed_client.request("DELETE", "/api/account", json={"confirm": True})
