@@ -114,7 +114,10 @@ class HiveStorage:
         item = self._get_memory_meta(memory_id)
         if item is None:
             return None
-        return Memory.from_dynamo(item)
+        memory = Memory.from_dynamo(item)
+        if memory.is_expired:
+            return None
+        return memory
 
     def get_memory_by_key(self, key: str) -> Memory | None:
         """Look up a memory by its human-readable key using GSI1."""

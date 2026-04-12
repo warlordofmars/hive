@@ -10,7 +10,16 @@ import { Button } from "./ui/button.jsx";
 import { Card } from "./ui/card.jsx";
 import { Input } from "./ui/input.jsx";
 import { Label } from "./ui/label.jsx";
+import { Select } from "./ui/select.jsx";
 import { Textarea } from "./ui/textarea.jsx";
+
+const TTL_OPTIONS = [
+  { label: "Never expires", value: "" },
+  { label: "1 hour", value: "3600" },
+  { label: "1 day", value: "86400" },
+  { label: "1 week", value: "604800" },
+  { label: "30 days", value: "2592000" },
+];
 
 // ------------------------------------------------------------------
 // TagPicker — combobox that shows suggestions from known tags,
@@ -172,7 +181,7 @@ export default function MemoryBrowser() {
   const [isSearchMode, setIsSearchMode] = useState(false);
   const [editing, setEditing] = useState(null); // memory object or null
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ key: "", value: "", tags: "" });
+  const [form, setForm] = useState({ key: "", value: "", tags: "", ttl: "" });
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [pendingDelete, setPendingDelete] = useState(null);
   const searchDebounceRef = useRef(null);
@@ -261,16 +270,18 @@ export default function MemoryBrowser() {
   async function handleCreate(e) {
     e.preventDefault();
     try {
-      await api.createMemory({
+      const body = {
         key: form.key,
         value: form.value,
         tags: form.tags
           .split(",")
           .map((t) => t.trim())
           .filter(Boolean),
-      });
+      };
+      if (form.ttl) body.ttl_seconds = parseInt(form.ttl, 10);
+      await api.createMemory(body);
       setCreating(false);
-      setForm({ key: "", value: "", tags: "" });
+      setForm({ key: "", value: "", tags: "", ttl: "" });
       load();
     } catch (err) {
       setError(err.message);
@@ -280,13 +291,15 @@ export default function MemoryBrowser() {
   async function handleUpdate(e) {
     e.preventDefault();
     try {
-      await api.updateMemory(editing.memory_id, {
+      const body = {
         value: form.value,
         tags: form.tags
           .split(",")
           .map((t) => t.trim())
           .filter(Boolean),
-      });
+      };
+      body.ttl_seconds = form.ttl === "" ? 0 : parseInt(form.ttl, 10);
+      await api.updateMemory(editing.memory_id, body);
       setEditing(null);
       load();
     } catch (err) {
@@ -307,14 +320,14 @@ export default function MemoryBrowser() {
 
   function openEdit(m) {
     setEditing(m);
-    setForm({ key: m.key, value: m.value, tags: m.tags.join(", ") });
+    setForm({ key: m.key, value: m.value, tags: m.tags.join(", "), ttl: "" });
     setCreating(false);
   }
 
   function openCreate() {
     setCreating(true);
     setEditing(null);
-    setForm({ key: "", value: "", tags: "" });
+    setForm({ key: "", value: "", tags: "", ttl: "" });
   }
 
   function closePanel() {
@@ -403,6 +416,9 @@ export default function MemoryBrowser() {
                     {m.score !== undefined && (
                       <Badge>{Math.round(m.score * 100)}% match</Badge>
                     )}
+                    {m.expires_at && (
+                      <Badge className="border-[var(--amber)] text-[var(--amber)]">Expires {new Date(m.expires_at).toLocaleDateString()}</Badge>
+                    )}
                   </div>
                   <p className="mt-1 text-[var(--text-muted)] text-[13px] whitespace-pre-wrap">
                     {m.value.length > 160 ? m.value.slice(0, 160) + "…" : m.value}
@@ -466,7 +482,7 @@ export default function MemoryBrowser() {
                   placeholder="Memory content…"
                 />
               </div>
-              <div className="mb-4">
+              <div className="mb-3">
                 <Label htmlFor="memory-tags">Tags (comma-separated)</Label>
                 <Input
                   id="memory-tags"
@@ -474,6 +490,18 @@ export default function MemoryBrowser() {
                   onChange={(e) => setForm({ ...form, tags: e.target.value })}
                   placeholder="tag1, tag2"
                 />
+              </div>
+              <div className="mb-4">
+                <Label htmlFor="memory-ttl">Expires in</Label>
+                <Select
+                  id="memory-ttl"
+                  value={form.ttl}
+                  onChange={(e) => setForm({ ...form, ttl: e.target.value })}
+                >
+                  {TTL_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </Select>
               </div>
               <div className="flex gap-2">
                 <Button type="submit">Save</Button>
