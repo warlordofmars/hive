@@ -262,6 +262,21 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/api/users/u99");
   });
 
+  it("updateUserRole calls PATCH /api/users/{id}", async () => {
+    mockOk({ user_id: "u1", role: "admin" });
+    await api.updateUserRole("u1", "admin");
+    expect(fetchMock.mock.calls[0][1].method).toBe("PATCH");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/u1");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ role: "admin" });
+  });
+
+  it("getUserStats calls GET /api/users/{id}/stats", async () => {
+    mockOk({ user_id: "u1", memory_count: 3, client_count: 1 });
+    await api.getUserStats("u1");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/u1/stats");
+    expect(fetchMock.mock.calls[0][1].method).toBe("GET");
+  });
+
   it("deleteAccount calls DELETE /api/account with confirm body", async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 204 });
     await api.deleteAccount();

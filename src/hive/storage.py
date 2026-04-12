@@ -430,6 +430,18 @@ class HiveStorage:
             return None
         return self.get_user_by_id(items[0]["user_id"])
 
+    def update_user_role(self, user_id: str, role: str) -> bool:
+        resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+        self.table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": "META"},
+            UpdateExpression="SET #r = :role",
+            ExpressionAttributeNames={"#r": "role"},
+            ExpressionAttributeValues={":role": role},
+        )
+        return True
+
     def delete_user(self, user_id: str) -> bool:
         resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
         if not resp.get("Item"):
