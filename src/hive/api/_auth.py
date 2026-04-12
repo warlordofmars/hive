@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from hive.auth.tokens import decode_mgmt_jwt, validate_bearer_token
 from hive.metrics import emit_metric
+from hive.rate_limiter import RateLimitExceeded, check_rate_limit
 from hive.storage import HiveStorage
 
 _bearer = HTTPBearer()
@@ -25,13 +26,21 @@ async def require_token(
 ) -> tuple[HiveStorage, str]:
     """
     FastAPI dependency that validates the Bearer token and returns
-    (storage, client_id).  Raises HTTP 401 on failure.
+    (storage, client_id).  Raises HTTP 401 on failure, 429 on rate limit.
     """
     try:
         token = validate_bearer_token(f"Bearer {credentials.credentials}", storage)
     except ValueError as exc:
         await emit_metric("TokenValidationFailures")
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    try:
+        check_rate_limit(token.client_id, storage)
+    except RateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
     return storage, token.client_id
 
 
