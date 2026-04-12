@@ -24,7 +24,12 @@ def _storage() -> HiveStorage:
     return HiveStorage()
 
 
-@router.get("/stats", responses={401: {"description": "Unauthorized"}})
+@router.get(
+    "/stats",
+    summary="Get usage statistics",
+    description="Return summary counts for memories, clients, and activity events. Admins see platform-wide totals; non-admins see only their own data.",
+    responses={401: {"description": "Unauthorized"}},
+)
 async def get_stats(
     claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
     storage: Annotated[HiveStorage, Depends(_storage)],
@@ -46,7 +51,12 @@ async def get_stats(
     )
 
 
-@router.get("/activity", responses={401: {"description": "Unauthorized"}})
+@router.get(
+    "/activity",
+    summary="Get activity log",
+    description="Return recent activity events (memory creates, updates, deletes, client registrations, etc.) for the configured number of days.",
+    responses={401: {"description": "Unauthorized"}},
+)
 async def get_activity(
     claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
     storage: Annotated[HiveStorage, Depends(_storage)],

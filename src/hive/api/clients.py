@@ -38,7 +38,12 @@ def _user_filter(claims: dict[str, Any]) -> str | None:
     return None if claims.get("role") == "admin" else claims["sub"]
 
 
-@router.get("/clients", responses={401: {"description": "Unauthorized"}})
+@router.get(
+    "/clients",
+    summary="List OAuth clients",
+    description="Return a paginated list of OAuth clients. Non-admins see only their own clients.",
+    responses={401: {"description": "Unauthorized"}},
+)
 async def list_clients(
     claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
     storage: Annotated[HiveStorage, Depends(_storage)],
@@ -59,6 +64,8 @@ async def list_clients(
 
 @router.post(
     "/clients",
+    summary="Register an OAuth client",
+    description="Register a new OAuth 2.1 client via Dynamic Client Registration (RFC 7591). Returns the client credentials including the client secret.",
     status_code=201,
     responses={
         400: {"description": "Invalid client registration request"},
@@ -94,6 +101,8 @@ async def create_client(
 
 @router.get(
     "/clients/{client_id}",
+    summary="Get an OAuth client",
+    description="Retrieve a single OAuth client by its client ID. Non-admins can only access their own clients.",
     responses={
         401: {"description": "Unauthorized"},
         404: {"description": _CLIENT_NOT_FOUND},
@@ -115,6 +124,8 @@ async def get_client(
 
 @router.delete(
     "/clients/{client_id}",
+    summary="Delete an OAuth client",
+    description="Permanently delete an OAuth client by its client ID. Non-admins can only delete their own clients.",
     status_code=204,
     responses={
         401: {"description": "Unauthorized"},

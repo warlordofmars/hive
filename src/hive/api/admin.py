@@ -237,6 +237,7 @@ def _get_cost_data() -> dict[str, Any]:
 
 @router.get(
     "/metrics",
+    summary="Get CloudWatch metrics",
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Admin role required"},
@@ -260,6 +261,7 @@ async def get_metrics(
 
 @router.get(
     "/costs",
+    summary="Get AWS cost data",
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Admin role required"},
@@ -313,6 +315,7 @@ def _get_alarm_data() -> dict[str, Any]:
 
 @router.get(
     "/alarms",
+    summary="Get CloudWatch alarm states",
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Admin role required"},

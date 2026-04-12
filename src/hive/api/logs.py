@@ -116,6 +116,7 @@ def _fetch_log_events(
 
 @router.get(
     "/logs",
+    summary="Get CloudWatch log events",
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Admin role required"},

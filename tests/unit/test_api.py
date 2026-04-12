@@ -179,6 +179,51 @@ class TestHealth:
 
 
 # ---------------------------------------------------------------------------
+# OpenAPI schema + protected docs endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAPI:
+    def test_openapi_schema_is_non_empty(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/openapi.json")
+        assert resp.status_code == 200
+        schema = resp.json()
+        assert schema.get("info", {}).get("title") == "Hive Management API"
+        assert schema.get("paths"), "OpenAPI schema must define at least one path"
+
+    def test_docs_accessible_by_admin(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/docs")
+        assert resp.status_code == 200
+        assert b"swagger" in resp.content.lower()
+
+    def test_redoc_accessible_by_admin(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/redoc")
+        assert resp.status_code == 200
+        assert b"redoc" in resp.content.lower()
+
+    def test_docs_forbidden_for_non_admin(self, client):
+        tc, *_ = client
+        resp = tc.get("/docs")
+        assert resp.status_code == 403
+
+    def test_redoc_forbidden_for_non_admin(self, client):
+        tc, *_ = client
+        resp = tc.get("/redoc")
+        assert resp.status_code == 403
+
+    def test_docs_requires_auth(self, unauthed_client):
+        resp = unauthed_client.get("/docs")
+        assert resp.status_code in (401, 403)
+
+    def test_redoc_requires_auth(self, unauthed_client):
+        resp = unauthed_client.get("/redoc")
+        assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Auth failures
 # ---------------------------------------------------------------------------
 
