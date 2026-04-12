@@ -273,6 +273,20 @@ describe("SetupPanel", () => {
     expect(label.style.color).toBe("var(--text-muted)");
   });
 
+  it("shows amber bar color for quota between 80% and 99%", async () => {
+    api.getStats.mockResolvedValue({
+      total_memories: 420,
+      total_clients: 1,
+      memory_limit: 500,
+      client_limit: 10,
+    });
+    await act(async () => render(<SetupPanel />));
+    await waitFor(() => expect(screen.getByText("420 / 500")).toBeTruthy());
+    // bar fill div is the one with inline background = amber
+    const bars = document.querySelectorAll('[style*="background: var(--amber)"]');
+    expect(bars.length).toBeGreaterThan(0);
+  });
+
   it("hides Usage section when getStats rejects", async () => {
     api.getStats.mockRejectedValue(new Error("network error"));
     await act(async () => render(<SetupPanel />));
