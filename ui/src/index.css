@@ -54,8 +54,12 @@ body {
   font-size: 14px;
 }
 
+@layer base {
+  button {
+    border: none;
+  }
+}
 button {
-  border: none;
   cursor: pointer;
   border-radius: var(--radius);
   font-size: 13px;
