@@ -455,6 +455,26 @@ class TestDocsNavbar:
         font_size = page.evaluate("el => window.getComputedStyle(el).fontSize", el)
         assert font_size == "14px", f"Docs link font-size {font_size!r} — expected '14px'."
 
+    def test_docs_link_active_indicator(self, docs_page):
+        """Docs nav link has orange bottom border (active indicator) on the docs site.
+
+        The Docs link is always 'active' on the docs site — the .docs-nav-link--active
+        class is baked into the element and the orange border is always shown.
+        """
+        page = docs_page
+        page.goto(f"{UI_URL}/docs/", timeout=30_000, wait_until="networkidle")
+        docs_link = page.locator(".docs-nav-link", has_text="Docs")
+        if not docs_link.is_visible():
+            pytest.skip("Docs nav link not visible (may be mobile viewport)")
+
+        el = docs_link.element_handle()
+        border_color = page.evaluate("el => window.getComputedStyle(el).borderBottomColor", el)
+        r, g, b, _ = _parse_rgb(border_color)
+        # #e8a020 == rgb(232, 160, 32) — orange active indicator
+        assert r > 200 and g > 100 and b < 100, (
+            f"Docs link border-bottom-color {border_color!r} — expected orange (#e8a020 / rgb(232,160,32))."
+        )
+
     def test_navbar_hamburger_visible_mobile(self, docs_page_mobile):
         """Hamburger menu button is visible on mobile viewport."""
         page = docs_page_mobile
