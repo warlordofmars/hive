@@ -134,6 +134,18 @@ describe("ApiKeysPanel", () => {
     expect(screen.queryByTestId("new-key-banner")).toBeNull();
   });
 
+  it("creates a key with custom scope", async () => {
+    const created = { ...SAMPLE_KEYS[1], plaintext_key: "hive_sk_xyz" };
+    api.listApiKeys.mockResolvedValue([]);
+    api.createApiKey.mockResolvedValue(created);
+    await act(async () => render(<ApiKeysPanel />));
+    await act(async () => fireEvent.click(screen.getByText("+ New Key")));
+    fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: "Read Only" } });
+    fireEvent.change(screen.getByLabelText(/Scope/i), { target: { value: "memories:read" } });
+    await act(async () => fireEvent.click(screen.getByText("Create")));
+    expect(api.createApiKey).toHaveBeenCalledWith("Read Only", "memories:read");
+  });
+
   it("shows error when create fails", async () => {
     api.listApiKeys.mockResolvedValue([]);
     api.createApiKey.mockRejectedValue(new Error("Create failed"));
