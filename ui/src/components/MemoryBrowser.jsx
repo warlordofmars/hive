@@ -4,6 +4,13 @@ import PropTypes from "prop-types";
 import { X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import { AlertDialog } from "./ui/alert-dialog.jsx";
+import { Badge } from "./ui/badge.jsx";
+import { Button } from "./ui/button.jsx";
+import { Card } from "./ui/card.jsx";
+import { Input } from "./ui/input.jsx";
+import { Label } from "./ui/label.jsx";
+import { Textarea } from "./ui/textarea.jsx";
 
 // ------------------------------------------------------------------
 // TagPicker — combobox that shows suggestions from known tags,
@@ -78,52 +85,28 @@ export function TagPicker({ knownTags, value, onSelect }) {
   }, [activeIndex]);
 
   return (
-    <div style={{ position: "relative", width: 160 }}>
+    <div className="relative w-40">
       {value ? (
         // Selected chip
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-            padding: "4px 8px",
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: 999,
-            fontSize: 12,
-            fontWeight: 600,
-            color: "var(--text)",
-            width: "100%",
-            boxSizing: "border-box",
-          }}
-        >
-          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--surface)] border border-[var(--border)] rounded-full text-xs font-semibold text-[var(--text)] w-full box-border">
+          <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
             {value}
           </span>
           <button
             type="button"
             aria-label="Clear tag filter"
             onClick={clearTag}
-            style={{
-              background: "transparent",
-              border: "none",
-              padding: 0,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              color: "var(--text-muted)",
-              flexShrink: 0,
-            }}
+            className="bg-transparent border-none p-0 cursor-pointer flex items-center text-[var(--text-muted)] shrink-0"
           >
             <X size={11} />
           </button>
         </div>
       ) : (
         // Input
-        <input
+        <Input
           id="tag-filter-input"
           role="combobox"
-          style={{ width: "100%" }}
+          className="w-full"
           placeholder="Filter by tag"
           value={inputValue}
           autoComplete="off"
@@ -143,21 +126,7 @@ export function TagPicker({ knownTags, value, onSelect }) {
           id="tag-suggestions"
           ref={listRef}
           role="listbox" /* NOSONAR — ARIA combobox pattern; native <select> cannot serve as a positioned overlay */
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            right: 0,
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            boxShadow: "0 4px 12px rgba(0,0,0,.12)",
-            maxHeight: 200,
-            overflowY: "auto",
-            zIndex: 100,
-            margin: 0,
-            padding: "4px 0",
-          }}
+          className="absolute top-[calc(100%+4px)] left-0 right-0 bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius)] shadow-lg max-h-48 overflow-y-auto z-[100] py-1"
         >
           {suggestions.map((t, i) => (
             <div
@@ -167,10 +136,8 @@ export function TagPicker({ knownTags, value, onSelect }) {
               tabIndex={-1}
               aria-selected={i === activeIndex}
               onMouseDown={() => selectTag(t)}
+              className="px-3 py-1.5 text-[13px] cursor-pointer"
               style={{
-                padding: "6px 12px",
-                fontSize: 13,
-                cursor: "pointer",
                 background: i === activeIndex ? "var(--accent)" : "transparent",
                 color: i === activeIndex ? "var(--accent-fg)" : "var(--text)",
               }}
@@ -207,6 +174,7 @@ export default function MemoryBrowser() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ key: "", value: "", tags: "" });
   const [focusedIndex, setFocusedIndex] = useState(-1);
+  const [pendingDelete, setPendingDelete] = useState(null);
   const searchDebounceRef = useRef(null);
   const listRef = useRef(null);
 
@@ -327,12 +295,13 @@ export default function MemoryBrowser() {
   }
 
   async function handleDelete(id) {
-    if (!confirm("Delete this memory?")) return;
     try {
       await api.deleteMemory(id);
       load();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setPendingDelete(null);
     }
   }
 
@@ -357,7 +326,7 @@ export default function MemoryBrowser() {
   useEffect(() => {
     if (focusedIndex >= 0 && listRef.current) {
       const li = listRef.current.children[focusedIndex];
-      li?.querySelector("button.card")?.focus();
+      li?.querySelector("[data-testid='memory-card']")?.focus();
     }
   }, [focusedIndex]);
 
@@ -380,118 +349,104 @@ export default function MemoryBrowser() {
   }
 
   return (
-    <div style={{ display: "flex", gap: 20 }}>
+    <div className="flex gap-5">
+      <AlertDialog
+        open={pendingDelete !== null}
+        title="Delete this memory?"
+        description="This action cannot be undone."
+        onConfirm={() => handleDelete(pendingDelete)}
+        onCancel={() => setPendingDelete(null)}
+      />
+
       {/* List */}
-      <div style={{ flex: 1 }}>
-        <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
-          <h2 style={{ flex: 1, fontSize: 18 }}>Memories</h2>
-          <input
-            style={{ width: 180 }}
+      <div className="flex-1">
+        <div className="flex gap-2.5 mb-4 items-center">
+          <h2 className="flex-1 text-lg font-semibold">Memories</h2>
+          <Input
+            className="w-44"
             placeholder="Search by meaning…"
             value={searchQuery}
             onChange={handleSearchQueryChange}
           />
           <TagPicker knownTags={knownTags} value={tagFilter} onSelect={handleTagSelect} />
-          <button className="primary" onClick={openCreate}>
-            + New
-          </button>
+          <Button onClick={openCreate}>+ New</Button>
         </div>
 
-        {error && <p style={{ color: "var(--danger)", marginBottom: 12 }}>{error}</p>}
-        {loading && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
+        {error && <p className="text-[var(--danger)] mb-3">{error}</p>}
+        {loading && <p className="text-[var(--text-muted)]">Loading…</p>}
 
         {!loading && memories.length === 0 && (
-          <div className="card" style={{ padding: 0 }}>
+          <Card className="p-0">
             <EmptyState
               variant="memories"
               title="No memories yet"
               description="Use the remember tool in your MCP client to store your first memory."
-              action={<button className="primary" onClick={openCreate}>+ New Memory</button>}
+              action={<Button onClick={openCreate}>+ New Memory</Button>}
             />
-          </div>
+          </Card>
         )}
 
-        <ul
-          ref={listRef}
-          style={{ display: "flex", flexDirection: "column", gap: 10, listStyle: "none", margin: 0, padding: 0 }}
-        >
+        <ul ref={listRef} className="flex flex-col gap-2.5 list-none m-0 p-0">
           {memories.map((m, i) => (
-            <li key={m.memory_id} style={{ display: "flex", alignItems: "flex-start", gap: 0 }}>
+            <li key={m.memory_id} className="flex items-start">
               <button
                 type="button"
-                className="card"
-                style={{ cursor: "pointer", borderLeft: "4px solid var(--accent)", flex: 1, textAlign: "left", background: "var(--surface)" }}
+                data-testid="memory-card"
+                className="bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius)] p-4 cursor-pointer border-l-4 border-l-[var(--accent)] flex-1 text-left"
                 onClick={() => openEdit(m)}
                 onFocus={() => setFocusedIndex(i)}
                 onKeyDown={(e) => handleCardKeyDown(e, m)}
               >
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
                     <strong>{m.key}</strong>
                     {m.score !== undefined && (
-                      <span
-                        className="badge"
-                        style={{
-                          background: "var(--surface)",
-                          color: "var(--text)",
-                          border: "1px solid var(--border)",
-                        }}
-                      >
-                        {Math.round(m.score * 100)}% match
-                      </span>
+                      <Badge>{Math.round(m.score * 100)}% match</Badge>
                     )}
                   </div>
-                  <p
-                    style={{
-                      marginTop: 4,
-                      color: "var(--text-muted)",
-                      fontSize: 13,
-                      whiteSpace: "pre-wrap",
-                    }}
-                  >
+                  <p className="mt-1 text-[var(--text-muted)] text-[13px] whitespace-pre-wrap">
                     {m.value.length > 160 ? m.value.slice(0, 160) + "…" : m.value}
                   </p>
-                  <div style={{ marginTop: 6 }}>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
                     {m.tags.map((t) => (
-                      <span key={t} className="badge">
-                        {t}
-                      </span>
+                      <Badge key={t}>{t}</Badge>
                     ))}
                   </div>
                 </div>
               </button>
-              <button
-                className="danger"
-                style={{ marginLeft: 12, flexShrink: 0, alignSelf: "center" }}
-                onClick={() => handleDelete(m.memory_id)}
+              <Button
+                variant="danger"
+                size="sm"
+                className="ml-3 shrink-0 self-center"
+                onClick={() => setPendingDelete(m.memory_id)}
               >
                 Delete
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
 
         {nextCursor && (
-          <div style={{ textAlign: "center", marginTop: 16 }}>
-            <button className="secondary" onClick={loadMore} disabled={loadingMore}>
+          <div className="text-center mt-4">
+            <Button variant="secondary" onClick={loadMore} disabled={loadingMore}>
               {loadingMore ? "Loading…" : "Load more"}
-            </button>
+            </Button>
           </div>
         )}
       </div>
 
       {/* Side form */}
       {(creating || editing) && (
-        <div style={{ width: 360 }}>
-          <div className="card">
-            <h3 style={{ marginBottom: 16, fontSize: 16 }}>
+        <div className="w-[360px]">
+          <Card>
+            <h3 className="mb-4 text-base font-semibold">
               {creating ? "New Memory" : `Edit: ${editing.key}`}
             </h3>
             <form onSubmit={creating ? handleCreate : handleUpdate}>
               {creating && (
-                <div style={{ marginBottom: 12 }}>
-                  <label htmlFor="memory-key">Key</label>
-                  <input
+                <div className="mb-3">
+                  <Label htmlFor="memory-key">Key</Label>
+                  <Input
                     id="memory-key"
                     required
                     value={form.key}
@@ -500,9 +455,9 @@ export default function MemoryBrowser() {
                   />
                 </div>
               )}
-              <div style={{ marginBottom: 12 }}>
-                <label htmlFor="memory-value">Value</label>
-                <textarea
+              <div className="mb-3">
+                <Label htmlFor="memory-value">Value</Label>
+                <Textarea
                   id="memory-value"
                   required
                   rows={6}
@@ -511,29 +466,23 @@ export default function MemoryBrowser() {
                   placeholder="Memory content…"
                 />
               </div>
-              <div style={{ marginBottom: 16 }}>
-                <label htmlFor="memory-tags">Tags (comma-separated)</label>
-                <input
+              <div className="mb-4">
+                <Label htmlFor="memory-tags">Tags (comma-separated)</Label>
+                <Input
                   id="memory-tags"
                   value={form.tags}
                   onChange={(e) => setForm({ ...form, tags: e.target.value })}
                   placeholder="tag1, tag2"
                 />
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="primary" type="submit">
-                  Save
-                </button>
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={closePanel}
-                >
+              <div className="flex gap-2">
+                <Button type="submit">Save</Button>
+                <Button variant="secondary" type="button" onClick={closePanel}>
                   Cancel
-                </button>
+                </Button>
               </div>
             </form>
-          </div>
+          </Card>
         </div>
       )}
     </div>

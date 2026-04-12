@@ -355,10 +355,10 @@ describe("AppShell", () => {
     expect(screen.getByRole("button", { name: /switch to light mode/i })).toBeTruthy();
   });
 
-  it("active tab has orange bottom border", async () => {
+  it("active tab has brand bottom border class", async () => {
     await act(async () => render(<App />));
     const memoriesBtn = screen.getByText("Memories");
-    expect(memoriesBtn.style.borderBottom).toContain("rgb(232, 160, 32)");
+    expect(memoriesBtn.className).toContain("border-b-brand");
   });
 
   it("version in footer links to /changelog", async () => {
@@ -376,23 +376,17 @@ describe("AppShell", () => {
     expect(screen.getByTestId("client-manager")).toBeTruthy();
   });
 
-  it("footer changelog link underlines on hover and resets on mouse out", async () => {
+  it("footer changelog link has hover:underline class", async () => {
     await act(async () => render(<App />));
     await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
     const link = screen.getByText("Hive 1.2.3").closest("a");
-    fireEvent.mouseOver(link);
-    expect(link.style.textDecoration).toBe("underline");
-    fireEvent.mouseOut(link);
-    expect(link.style.textDecoration).toBe("none");
+    expect(link.className).toContain("hover:underline");
   });
 
-  it("footer changelog link underlines on focus and resets on blur", async () => {
+  it("footer changelog link has focus:underline class", async () => {
     await act(async () => render(<App />));
     await waitFor(() => expect(screen.getByText("Hive 1.2.3")).toBeTruthy());
     const link = screen.getByText("Hive 1.2.3").closest("a");
-    fireEvent.focus(link);
-    expect(link.style.textDecoration).toBe("underline");
-    fireEvent.blur(link);
-    expect(link.style.textDecoration).toBe("none");
+    expect(link.className).toContain("focus:underline");
   });
 });

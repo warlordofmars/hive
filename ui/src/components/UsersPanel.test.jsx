@@ -1,6 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.js", () => ({
   api: {
@@ -28,13 +28,8 @@ const SAMPLE_USERS = [
 ];
 
 describe("UsersPanel", () => {
-  beforeEach(() => {
-    vi.stubGlobal("confirm", vi.fn(() => true));
-  });
-
   afterEach(() => {
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
   });
 
   it("shows loading state initially", async () => {
@@ -64,6 +59,16 @@ describe("UsersPanel", () => {
     expect(screen.getByText("Forbidden")).toBeTruthy();
   });
 
+  it("opens confirm dialog when Delete clicked", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    await act(async () => render(<UsersPanel />));
+
+    const deleteButtons = screen.getAllByText("Delete");
+    await act(async () => fireEvent.click(deleteButtons[0]));
+
+    expect(screen.getByText("Delete user?")).toBeTruthy();
+  });
+
   it("deletes user on confirm and removes row", async () => {
     api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
     api.deleteUser.mockResolvedValue(null);
@@ -72,17 +77,20 @@ describe("UsersPanel", () => {
     const deleteButtons = screen.getAllByText("Delete");
     await act(async () => fireEvent.click(deleteButtons[0]));
 
+    // Confirm in the dialog
+    await act(async () => fireEvent.click(screen.getAllByText("Delete").at(-1)));
+
     expect(api.deleteUser).toHaveBeenCalledWith("u1");
     await waitFor(() => expect(screen.queryByText("alice@example.com")).toBeNull());
   });
 
-  it("does not delete when confirm is cancelled", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => false));
+  it("does not delete when dialog is cancelled", async () => {
     api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
     await act(async () => render(<UsersPanel />));
 
     const deleteButtons = screen.getAllByText("Delete");
     await act(async () => fireEvent.click(deleteButtons[0]));
+    await act(async () => fireEvent.click(screen.getByText("Cancel")));
 
     expect(api.deleteUser).not.toHaveBeenCalled();
     expect(screen.getByText("alice@example.com")).toBeTruthy();
@@ -95,6 +103,7 @@ describe("UsersPanel", () => {
 
     const deleteButtons = screen.getAllByText("Delete");
     await act(async () => fireEvent.click(deleteButtons[0]));
+    await act(async () => fireEvent.click(screen.getAllByText("Delete").at(-1)));
 
     await waitFor(() => expect(screen.getByText("Delete failed")).toBeTruthy());
   });

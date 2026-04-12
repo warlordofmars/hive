@@ -2,11 +2,15 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import { AlertDialog } from "./ui/alert-dialog.jsx";
+import { Button } from "./ui/button.jsx";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table.jsx";
 
 export default function UsersPanel() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -26,21 +30,30 @@ export default function UsersPanel() {
   }, [load]);
 
   async function handleDelete(userId) {
-    if (!globalThis.confirm("Delete this user?")) return;
     try {
       await api.deleteUser(userId);
       setUsers((prev) => prev.filter((u) => u.user_id !== userId));
     } catch (e) {
       setError(e.message);
+    } finally {
+      setPendingDelete(null);
     }
   }
 
   if (loading) return <p>Loading…</p>;
-  if (error) return <p style={{ color: "var(--danger)" }}>{error}</p>;
+  if (error) return <p className="text-[var(--danger)]">{error}</p>;
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>Users</h2>
+      <AlertDialog
+        open={pendingDelete !== null}
+        title="Delete user?"
+        description="This will permanently remove the user account."
+        onConfirm={() => handleDelete(pendingDelete)}
+        onCancel={() => setPendingDelete(null)}
+      />
+
+      <h2 className="mb-4 font-semibold text-lg">Users</h2>
       {users.length === 0 ? (
         <EmptyState
           variant="users"
@@ -48,32 +61,30 @@ export default function UsersPanel() {
           description="Users appear here after they sign in for the first time via Google OAuth."
         />
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid var(--border)", textAlign: "left" }}>
-              <th style={{ padding: "8px 12px" }}>Email</th>
-              <th style={{ padding: "8px 12px" }}>Role</th>
-              <th style={{ padding: "8px 12px" }}>Last Login</th>
-              <th style={{ padding: "8px 12px" }} />
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Email</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Last Login</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {users.map((u) => (
-              <tr key={u.user_id} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={{ padding: "8px 12px" }}>{u.email}</td>
-                <td style={{ padding: "8px 12px" }}>{u.role}</td>
-                <td style={{ padding: "8px 12px" }}>
-                  {new Date(u.last_login_at).toLocaleString()}
-                </td>
-                <td style={{ padding: "8px 12px" }}>
-                  <button className="danger" onClick={() => handleDelete(u.user_id)}>
+              <TableRow key={u.user_id}>
+                <TableCell>{u.email}</TableCell>
+                <TableCell>{u.role}</TableCell>
+                <TableCell>{new Date(u.last_login_at).toLocaleString()}</TableCell>
+                <TableCell>
+                  <Button variant="danger" size="sm" onClick={() => setPendingDelete(u.user_id)}>
                     Delete
-                  </button>
-                </td>
-              </tr>
+                  </Button>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
     </div>
   );
