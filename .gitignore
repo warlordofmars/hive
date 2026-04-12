@@ -36,3 +36,4 @@ infra/cdk.out/
 
 # Claude Code
 .claude/
+.autonomous-progress
