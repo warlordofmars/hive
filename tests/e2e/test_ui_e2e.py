@@ -123,8 +123,11 @@ class TestUIE2E:
         tag_input.fill(unique_tag)
         tag_input.press("Enter")
 
-        page.wait_for_selector(f"text={memory_key}", timeout=30_000)
-        assert page.locator(f"text={memory_key}").first.is_visible()
+        # Wait for the filtered list to fully load before asserting visibility.
+        # Without this, wait_for_selector can find the card in the *old* (unfiltered)
+        # list and then is_visible() checks after that list has been replaced.
+        page.wait_for_load_state("networkidle")
+        page.wait_for_selector(f"text={memory_key}", state="visible", timeout=30_000)
 
     def test_clients_tab(self, browser_page):
         page = browser_page
