@@ -466,6 +466,11 @@ calls and document them in the PR description.
 When given one or more GitHub issue numbers, process them **sequentially**.
 Complete the full cycle for each issue before starting the next.
 
+When processing a batch of issues, after completing each issue cycle
+successfully, append the issue number to `.autonomous-progress` in the
+repo root. This allows an interrupted batch to be resumed by checking
+which issues are already recorded there.
+
 #### 1. Understand the issue
 
 ```bash
