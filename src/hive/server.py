@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -146,19 +146,31 @@ async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
     value: Annotated[str, "Content of the memory"],
     tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ttl_seconds: Annotated[
+        int | None, "Seconds until the memory expires. None = never expires."
+    ] = None,
     ctx: Context | None = None,
 ) -> str:
-    """Store or update a memory with optional tags."""
+    """Store or update a memory with optional tags and optional TTL."""
     t0 = time.monotonic()
     storage, client_id = _auth(ctx, required_scope="memories:write")
     tags = tags or []
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        if ttl_seconds is not None
+        else None
+    )
 
     # Check if a memory with this key already exists (upsert path)
     existing = storage.get_memory_by_key(key)
 
     if existing:
         # Idempotent: skip write and log if nothing changed
-        if existing.value == value and set(existing.tags) == set(tags):
+        if (
+            existing.value == value
+            and set(existing.tags) == set(tags)
+            and existing.expires_at == expires_at
+        ):
             logger.info(
                 "Memory unchanged",
                 extra={
@@ -170,6 +182,7 @@ async def remember(
             return f"Memory '{key}' unchanged."
         existing.value = value
         existing.tags = tags
+        existing.expires_at = expires_at
         existing.updated_at = datetime.now(timezone.utc)
         try:
             storage.put_memory(existing)
@@ -189,7 +202,9 @@ async def remember(
             check_memory_quota(owner_user_id, storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
-        memory = Memory(key=key, value=value, tags=tags, owner_client_id=client_id)
+        memory = Memory(
+            key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+        )
         try:
             storage.put_memory(memory)
         except ValueError as exc:

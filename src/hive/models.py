@@ -58,6 +58,7 @@ class Memory(BaseModel):
     updated_at: datetime = Field(default_factory=_now_utc)
     owner_client_id: str  # which OAuth client owns this memory
     owner_user_id: str | None = None  # which user owns this memory (None for pre-migration items)
+    expires_at: datetime | None = None  # optional TTL; None means never expires
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -81,6 +82,9 @@ class Memory(BaseModel):
         }
         if self.owner_user_id is not None:
             item["owner_user_id"] = self.owner_user_id
+        if self.expires_at is not None:
+            item["expires_at"] = self.expires_at.isoformat()
+            item["ttl"] = int(self.expires_at.timestamp())
         return item
 
     def to_dynamo_tag_items(self) -> list[dict[str, Any]]:
@@ -103,6 +107,9 @@ class Memory(BaseModel):
 
     @classmethod
     def from_dynamo(cls, item: dict[str, Any]) -> Memory:
+        expires_at = None
+        if ea := item.get("expires_at"):
+            expires_at = datetime.fromisoformat(ea)
         return cls(
             memory_id=item["memory_id"],
             key=item["key"],
@@ -112,7 +119,12 @@ class Memory(BaseModel):
             updated_at=datetime.fromisoformat(item["updated_at"]),
             owner_client_id=item["owner_client_id"],
             owner_user_id=item.get("owner_user_id"),
+            expires_at=expires_at,
         )
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and _now_utc() >= self.expires_at
 
 
 # ---------------------------------------------------------------------------
@@ -470,11 +482,17 @@ class MemoryCreate(BaseModel):
     key: str
     value: str
     tags: list[str] = Field(default_factory=list)
+    ttl_seconds: int | None = Field(
+        default=None, ge=1, description="Seconds until expiry. None = never expires."
+    )
 
 
 class MemoryUpdate(BaseModel):
     value: str | None = None
     tags: list[str] | None = None
+    ttl_seconds: int | None = Field(
+        default=None, ge=0, description="Seconds until expiry. 0 = clear TTL. None = no change."
+    )
 
 
 class MemoryResponse(BaseModel):
@@ -484,6 +502,7 @@ class MemoryResponse(BaseModel):
     tags: list[str]
     created_at: datetime
     updated_at: datetime
+    expires_at: datetime | None = None
 
     @classmethod
     def from_memory(cls, m: Memory) -> MemoryResponse:
@@ -494,6 +513,7 @@ class MemoryResponse(BaseModel):
             tags=m.tags,
             created_at=m.created_at,
             updated_at=m.updated_at,
+            expires_at=m.expires_at,
         )
 
 

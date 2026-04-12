@@ -10,7 +10,7 @@ Admins can access all memories.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
@@ -139,6 +139,8 @@ async def create_memory(
         existing.value = body.value
         existing.tags = body.tags
         existing.updated_at = datetime.now(timezone.utc)
+        if body.ttl_seconds is not None:
+            existing.expires_at = datetime.now(timezone.utc) + timedelta(seconds=body.ttl_seconds)
         try:
             storage.put_memory(existing)
         except ValueError as exc:
@@ -157,12 +159,16 @@ async def create_memory(
         check_memory_quota(owner_user_id, storage)
     except QuotaExceeded as exc:
         raise HTTPException(status_code=429, detail=exc.detail) from exc
+    expires_at = None
+    if body.ttl_seconds is not None:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=body.ttl_seconds)
     memory = Memory(
         key=body.key,
         value=body.value,
         tags=body.tags,
         owner_client_id=owner_user_id,
         owner_user_id=owner_user_id,
+        expires_at=expires_at,
     )
     try:
         storage.put_memory(memory)
@@ -319,6 +325,12 @@ async def update_memory(
         memory.value = body.value
     if body.tags is not None:
         memory.tags = body.tags
+    if body.ttl_seconds is not None:
+        memory.expires_at = (
+            None
+            if body.ttl_seconds == 0
+            else datetime.now(timezone.utc) + timedelta(seconds=body.ttl_seconds)
+        )
     memory.updated_at = datetime.now(timezone.utc)
 
     try:

@@ -437,6 +437,51 @@ class TestMemories:
 
 
 # ---------------------------------------------------------------------------
+# Memory TTL endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryTTL:
+    def test_create_with_ttl_returns_expires_at(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories", json={"key": "ttl-k", "value": "v", "ttl_seconds": 3600})
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["expires_at"] is not None
+
+    def test_create_without_ttl_expires_at_is_null(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories", json={"key": "no-ttl", "value": "v"})
+        assert resp.status_code == 201
+        assert resp.json()["expires_at"] is None
+
+    def test_upsert_with_ttl_updates_expires_at(self, client):
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "upsert-ttl", "value": "v"})
+        resp = tc.post(
+            "/api/memories", json={"key": "upsert-ttl", "value": "v2", "ttl_seconds": 7200}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] is not None
+
+    def test_patch_sets_ttl(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "patch-ttl", "value": "v"}).json()["memory_id"]
+        resp = tc.patch(f"/api/memories/{mid}", json={"ttl_seconds": 3600})
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] is not None
+
+    def test_patch_clears_ttl_with_zero(self, client):
+        tc, *_ = client
+        mid = tc.post(
+            "/api/memories", json={"key": "clear-ttl", "value": "v", "ttl_seconds": 3600}
+        ).json()["memory_id"]
+        resp = tc.patch(f"/api/memories/{mid}", json={"ttl_seconds": 0})
+        assert resp.status_code == 200
+        assert resp.json()["expires_at"] is None
+
+
+# ---------------------------------------------------------------------------
 # Client endpoints
 # ---------------------------------------------------------------------------
 

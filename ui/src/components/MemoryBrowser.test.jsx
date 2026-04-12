@@ -799,4 +799,86 @@ describe("MemoryBrowser", () => {
       timeout: 1000,
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // TTL / expiry
+  // ---------------------------------------------------------------------------
+
+  it("shows expiry badge for memories with expires_at", async () => {
+    const expiry = new Date("2027-01-15T00:00:00.000Z").toISOString();
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ expires_at: expiry })],
+      next_cursor: null,
+    });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    expect(screen.getByText(/Expires/)).toBeTruthy();
+  });
+
+  it("creates memory with TTL when Expires In is set", async () => {
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValue({ items: [], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "ttl-key" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "ttl-val" },
+    });
+    fireEvent.change(screen.getByLabelText("Expires in"), {
+      target: { value: "3600" },
+    });
+
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(api.createMemory).toHaveBeenCalledWith(
+      expect.objectContaining({ ttl_seconds: 3600 }),
+    );
+  });
+
+  it("updates memory with ttl_seconds 0 to clear TTL when form.ttl is empty", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.updateMemory.mockResolvedValue({});
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    fireEvent.click(getCard());
+
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("Memory content…").closest("form")),
+    );
+
+    expect(api.updateMemory).toHaveBeenCalledWith(
+      "m1",
+      expect.objectContaining({ ttl_seconds: 0 }),
+    );
+  });
+
+  it("updates memory with parsed ttl_seconds when TTL is set", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.updateMemory.mockResolvedValue({});
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    fireEvent.click(getCard());
+
+    fireEvent.change(screen.getByLabelText("Expires in"), {
+      target: { value: "86400" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("Memory content…").closest("form")),
+    );
+
+    expect(api.updateMemory).toHaveBeenCalledWith(
+      "m1",
+      expect.objectContaining({ ttl_seconds: 86400 }),
+    );
+  });
 });

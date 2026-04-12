@@ -174,6 +174,39 @@ class TestRemember:
         ):
             await remember("big-key", "x" * 1000, [], ctx=_make_ctx(jwt))
 
+    async def test_remember_with_ttl_sets_expires_at(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import remember
+
+        result = await remember("ttl-key", "ttl-val", [], ttl_seconds=3600, ctx=_make_ctx(jwt))
+        assert result == "Stored memory 'ttl-key'."
+        m = storage.get_memory_by_key("ttl-key")
+        assert m is not None
+        assert m.expires_at is not None
+
+    async def test_remember_without_ttl_no_expires_at(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import remember
+
+        await remember("no-ttl-key", "v", [], ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("no-ttl-key")
+        assert m is not None
+        assert m.expires_at is None
+
+    async def test_idempotent_with_same_ttl(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.server import remember
+
+        await remember("idem-ttl", "v", [], ttl_seconds=3600, ctx=_make_ctx(jwt))
+        m1 = storage.get_memory_by_key("idem-ttl")
+        assert m1 is not None
+        # Second call with same value but no ttl should NOT be idempotent
+        result = await remember("idem-ttl", "v", [], ttl_seconds=None, ctx=_make_ctx(jwt))
+        assert result == "Updated memory 'idem-ttl'."
+        m2 = storage.get_memory_by_key("idem-ttl")
+        assert m2 is not None
+        assert m2.expires_at is None
+
 
 # ---------------------------------------------------------------------------
 # recall

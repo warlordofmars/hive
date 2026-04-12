@@ -195,6 +195,67 @@ class TestMemoryStorage:
             with pytest.raises(ClientError):
                 storage.put_memory(m)
 
+    def test_put_and_get_memory_with_ttl(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        m = Memory(key="ttl-key", value="ttl-val", owner_client_id="c1", expires_at=expires_at)
+        storage.put_memory(m)
+        result = storage.get_memory_by_id(m.memory_id)
+        assert result is not None
+        assert result.expires_at is not None
+        assert abs((result.expires_at - expires_at).total_seconds()) < 1
+
+    def test_get_expired_memory_returns_none(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        m = Memory(key="expired-key", value="gone", owner_client_id="c1", expires_at=past)
+        storage.put_memory(m)
+        # DynamoDB TTL is eventually consistent; filter client-side
+        result = storage.get_memory_by_id(m.memory_id)
+        assert result is None
+
+    def test_get_memory_by_key_expired_returns_none(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        m = Memory(key="expired-key2", value="gone", owner_client_id="c1", expires_at=past)
+        storage.put_memory(m)
+        result = storage.get_memory_by_key("expired-key2")
+        assert result is None
+
+    def test_memory_serialise_ttl_in_dynamo(self):
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        m = Memory(key="k", value="v", owner_client_id="c1", expires_at=expires_at)
+        item = m.to_dynamo_meta()
+        assert "expires_at" in item
+        assert "ttl" in item
+        assert item["ttl"] == int(expires_at.timestamp())
+
+    def test_memory_deserialise_ttl_from_dynamo(self):
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        m = Memory(key="k", value="v", owner_client_id="c1", expires_at=expires_at)
+        item = m.to_dynamo_meta()
+        restored = Memory.from_dynamo(item)
+        assert restored.expires_at is not None
+        assert abs((restored.expires_at - expires_at).total_seconds()) < 1
+
+    def test_memory_is_expired_false_when_no_ttl(self):
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        assert not m.is_expired
+
+    def test_memory_is_expired_true_when_past(self):
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        m = Memory(key="k", value="v", owner_client_id="c1", expires_at=past)
+        assert m.is_expired
+
 
 # ---------------------------------------------------------------------------
 # Client tests
