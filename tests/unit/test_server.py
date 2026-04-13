@@ -157,6 +157,20 @@ class TestRemember:
         with pytest.raises(ToolError, match="Unauthorized"):
             await remember("k", "v", [], ctx=ctx)
 
+    async def test_auth_via_pydantic_meta_model(self, server_env):
+        """The Pydantic Meta model path (model_extra) is exercised by production
+        FastMCP; verify it works alongside the plain-dict path used in tests."""
+        from mcp.types import RequestParams
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        meta = RequestParams.Meta.model_validate({"Authorization": f"Bearer {jwt}"})
+        ctx = MagicMock()
+        ctx.request_context.meta = meta
+        result = await remember("pydantic-meta-key", "v", [], ctx=ctx)
+        assert result == "Stored memory 'pydantic-meta-key'."
+
     async def test_oversized_value_raises_tool_error(self, server_env):
         from unittest.mock import patch
 
