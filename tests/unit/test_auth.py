@@ -263,6 +263,20 @@ class TestOAuthDiscovery:
         assert "code_challenge_methods_supported" in data
         assert "S256" in data["code_challenge_methods_supported"]
 
+    def test_protected_resource_metadata(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.get("/.well-known/oauth-protected-resource")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "resource" in data
+        assert "/mcp" in data["resource"]
+        assert "authorization_servers" in data
+        assert len(data["authorization_servers"]) > 0
+        assert "scopes_supported" in data
+        assert "memories:read" in data["scopes_supported"]
+        assert "memories:write" in data["scopes_supported"]
+        assert data["bearer_methods_supported"] == ["header"]
+
 
 class TestOAuthRegister:
     def test_register_public_client(self, oauth_client):
@@ -277,7 +291,7 @@ class TestOAuthRegister:
         assert resp.status_code == 201
         data = resp.json()
         assert data["client_id"]
-        assert data["client_secret"] is None
+        assert "client_secret" not in data  # omitted for public clients (RFC 7591)
 
     def test_register_invalid_grant_type_returns_400(self, oauth_client):
         tc, *_ = oauth_client

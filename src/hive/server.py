@@ -23,12 +23,15 @@ from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.auth import AccessToken as FastMCPAccessToken
+from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
 from fastmcp.server.dependencies import get_http_request
+from pydantic import AnyHttpUrl
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
-from hive.auth.tokens import _origin_verify_secret, validate_bearer_token
+from hive.auth.tokens import ISSUER, _origin_verify_secret, validate_bearer_token
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
@@ -41,6 +44,28 @@ configure_logging("mcp")
 logger = get_logger("hive.server")
 
 _MEMORIES_READ_SCOPE = "memories:read"
+
+
+class HiveTokenVerifier(TokenVerifier):
+    """Wraps Hive token validation for FastMCP's built-in auth middleware.
+
+    Enables FastMCP to return HTTP 401 + WWW-Authenticate headers on
+    unauthenticated requests, triggering the OAuth flow in clients like
+    Claude Desktop.  The full validation (rate limit, scope) is still
+    enforced per-tool by _auth().
+    """
+
+    async def verify_token(self, token: str) -> FastMCPAccessToken | None:
+        try:
+            validated = validate_bearer_token(f"Bearer {token}", HiveStorage())
+            return FastMCPAccessToken(
+                token=token,
+                client_id=validated.client_id,
+                scopes=validated.scope.split(),
+                expires_at=int(validated.expires_at.timestamp()),
+            )
+        except ValueError:
+            return None
 
 
 class _OriginVerifyMiddleware(BaseHTTPMiddleware):
@@ -76,6 +101,13 @@ mcp = FastMCP(
         "Use the memory tools to store, retrieve, and organise information across "
         "conversations and agent runs."
     ),
+    auth=RemoteAuthProvider(
+        token_verifier=HiveTokenVerifier(),
+        authorization_servers=[AnyHttpUrl(ISSUER)],
+        base_url=ISSUER,
+        scopes_supported=["memories:read", "memories:write"],
+        resource_name="Hive",
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -110,10 +142,16 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
     except RuntimeError:
         pass
 
-    # Fallback: direct invocation or integration tests pass token via meta
+    # Fallback: direct invocation or integration tests pass token via meta.
+    # Tests inject a plain dict; FastMCP passes a Pydantic Meta model whose
+    # extra fields live in model_extra rather than being dict-accessible.
     if not auth_header and ctx and ctx.request_context and ctx.request_context.meta:
-        meta: dict[str, Any] = ctx.request_context.meta  # type: ignore[assignment]
-        auth_header = meta.get("Authorization") or meta.get("authorization")
+        meta = ctx.request_context.meta
+        if isinstance(meta, dict):
+            meta_dict: dict[str, Any] = meta
+        else:
+            meta_dict = getattr(meta, "model_extra", None) or {}
+        auth_header = meta_dict.get("Authorization") or meta_dict.get("authorization")
 
     try:
         token = validate_bearer_token(auth_header, storage)

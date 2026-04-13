@@ -297,16 +297,32 @@ class TestMCPToolsE2E:
 @pytest.mark.asyncio
 class TestMCPAuthE2E:
     async def test_invalid_token_rejected(self):
-        """Any tool call with a garbage Bearer token returns a ToolError (Unauthorized)."""
+        """Any tool call with a garbage Bearer token is rejected (401 or ToolError)."""
         import httpx
 
         async with httpx.AsyncClient(base_url=MCP_URL, timeout=30.0) as http:
-            r = await _call(http, "not-a-real-token", "recall", {"key": "any-key"})
+            resp = await http.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "recall", "arguments": {"key": "any-key"}},
+                },
+                headers={
+                    **_headers("not-a-real-token"),
+                },
+            )
+            # FastMCP may return 401 directly or 200 with a ToolError payload
+            if resp.status_code == 401:
+                return
+            assert resp.status_code == 200
+            r = resp.json()
             assert _is_error(r), "Expected ToolError for invalid token"
             assert "Unauthorized" in _text(r)
 
     async def test_missing_token_rejected(self):
-        """A request without an Authorization header returns a ToolError (Unauthorized)."""
+        """A request without an Authorization header is rejected (401 or ToolError)."""
         import httpx
 
         async with httpx.AsyncClient(base_url=MCP_URL, timeout=30.0) as http:
@@ -323,6 +339,9 @@ class TestMCPAuthE2E:
                     "Accept": "application/json, text/event-stream",
                 },
             )
+            # FastMCP may return 401 directly or 200 with a ToolError payload
+            if resp.status_code == 401:
+                return
             assert resp.status_code == 200
             r = resp.json()
             assert _is_error(r), "Expected ToolError for missing token"

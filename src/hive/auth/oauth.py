@@ -79,6 +79,25 @@ async def oauth_metadata(request: Request) -> JSONResponse:
     )
 
 
+@router.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+async def protected_resource_metadata() -> JSONResponse:
+    """RFC 9728 protected resource metadata.
+
+    Tells OAuth clients (e.g. Claude Desktop) which authorization server
+    issues valid tokens for the Hive MCP server.  CloudFront routes
+    /.well-known/* to this API Lambda, so the document must live here rather
+    than on the MCP Lambda.
+    """
+    return JSONResponse(
+        {
+            "resource": f"{ISSUER}/mcp",
+            "authorization_servers": [ISSUER],
+            "scopes_supported": ["memories:read", "memories:write"],
+            "bearer_methods_supported": ["header"],
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dynamic Client Registration
 # ---------------------------------------------------------------------------

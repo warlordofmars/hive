@@ -157,6 +157,20 @@ class TestRemember:
         with pytest.raises(ToolError, match="Unauthorized"):
             await remember("k", "v", [], ctx=ctx)
 
+    async def test_auth_via_pydantic_meta_model(self, server_env):
+        """The Pydantic Meta model path (model_extra) is exercised by production
+        FastMCP; verify it works alongside the plain-dict path used in tests."""
+        from mcp.types import RequestParams
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        meta = RequestParams.Meta.model_validate({"Authorization": f"Bearer {jwt}"})
+        ctx = MagicMock()
+        ctx.request_context.meta = meta
+        result = await remember("pydantic-meta-key", "v", [], ctx=ctx)
+        assert result == "Stored memory 'pydantic-meta-key'."
+
     async def test_oversized_value_raises_tool_error(self, server_env):
         from unittest.mock import patch
 
@@ -857,3 +871,28 @@ class TestRestoreMemory:
         read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
         with pytest.raises(ToolError, match="Insufficient scope"):
             await restore_memory("k", "ts", ctx=_make_ctx(read_only_jwt))
+
+
+# ---------------------------------------------------------------------------
+# HiveTokenVerifier
+# ---------------------------------------------------------------------------
+
+
+class TestHiveTokenVerifier:
+    async def test_valid_token_returns_access_token(self, server_env):
+        from hive.server import HiveTokenVerifier
+
+        _, client_id, jwt = server_env
+        verifier = HiveTokenVerifier()
+        result = await verifier.verify_token(jwt)
+        assert result is not None
+        assert result.client_id == client_id
+        assert "memories:read" in result.scopes
+        assert "memories:write" in result.scopes
+
+    async def test_invalid_token_returns_none(self, server_env):
+        from hive.server import HiveTokenVerifier
+
+        verifier = HiveTokenVerifier()
+        result = await verifier.verify_token("not-a-valid-token")
+        assert result is None
