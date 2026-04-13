@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer
+from pydantic import BaseModel, Field, model_serializer
 
 _DEFAULT_SCOPE = "memories:read memories:write"
 
