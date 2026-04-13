@@ -619,8 +619,8 @@ class ClientRegistrationResponse(BaseModel):
     client_id_issued_at: int  # Unix timestamp
 
     @model_serializer(mode="wrap")
-    def _drop_null_secret(self, handler: object) -> dict:  # type: ignore[override]
-        data = handler(self)  # type: ignore[call-arg]
+    def _drop_null_secret(self, handler: Any) -> dict:  # type: ignore[override]
+        data = handler(self)
         if data.get("client_secret") is None:
             data.pop("client_secret", None)
         return data
