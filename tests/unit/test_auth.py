@@ -291,7 +291,7 @@ class TestOAuthRegister:
         assert resp.status_code == 201
         data = resp.json()
         assert data["client_id"]
-        assert data["client_secret"] is None
+        assert "client_secret" not in data  # omitted for public clients (RFC 7591)
 
     def test_register_invalid_grant_type_returns_400(self, oauth_client):
         tc, *_ = oauth_client

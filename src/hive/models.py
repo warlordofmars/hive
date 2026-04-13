@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 _DEFAULT_SCOPE = "memories:read memories:write"
 
@@ -601,7 +601,12 @@ class ClientRegistrationRequest(BaseModel):
 
 
 class ClientRegistrationResponse(BaseModel):
-    """RFC 7591 dynamic client registration response."""
+    """RFC 7591 dynamic client registration response.
+
+    ``client_secret`` is omitted entirely for public clients (RFC 7591 §3.2.1)
+    rather than serialised as ``null``, which breaks strict Zod schemas in
+    clients such as mcp-remote.
+    """
 
     client_id: str
     client_secret: str | None = None
@@ -612,6 +617,13 @@ class ClientRegistrationResponse(BaseModel):
     scope: str
     token_endpoint_auth_method: str
     client_id_issued_at: int  # Unix timestamp
+
+    @model_serializer(mode="wrap")
+    def _drop_null_secret(self, handler: object) -> dict:  # type: ignore[override]
+        data = handler(self)  # type: ignore[call-arg]
+        if data.get("client_secret") is None:
+            data.pop("client_secret", None)
+        return data
 
     @classmethod
     def from_client(cls, c: OAuthClient) -> ClientRegistrationResponse:
