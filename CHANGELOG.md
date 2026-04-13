@@ -4,6 +4,14 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## v0.19.1 — 2026-04-13
+
+### Fixed
+
+- Omit `client_secret` from DCR response for public clients — `mcp-remote` Zod schema rejected `null` value, breaking Claude Desktop connections (#373)
+- MCP auth: `Meta.get()` error and missing HTTP 401 for OAuth clients (#371, #372)
+- E2e tests: accept HTTP 401 as valid auth rejection (#375)
+
 ## v0.19.0 — 2026-04-12
 
 ### Added
