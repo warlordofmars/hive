@@ -263,6 +263,20 @@ class TestOAuthDiscovery:
         assert "code_challenge_methods_supported" in data
         assert "S256" in data["code_challenge_methods_supported"]
 
+    def test_protected_resource_metadata(self, oauth_client):
+        tc, *_ = oauth_client
+        resp = tc.get("/.well-known/oauth-protected-resource")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "resource" in data
+        assert "/mcp" in data["resource"]
+        assert "authorization_servers" in data
+        assert len(data["authorization_servers"]) > 0
+        assert "scopes_supported" in data
+        assert "memories:read" in data["scopes_supported"]
+        assert "memories:write" in data["scopes_supported"]
+        assert data["bearer_methods_supported"] == ["header"]
+
 
 class TestOAuthRegister:
     def test_register_public_client(self, oauth_client):
