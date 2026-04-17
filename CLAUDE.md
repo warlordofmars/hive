@@ -466,10 +466,60 @@ calls and document them in the PR description.
 When given one or more GitHub issue numbers, process them **sequentially**.
 Complete the full cycle for each issue before starting the next.
 
+When given no specific issue number, use the selection algorithm in §0 to
+pick the next one from the queue.
+
 When processing a batch of issues, after completing each issue cycle
 successfully, append the issue number to `.autonomous-progress` in the
 repo root. This allows an interrupted batch to be resumed by checking
 which issues are already recorded there.
+
+#### 0. Pick the next issue (if none was given)
+
+Every open issue should carry three metadata labels:
+
+- **Status** — `status:ready`, `status:blocked`, `status:design-needed`,
+  or `status:needs-info`
+- **Priority** — `priority:p0` (ship this week) through `priority:p3`
+  (someday-maybe)
+- **Size** — `size:xs` (<1h), `size:s` (half-day), `size:m` (1–2 days),
+  `size:l` (3–5 days), `size:xl` (epic; break down before picking up)
+
+Pick the next issue using this deterministic queue:
+
+1. **Filter** to issues matching ALL of:
+   - `state:open`
+   - `status:ready` (exclude `status:blocked`, `status:design-needed`,
+     `status:needs-info`)
+   - no assignee (not already being worked on)
+   - not labelled `epic` (those are tracking issues, not implementation work)
+
+2. **Sort** by priority descending: `p0` > `p1` > `p2` > `p3`.
+   Missing priority label → treat as `p3`.
+
+3. **Break priority ties** by size ascending (smallest first):
+   `xs` > `s` > `m` > `l` > `xl`. Missing size label → treat as `m`.
+
+4. **Break remaining ties** by issue number ascending (oldest first).
+
+Saved GitHub query for the top of the queue:
+
+```
+is:issue is:open no:assignee label:status:ready -label:epic
+```
+
+Sort the result by label priority manually (GitHub search doesn't sort by
+label precedence).
+
+**Never pick** issues labelled `status:design-needed` or `status:needs-info`.
+If you believe one of those issues is actually ready, state the case in a
+comment and ask for the label to be changed — do not proceed unilaterally.
+
+**Never pick** `size:xl` issues. Ask the user to break them into smaller
+issues first.
+
+**Never pick** issues from the "Stop and ask" list below, even if labelled
+`status:ready`.
 
 #### 1. Understand the issue
 
