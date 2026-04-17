@@ -369,6 +369,56 @@ class TestListMemories:
 
 
 # ---------------------------------------------------------------------------
+# list_tags
+# ---------------------------------------------------------------------------
+
+
+class TestListTags:
+    async def test_returns_sorted_distinct_tags(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_tags, remember
+
+        ctx = _make_ctx(jwt)
+        await remember("a", "1", ["zebra", "alpha"], ctx=ctx)
+        await remember("b", "2", ["alpha", "mango"], ctx=ctx)
+        await remember("c", "3", [], ctx=ctx)
+
+        result = await list_tags(ctx=ctx)
+        assert result == {"tags": ["alpha", "mango", "zebra"], "count": 3}
+
+    async def test_empty_when_no_memories(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_tags
+
+        result = await list_tags(ctx=_make_ctx(jwt))
+        assert result == {"tags": [], "count": 0}
+
+    async def test_scoped_to_caller_client(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.models import Memory
+        from hive.server import list_tags, remember
+
+        await remember("mine", "v", ["owned"], ctx=_make_ctx(jwt))
+        # Write a memory belonging to a different client directly so we bypass auth
+        storage.put_memory(
+            Memory(key="theirs", value="v", tags=["not-mine"], owner_client_id="other-client")
+        )
+
+        result = await list_tags(ctx=_make_ctx(jwt))
+        assert result["tags"] == ["owned"]
+
+    async def test_requires_read_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import list_tags
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await list_tags(ctx=_make_ctx(write_only_jwt))
+
+
+# ---------------------------------------------------------------------------
 # summarize_context
 # ---------------------------------------------------------------------------
 

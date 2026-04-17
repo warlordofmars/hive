@@ -11,6 +11,7 @@ Tools:
   recall(key)                 — retrieve a memory by key
   forget(key)                 — delete a memory by key
   list_memories(tag)          — list memories by tag
+  list_tags()                 — list distinct tags for the caller's memories
   summarize_context(topic)    — synthesise memories into a summary
 """
 
@@ -562,6 +563,33 @@ async def list_memories(
     if next_cursor:
         result["next_cursor"] = next_cursor
     return result
+
+
+@mcp.tool()
+async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
+    """List all distinct tags currently in use across the caller's memories.
+
+    Returns tags sorted alphabetically. Useful for discovering the tag
+    namespace of an existing memory corpus before calling `list_memories`.
+    """
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    tags = storage.list_distinct_tags(client_id)
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Listed %d distinct tags",
+        len(tags),
+        extra={
+            "tool": "list_tags",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="list_tags")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_tags"
+    )
+    return {"tags": tags, "count": len(tags)}
 
 
 @mcp.tool()
