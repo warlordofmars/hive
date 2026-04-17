@@ -5,6 +5,16 @@ export default defineConfig({
   title: "Hive Docs",
   description: "Shared persistent memory for AI agents — documentation",
   cleanUrls: true,
+  sitemap: {
+    hostname: "https://hive.warlordofmars.net",
+    // VitePress drops `base` from the item URL when writing the sitemap,
+    // so prepend it here to match the deployed path at /docs/.
+    transformItems: (items) =>
+      items.map((item) => ({
+        ...item,
+        url: `docs/${item.url.replace(/^\//, "")}`,
+      })),
+  },
   head: [["link", { rel: "icon", type: "image/svg+xml", href: "/docs/favicon.svg" }]],
 
   themeConfig: {
