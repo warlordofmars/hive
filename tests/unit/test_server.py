@@ -358,6 +358,8 @@ class TestListMemories:
         keys = [m["key"] for m in result["items"]]
         assert "lst-a" in keys
         assert "lst-b" not in keys
+        # Agent attribution is surfaced on every item.
+        assert result["items"][0]["owner_client_id"] == client_id
 
     async def test_list_empty_tag_returns_empty(self, server_env):
         _, _, jwt = server_env
@@ -713,6 +715,7 @@ class TestSearchMemories:
         item = result["items"][0]
         assert item["key"] == "search-key"
         assert item["score"] == 0.88
+        assert item["owner_client_id"] == client_id
 
     async def test_returns_empty_when_no_index(self, server_env):
         from unittest.mock import patch

@@ -12,6 +12,7 @@ vi.mock("../api.js", () => ({
     deleteMemory: vi.fn(),
     listMemoryVersions: vi.fn(),
     restoreMemoryVersion: vi.fn(),
+    listClients: vi.fn(),
   },
 }));
 
@@ -248,6 +249,7 @@ describe("MemoryBrowser", () => {
     vi.clearAllMocks();
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
     api.searchMemories.mockResolvedValue({ items: [], count: 0 });
+    api.listClients.mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
@@ -1017,5 +1019,48 @@ describe("MemoryBrowser", () => {
     fireEvent.click(getCard());
     expect(screen.queryByText("History: test-key")).toBeNull();
     expect(screen.getByText("Edit: test-key")).toBeTruthy();
+  });
+
+  it("renders attribution badge with client name when client is known", async () => {
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ owner_client_id: "client-123" })],
+      next_cursor: null,
+    });
+    api.listClients.mockResolvedValue({
+      items: [{ client_id: "client-123", client_name: "My Agent" }],
+    });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => expect(screen.getByText("by My Agent")).toBeTruthy());
+  });
+
+  it("falls back to client id when name is not yet loaded", async () => {
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ owner_client_id: "client-xyz" })],
+      next_cursor: null,
+    });
+    api.listClients.mockResolvedValue({ items: [] });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => expect(screen.getByText("by client-xyz")).toBeTruthy());
+  });
+
+  it("omits attribution badge when owner_client_id is missing", async () => {
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory()],
+      next_cursor: null,
+    });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    expect(screen.queryByText(/^by /)).toBeNull();
+  });
+
+  it("swallows listClients errors and still renders memories", async () => {
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listClients.mockRejectedValue(new Error("network"));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
   });
 });

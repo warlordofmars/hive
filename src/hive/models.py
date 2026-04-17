@@ -785,6 +785,7 @@ class MemorySearchResult(BaseModel):
     key: str
     value: str
     tags: list[str]
+    owner_client_id: str | None
     score: float  # cosine similarity (0.0–1.0); higher = more relevant
     created_at: datetime
     updated_at: datetime
@@ -796,6 +797,7 @@ class MemorySearchResult(BaseModel):
             key=m.key,
             value=m.value,
             tags=m.tags,
+            owner_client_id=m.owner_client_id,
             score=score,
             created_at=m.created_at,
             updated_at=m.updated_at,

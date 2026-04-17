@@ -556,7 +556,15 @@ async def list_memories(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_memories"
     )
     result: dict[str, Any] = {
-        "items": [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories],
+        "items": [
+            {
+                "key": m.key,
+                "value": m.value,
+                "tags": m.tags,
+                "owner_client_id": m.owner_client_id,
+            }
+            for m in memories
+        ],
         "count": len(memories),
         "has_more": next_cursor is not None,
     }
