@@ -32,7 +32,7 @@ describe("PricingPage", () => {
 
   it("renders all included features", async () => {
     await act(async () => renderInRouter(<PricingPage />));
-    expect(screen.getByText(/Unlimited memories/)).toBeTruthy();
+    expect(screen.getByText(/Up to 500 memories/)).toBeTruthy();
     expect(screen.getByText(/Semantic search/)).toBeTruthy();
     expect(screen.getAllByText(/No credit card required/i).length).toBeGreaterThanOrEqual(1);
   });
