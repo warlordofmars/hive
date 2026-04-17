@@ -748,3 +748,85 @@ In all other cases, make a judgment call and proceed.
 - Use `pip` or `requirements.txt` — always use `uv`
 - Skip `inv pre-push` before creating a PR
 - Pin GitHub Actions to mutable version tags — use full commit SHAs
+
+## Backlog labels and milestones
+
+The selection algorithm in §Autonomous issue workflow §0 assumes every
+open implementation issue carries status + priority + size + area labels.
+This section defines the taxonomy and the creation rules that keep the
+queue trustworthy.
+
+### Status (one, required)
+
+- `status:ready` — fully scoped, queue-eligible
+- `status:blocked` — depends on another issue; body must name the blocker
+  with `Blocked by #N`. Not queue-eligible
+- `status:design-needed` — needs a decision before implementation. Not
+  queue-eligible
+- `status:needs-info` — waiting on reporter/user. Not queue-eligible
+
+### Priority (one, required)
+
+- `priority:p0` — compliance, security, or outage-adjacent; ship this week
+- `priority:p1` — ship this quarter
+- `priority:p2` — ship eventually; useful but not urgent
+- `priority:p3` — someday-maybe
+
+### Size (one, required)
+
+- `size:xs` — less than 1 hour
+- `size:s` — half a day
+- `size:m` — 1–2 days
+- `size:l` — 3–5 days
+- `size:xl` — a week or more; must be broken down before the agent picks
+  it up
+
+### Area (one or more, required)
+
+`ui`, `ux`, `a11y`, `api`, `mcp`, `auth`, `infra`, `ci`, `dx`, `sdk`,
+`security`, `compliance`, `docs`, `design`, `performance`, `observability`,
+`marketing`, `seo`, `growth`, `ops`, `reliability`.
+
+### Special labels
+
+- `epic` — tracking issue with sub-issue checklist; never queue-eligible
+- `bug` / `enhancement` / `chore` — issue type
+
+### Issue creation rules
+
+When filing a new issue:
+
+1. Use the GitHub issue template (defaults to `status:ready`)
+2. Add a `priority:*` label and a `size:*` label before leaving the page
+3. Add at least one area label
+4. If the issue is part of an existing epic, add `Part of #NNN` to the
+   body so the epic's checklist stays linked
+5. If the issue depends on another, add `Blocked by #NNN` to the body and
+   apply `status:blocked`
+
+The `label-check.yml` workflow enforces status + priority + size at PR
+merge time for any PR that contains `Closes #NNN`.
+
+### Milestones
+
+Keep **three** active milestones at any time — no more:
+
+1. **Current release** (e.g. `v0.20`) — what ships next
+2. **Themed hardening bucket** (e.g. `MVP-hardening`) — ship-blocking work
+   that's too large for the current release
+3. **`Backlog`** — accepted but unscheduled p2/p3 work
+
+Epics are **not** milestoned — they span multiple releases.
+
+Do not create future release milestones in advance; they become stockpiles
+and degrade the "what's next" signal. When the current release closes,
+create the next one and promote items from the hardening bucket.
+
+### Triage cadence (human, not agent)
+
+- **Weekly** — glance at issues created in the last 7 days; fix any
+  missing priority / size / area labels
+- **Monthly** — review the hardening bucket and promote shippable items
+  into the current release
+- **Quarterly** — review `priority:p3` and `status:design-needed` issues;
+  promote, rescope, or close. Don't let them rot
