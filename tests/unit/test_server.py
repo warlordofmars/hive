@@ -806,6 +806,81 @@ class TestSearchMemories:
 
         assert result == {"items": [], "count": 0, "query": "q"}
 
+    async def test_filter_tags_requires_all_tags(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "alpha", ["x", "y"], ctx=ctx)
+        await remember("b", "beta", ["x"], ctx=ctx)
+        await remember("c", "gamma", ["y"], ctx=ctx)
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        c = storage.get_memory_by_key("c")
+        mock_vs = _make_mock_vector_store(
+            [(a.memory_id, 0.9), (b.memory_id, 0.8), (c.memory_id, 0.7)]
+        )
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", filter_tags=["x", "y"], ctx=ctx)
+
+        # Only "a" has both x and y
+        assert [item["key"] for item in result["items"]] == ["a"]
+        assert result["count"] == 1
+
+    async def test_filter_tags_none_returns_all(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "v", ["x"], ctx=ctx)
+        a = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(a.memory_id, 0.9)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", ctx=ctx)
+
+        assert result["count"] == 1
+
+    async def test_filter_tags_requests_wider_candidate_pool(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import search_memories
+
+        _, _, jwt = server_env
+        mock_vs = _make_mock_vector_store([])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await search_memories("q", top_k=5, filter_tags=["x"], ctx=_make_ctx(jwt))
+
+        # When filter_tags is set, the vector search asks for the cap (50) so
+        # we can still return up to top_k matches after post-filtering.
+        assert mock_vs.search.call_args.kwargs["top_k"] == 50
+
+    async def test_filter_tags_trims_to_top_k_after_filter(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        for i in range(5):
+            await remember(f"k{i}", f"v{i}", ["x"], ctx=ctx)
+        mems = [storage.get_memory_by_key(f"k{i}") for i in range(5)]
+        mock_vs = _make_mock_vector_store(
+            [(m.memory_id, 0.9 - i * 0.1) for i, m in enumerate(mems)]
+        )
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", top_k=2, filter_tags=["x"], ctx=ctx)
+
+        assert result["count"] == 2
+        assert [item["key"] for item in result["items"]] == ["k0", "k1"]
+
     async def test_min_score_clamped_to_unit_interval(self, server_env):
         from unittest.mock import patch
 

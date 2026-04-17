@@ -667,6 +667,11 @@ async def search_memories(
         "Minimum similarity score (0.0–1.0). Results below this threshold are "
         "excluded. None disables filtering.",
     ] = None,
+    filter_tags: Annotated[
+        list[str] | None,
+        "Optional list of tags. Only memories carrying ALL of the given tags "
+        "are returned. None disables filtering.",
+    ] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Search memories by semantic similarity to a natural language query.
@@ -678,9 +683,14 @@ async def search_memories(
     storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     top_k = max(1, min(top_k, 50))
     threshold = max(0.0, min(1.0, min_score)) if min_score is not None else None
+    required_tags = set(filter_tags) if filter_tags else None
+
+    # When post-filtering by tags, request the full cap from the vector store
+    # so we have headroom to still return up to top_k matches after filtering.
+    search_top_k = 50 if required_tags else top_k
 
     try:
-        pairs = _vector_store().search(query, client_id, top_k=top_k)
+        pairs = _vector_store().search(query, client_id, top_k=search_top_k)
     except VectorIndexNotFoundError:
         return {"items": [], "count": 0, "query": query}
     except Exception:
@@ -691,6 +701,11 @@ async def search_memories(
         pairs = [(mid, score) for mid, score in pairs if score >= threshold]
 
     results = storage.hydrate_memory_ids(pairs)
+
+    if required_tags:
+        results = [(m, s) for m, s in results if required_tags.issubset(m.tags)]
+
+    results = results[:top_k]
 
     storage.log_event(
         ActivityEvent(
