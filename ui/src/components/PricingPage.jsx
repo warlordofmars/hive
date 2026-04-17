@@ -4,9 +4,10 @@ import { Check } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import PageLayout from "@/components/PageLayout";
+import { FREE_TIER_MEMORY_LIMIT } from "@/lib/limits";
 
 const INCLUDED = [
-  "Unlimited memories",
+  `Up to ${FREE_TIER_MEMORY_LIMIT} memories`,
   "Semantic search across all memories",
   "Works with Claude Code, Claude Desktop, Cursor, Continue, and any MCP client",
   "Multiple OAuth clients per account",

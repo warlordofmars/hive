@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import PageLayout from "@/components/PageLayout";
+import { FREE_TIER_MEMORY_LIMIT } from "@/lib/limits";
 
 const FAQS = [
   {
@@ -10,7 +11,7 @@ const FAQS = [
   },
   {
     q: "What are the usage limits?",
-    a: "There are no hard limits on the number of memories or API calls during the free period. We reserve the right to introduce fair-use limits in future to ensure service quality for all users — we'll give plenty of notice before doing so.",
+    a: `Free accounts can store up to ${FREE_TIER_MEMORY_LIMIT} memories. Once you reach the limit, new memories are rejected until you delete existing ones. Additional rate limits may apply to prevent abuse. We'll communicate any changes to these limits with plenty of notice.`,
   },
   {
     q: "Which MCP clients are supported?",

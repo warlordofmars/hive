@@ -30,7 +30,7 @@ All memories, OAuth clients, tokens, and activity log entries associated with yo
 
 ### How many memories can I store?
 
-There is currently no hard limit on the number of memories per account. Very large memory stores (tens of thousands of memories) may affect search and retrieval performance.
+Free accounts can store up to 500 memories. Once you reach the limit, new `remember` calls are rejected until you delete existing memories. Large memory stores may also affect search and retrieval performance.
 
 ### How large can a memory value be?
 

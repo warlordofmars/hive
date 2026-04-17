@@ -56,7 +56,7 @@ describe("FaqPage", () => {
     fireEvent.click(screen.getByText(/Is my data private/));
     fireEvent.click(screen.getByText(/What are the usage limits/));
     expect(screen.getByText(/Your memories are scoped to your account/)).toBeTruthy();
-    expect(screen.getByText(/no hard limits/)).toBeTruthy();
+    expect(screen.getByText(/up to 500 memories/)).toBeTruthy();
   });
 
   it("renders docs link", async () => {
