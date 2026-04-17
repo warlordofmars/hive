@@ -115,6 +115,30 @@ def server_env():
 
 
 # ---------------------------------------------------------------------------
+# ping
+# ---------------------------------------------------------------------------
+
+
+class TestPing:
+    async def test_returns_ok_for_valid_token(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import ping
+
+        result = await ping(ctx=_make_ctx(jwt))
+        assert result == "ok"
+
+    async def test_missing_auth_raises_tool_error(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import ping
+
+        ctx = MagicMock()
+        ctx.request_context.meta = {}
+        with pytest.raises(ToolError, match="Unauthorized"):
+            await ping(ctx=ctx)
+
+
+# ---------------------------------------------------------------------------
 # remember
 # ---------------------------------------------------------------------------
 

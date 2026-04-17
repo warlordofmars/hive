@@ -6,6 +6,7 @@ All tools validate the OAuth 2.1 Bearer token passed in the MCP request
 context before performing any storage operation.
 
 Tools:
+  ping()                      — health check (auth-only, no storage access)
   remember(key, value, tags)  — store a memory
   recall(key)                 — retrieve a memory by key
   forget(key)                 — delete a memory by key
@@ -184,6 +185,18 @@ def _vector_store() -> VectorStore:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def ping(ctx: Context | None = None) -> str:
+    """Lightweight health check — returns 'ok' when the Bearer token is valid.
+
+    Performs no storage reads or writes. A successful call confirms both
+    connectivity to the MCP server and that the caller's token is still valid.
+    """
+    _auth(ctx)
+    await emit_metric("ToolInvocations", operation="ping")
+    return "ok"
 
 
 @mcp.tool()
