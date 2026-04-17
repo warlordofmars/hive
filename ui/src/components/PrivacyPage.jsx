@@ -31,9 +31,9 @@ export default function PrivacyPage() {
           <Section title="1. Who We Are">
             <p>
               Hive is a shared persistent memory service for AI agents and teams. The Service is
-              operated by John Carter. Questions about this policy can be sent to{" "}
-              <a href="mailto:privacy@hive.so" className="text-brand no-underline hover:underline">
-                privacy@hive.so
+              operated by warlordofmars. Questions about this policy can be sent to{" "}
+              <a href="mailto:privacy@warlordofmars.net" className="text-brand no-underline hover:underline">
+                privacy@warlordofmars.net
               </a>
               .
             </p>
@@ -115,7 +115,7 @@ export default function PrivacyPage() {
 
           <Section title="6. Google Analytics 4">
             <p>
-              The Hive marketing site (hive.so and its sub-pages, including <code>/pricing</code>,
+              The Hive marketing site (hive.warlordofmars.net and its sub-pages, including <code>/pricing</code>,
               {" "}<code>/faq</code>, <code>/use-cases</code>, and <code>/docs</code>) uses Google
               Analytics 4 (GA4) to measure page views and navigation events. GA4 may set cookies
               in your browser and send anonymised usage data to Google.
@@ -165,8 +165,8 @@ export default function PrivacyPage() {
             </ul>
             <p>
               To exercise any of these rights, email{" "}
-              <a href="mailto:privacy@hive.so" className="text-brand no-underline hover:underline">
-                privacy@hive.so
+              <a href="mailto:privacy@warlordofmars.net" className="text-brand no-underline hover:underline">
+                privacy@warlordofmars.net
               </a>
               .
             </p>
@@ -193,8 +193,8 @@ export default function PrivacyPage() {
           <Section title="11. Contact">
             <p>
               For privacy questions or to exercise your data rights, contact us at{" "}
-              <a href="mailto:privacy@hive.so" className="text-brand no-underline hover:underline">
-                privacy@hive.so
+              <a href="mailto:privacy@warlordofmars.net" className="text-brand no-underline hover:underline">
+                privacy@warlordofmars.net
               </a>
               .
             </p>

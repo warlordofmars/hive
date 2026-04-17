@@ -74,6 +74,6 @@ describe("PrivacyPage", () => {
 
   it("renders the privacy contact email", async () => {
     await act(async () => renderInRouter(<PrivacyPage />));
-    expect(screen.getAllByText(/privacy@hive\.so/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/privacy@warlordofmars\.net/).length).toBeGreaterThan(0);
   });
 });
