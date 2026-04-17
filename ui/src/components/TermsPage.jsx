@@ -133,8 +133,8 @@ export default function TermsPage() {
           <Section title="10. Contact">
             <p>
               Questions about these Terms? Email us at{" "}
-              <a href="mailto:hello@hive.so" className="text-brand no-underline hover:underline">
-                hello@hive.so
+              <a href="mailto:hello@warlordofmars.net" className="text-brand no-underline hover:underline">
+                hello@warlordofmars.net
               </a>
               .
             </p>
