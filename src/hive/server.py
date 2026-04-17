@@ -634,6 +634,11 @@ async def summarize_context(
 async def search_memories(
     query: Annotated[str, "Natural language search query"],
     top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 10,
+    min_score: Annotated[
+        float | None,
+        "Minimum similarity score (0.0–1.0). Results below this threshold are "
+        "excluded. None disables filtering.",
+    ] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Search memories by semantic similarity to a natural language query.
@@ -644,6 +649,7 @@ async def search_memories(
     t0 = time.monotonic()
     storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     top_k = max(1, min(top_k, 50))
+    threshold = max(0.0, min(1.0, min_score)) if min_score is not None else None
 
     try:
         pairs = _vector_store().search(query, client_id, top_k=top_k)
@@ -652,6 +658,9 @@ async def search_memories(
     except Exception:
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
         return {"items": [], "count": 0, "query": query}
+
+    if threshold is not None:
+        pairs = [(mid, score) for mid, score in pairs if score >= threshold]
 
     results = storage.hydrate_memory_ids(pairs)
 
