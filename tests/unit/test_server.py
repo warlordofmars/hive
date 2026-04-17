@@ -703,6 +703,83 @@ class TestSearchMemories:
         with pytest.raises(ToolError, match="Insufficient scope"):
             await search_memories("q", ctx=_make_ctx(write_only_jwt))
 
+    async def test_min_score_filters_low_ranked_results(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("hi-key", "high match", ["t"], ctx=ctx)
+        await remember("lo-key", "low match", ["t"], ctx=ctx)
+        hi = storage.get_memory_by_key("hi-key")
+        lo = storage.get_memory_by_key("lo-key")
+        mock_vs = _make_mock_vector_store([(hi.memory_id, 0.9), (lo.memory_id, 0.3)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("anything", min_score=0.5, ctx=ctx)
+
+        assert result["count"] == 1
+        assert [item["key"] for item in result["items"]] == ["hi-key"]
+
+    async def test_min_score_none_returns_all(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "a", ["t"], ctx=ctx)
+        await remember("b", "b", ["t"], ctx=ctx)
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        mock_vs = _make_mock_vector_store([(a.memory_id, 0.9), (b.memory_id, 0.05)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", ctx=ctx)
+
+        assert result["count"] == 2
+
+    async def test_min_score_all_below_threshold_returns_empty(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("only-key", "v", ["t"], ctx=ctx)
+        m = storage.get_memory_by_key("only-key")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.2)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", min_score=0.9, ctx=ctx)
+
+        assert result == {"items": [], "count": 0, "query": "q"}
+
+    async def test_min_score_clamped_to_unit_interval(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("key", "v", ["t"], ctx=ctx)
+        m = storage.get_memory_by_key("key")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 1.0)])
+
+        # min_score > 1.0 gets clamped to 1.0; a perfect score still matches
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", min_score=5.0, ctx=ctx)
+
+        assert result["count"] == 1
+
+        # min_score < 0.0 gets clamped to 0.0; everything passes
+        mock_vs2 = _make_mock_vector_store([(m.memory_id, 0.0)])
+        with patch("hive.server._vector_store", return_value=mock_vs2):
+            result = await search_memories("q", min_score=-1.0, ctx=ctx)
+
+        assert result["count"] == 1
+
     async def test_remember_dual_writes_to_vector_store(self, server_env):
         """remember() calls upsert_memory on the VectorStore for new memories."""
         from unittest.mock import MagicMock, patch
