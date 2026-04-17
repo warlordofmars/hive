@@ -53,6 +53,7 @@ export default defineConfig({
         items: [
           { text: "How memory scoping works", link: "/concepts/memory-scoping" },
           { text: "Tags and organisation", link: "/concepts/tags" },
+          { text: "Key naming conventions", link: "/concepts/key-conventions" },
         ],
       },
       {

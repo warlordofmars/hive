@@ -287,6 +287,14 @@ describe("SetupPanel", () => {
     expect(bars.length).toBeGreaterThan(0);
   });
 
+  it("renders key naming convention tip with example and docs link", async () => {
+    await act(async () => render(<SetupPanel />));
+    expect(screen.getByText(/Tip — naming your memories/)).toBeTruthy();
+    expect(document.body.textContent).toContain("project:task/42:summary");
+    const docsLink = screen.getByText(/key naming conventions/);
+    expect(docsLink.getAttribute("href")).toBe("/docs/concepts/key-conventions");
+  });
+
   it("hides Usage section when getStats rejects", async () => {
     api.getStats.mockRejectedValue(new Error("network error"));
     await act(async () => render(<SetupPanel />));

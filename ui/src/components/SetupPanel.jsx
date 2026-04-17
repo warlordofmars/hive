@@ -190,6 +190,29 @@ export default function SetupPanel() {
         </div>
       </section>
 
+      <section className="mt-12 border-t border-[var(--border)] pt-8">
+        <h3 className="mb-3">Tip — naming your memories</h3>
+        <p className="text-[var(--text-muted)] mb-3 text-sm">
+          Keys are free-form, but a structured scheme keeps your store organised as it grows.
+          We recommend:
+        </p>
+        <pre className="bg-[var(--surface)] border border-[var(--border)] rounded p-3 text-[13px] overflow-x-auto text-[var(--text)] mb-3">
+          {"{domain}:{entity-type}/{entity-id}:{attribute}\n\nproject:task/42:summary\nuser:profile/alice:preferences\nsession:current:context"}
+        </pre>
+        <p className="text-[var(--text-muted)] text-sm">
+          See the{" "}
+          <a
+            href="/docs/concepts/key-conventions"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[var(--accent)] underline"
+          >
+            key naming conventions
+          </a>{" "}
+          docs for the full guide.
+        </p>
+      </section>
+
       {quota && (
         <section className="mt-12 border-t border-[var(--border)] pt-8">
           <h3 className="mb-4">Usage</h3>
