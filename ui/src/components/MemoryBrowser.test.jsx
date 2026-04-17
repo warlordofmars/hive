@@ -249,7 +249,8 @@ describe("MemoryBrowser", () => {
     vi.clearAllMocks();
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
     api.searchMemories.mockResolvedValue({ items: [], count: 0 });
-    api.listClients.mockResolvedValue({ items: [] });
+    // Default to a shape without `items` so the `?? []` fallback is exercised.
+    api.listClients.mockResolvedValue({});
   });
 
   afterEach(() => {
