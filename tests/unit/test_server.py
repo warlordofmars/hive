@@ -188,6 +188,52 @@ class TestRemember:
         ):
             await remember("big-key", "x" * 1000, [], ctx=_make_ctx(jwt))
 
+    async def test_value_at_limit_succeeds(self, server_env):
+        from hive.server import DEFAULT_MAX_VALUE_BYTES, remember
+
+        storage, _, jwt = server_env
+        value = "x" * DEFAULT_MAX_VALUE_BYTES
+        result = await remember("at-limit-key", value, [], ctx=_make_ctx(jwt))
+        assert result == "Stored memory 'at-limit-key'."
+
+    async def test_value_over_limit_raises_tool_error(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import DEFAULT_MAX_VALUE_BYTES, remember
+
+        _, _, jwt = server_env
+        actual = DEFAULT_MAX_VALUE_BYTES + 1
+        expected = f"Value exceeds maximum size of {DEFAULT_MAX_VALUE_BYTES} bytes ({actual} bytes provided)"
+        with pytest.raises(ToolError) as exc_info:
+            await remember("over-limit-key", "x" * actual, [], ctx=_make_ctx(jwt))
+        assert str(exc_info.value) == expected
+
+    async def test_value_size_counts_utf8_bytes_not_chars(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        # "€" is 3 bytes in UTF-8, so 5 chars = 15 bytes — exceeds 10 byte limit
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("HIVE_MAX_VALUE_BYTES", "10")
+            with pytest.raises(ToolError, match="15 bytes provided"):
+                await remember("euro-key", "€€€€€", [], ctx=_make_ctx(jwt))
+
+    async def test_value_size_limit_env_override(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("HIVE_MAX_VALUE_BYTES", "5")
+            with pytest.raises(ToolError, match="maximum size of 5 bytes"):
+                await remember("custom-limit-key", "x" * 6, [], ctx=_make_ctx(jwt))
+            # within the override limit is fine
+            result = await remember("within-key", "x" * 5, [], ctx=_make_ctx(jwt))
+            assert result == "Stored memory 'within-key'."
+
     async def test_remember_with_ttl_sets_expires_at(self, server_env):
         storage, client_id, jwt = server_env
         from hive.server import remember
