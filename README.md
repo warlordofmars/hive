@@ -82,6 +82,8 @@ AI agents are stateless — every new conversation starts blank. Hive gives them
 
 Multiple agents or team members connect with their own OAuth clients, so you can track who stored what and revoke access individually.
 
+Keys are opaque to the server, but a structured convention like `{domain}:{entity-type}/{entity-id}:{attribute}` (e.g. `project:task/42:summary`) keeps memory stores organised and collision-free as they grow. See the [key naming conventions](https://hive.warlordofmars.net/docs/concepts/key-conventions) docs page for details.
+
 ## Architecture
 
 Hive is a serverless, AWS-native stack deployed on Lambda + DynamoDB behind CloudFront:
