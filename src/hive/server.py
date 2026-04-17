@@ -45,6 +45,13 @@ logger = get_logger("hive.server")
 
 _MEMORIES_READ_SCOPE = "memories:read"
 
+DEFAULT_MAX_VALUE_BYTES = 10 * 1024
+
+
+def _max_value_bytes() -> int:
+    """Max UTF-8 byte size of a memory value. Configurable via HIVE_MAX_VALUE_BYTES."""
+    return int(os.environ.get("HIVE_MAX_VALUE_BYTES", str(DEFAULT_MAX_VALUE_BYTES)))
+
 
 class HiveTokenVerifier(TokenVerifier):
     """Wraps Hive token validation for FastMCP's built-in auth middleware.
@@ -182,7 +189,11 @@ def _vector_store() -> VectorStore:
 @mcp.tool()
 async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
-    value: Annotated[str, "Content of the memory"],
+    value: Annotated[
+        str,
+        f"Content of the memory. Maximum {_max_value_bytes()} bytes (UTF-8 encoded); "
+        "configurable via HIVE_MAX_VALUE_BYTES.",
+    ],
     tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
     ttl_seconds: Annotated[
         int | None, "Seconds until the memory expires. None = never expires."
@@ -192,6 +203,13 @@ async def remember(
     """Store or update a memory with optional tags and optional TTL."""
     t0 = time.monotonic()
     storage, client_id = _auth(ctx, required_scope="memories:write")
+
+    limit = _max_value_bytes()
+    actual = len(value.encode("utf-8"))
+    if actual > limit:
+        await emit_metric("ToolErrors", operation="remember")
+        raise ToolError(f"Value exceeds maximum size of {limit} bytes ({actual} bytes provided)")
+
     tags = tags or []
     expires_at = (
         datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
