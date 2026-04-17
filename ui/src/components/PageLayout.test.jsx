@@ -82,6 +82,15 @@ describe("PageLayout", () => {
     expect(screen.getAllByText("Clients").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("renders footer Terms and Privacy links", async () => {
+    const { container } = await act(async () =>
+      renderInRouter(<PageLayout><span /></PageLayout>)
+    );
+    const footer = container.querySelector("footer");
+    expect(within(footer).getByText("Terms")).toBeTruthy();
+    expect(within(footer).getByText("Privacy")).toBeTruthy();
+  });
+
   it("active nav link has orange bottom border for current page", async () => {
     const { container } = await act(async () =>
       renderInRouter(<PageLayout><span /></PageLayout>, "/pricing")

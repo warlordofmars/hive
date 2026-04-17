@@ -12,6 +12,8 @@ import LogViewer from "./components/LogViewer.jsx";
 import ChangelogPage from "./components/ChangelogPage.jsx";
 import FaqPage from "./components/FaqPage.jsx";
 import HomePage from "./components/HomePage.jsx";
+import PrivacyPage from "./components/PrivacyPage.jsx";
+import TermsPage from "./components/TermsPage.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import McpClientsPage from "./components/McpClientsPage.jsx";
 import PricingPage from "./components/PricingPage.jsx";
@@ -249,6 +251,8 @@ export default function App() {
         <Route path="/clients" element={<McpClientsPage />} />
         <Route path="/changelog" element={<ChangelogPage />} />
         <Route path="/status" element={<StatusPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/app" element={<AppShell />} />
         <Route path="/oauth/callback" element={<AuthCallback />} />
         <Route path="*" element={<Navigate to="/" replace />} />
