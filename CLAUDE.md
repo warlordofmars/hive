@@ -702,6 +702,40 @@ If the pipeline fails:
 
 Only move to the next issue when the `development` pipeline is green.
 
+#### 9. Check if the milestone is drained
+
+After the development pipeline is green, check whether the closed issue's
+milestone still has any open, non-epic issues:
+
+```bash
+# Resolve the milestone number from the issue just closed (via gh)
+MILESTONE=$(gh issue view <number> --json milestone --jq '.milestone.title')
+
+# If the milestone exists and matches a release-milestone pattern (vX.Y),
+# count the open non-epic issues remaining in it
+if [[ -n "$MILESTONE" && "$MILESTONE" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+  REMAINING=$(gh issue list \
+    --milestone "$MILESTONE" \
+    --state open \
+    --json labels \
+    --jq '[.[] | select(.labels | map(.name) | contains(["epic"]) | not)] | length')
+
+  if [ "$REMAINING" -eq 0 ]; then
+    echo "HUMAN_INPUT_REQUIRED: Milestone $MILESTONE has no open issues — ready to cut release?"
+    exit 0   # stop; do not pick up the next issue
+  fi
+fi
+```
+
+If the release milestone is drained, stop and surface the sentinel so the
+operator can decide whether to cut the release first or continue draining
+from `Backlog`. Do **not** unilaterally create a release branch — releases
+are a human decision per §Releasing to production.
+
+If the milestone is non-release (e.g. `Backlog`, `MVP-hardening`), or the
+issue has no milestone, or there are still open non-epic items: skip this
+step and pick up the next issue normally.
+
 ### Keeping CLAUDE.md current
 
 If you discover that CLAUDE.md is missing information needed to work
@@ -736,6 +770,9 @@ Halt and wait for human input **only** in these situations:
 - A change requires modifying `infra/stacks/hive_stack.py` in a way that
   could affect production resources
 - The same CI check has failed 3 times without a clear fix
+- A release milestone (pattern `vX.Y`) drains to zero open non-epic issues —
+  stop after step 9 and surface so the user can decide whether to cut the
+  release before continuing
 
 In all other cases, make a judgment call and proceed.
 
