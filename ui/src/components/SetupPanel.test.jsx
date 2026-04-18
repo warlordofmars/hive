@@ -3,7 +3,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.js", () => ({
-  api: { listMemories: vi.fn(), deleteAccount: vi.fn(), getStats: vi.fn() },
+  api: {
+    listMemories: vi.fn(),
+    deleteAccount: vi.fn(),
+    getStats: vi.fn(),
+    exportAccount: vi.fn(),
+  },
 }));
 
 import { api } from "../api.js";
@@ -299,5 +304,79 @@ describe("SetupPanel", () => {
     api.getStats.mockRejectedValue(new Error("network error"));
     await act(async () => render(<SetupPanel />));
     expect(screen.queryByText("Usage")).toBeNull();
+  });
+
+  describe("Export my data", () => {
+    let createObjectURL;
+    let revokeObjectURL;
+    let linkClick;
+
+    beforeEach(() => {
+      createObjectURL = vi.fn().mockReturnValue("blob:mock");
+      revokeObjectURL = vi.fn();
+      vi.stubGlobal("URL", {
+        ...globalThis.URL,
+        createObjectURL,
+        revokeObjectURL,
+      });
+      linkClick = vi.fn();
+      const realCreateElement = document.createElement.bind(document);
+      vi.spyOn(document, "createElement").mockImplementation((tag) => {
+        const el = realCreateElement(tag);
+        if (tag === "a") el.click = linkClick;
+        return el;
+      });
+    });
+
+    afterEach(() => {
+      document.createElement.mockRestore?.();
+    });
+
+    it("renders Export my data button and description", async () => {
+      await act(async () => render(<SetupPanel />));
+      expect(screen.getAllByText(/Export my data/).length).toBeGreaterThanOrEqual(1);
+      expect(document.body.textContent).toContain("Limited to one export every 5 minutes");
+    });
+
+    it("clicking Export my data triggers download of the returned blob", async () => {
+      const blob = new Blob(["{}"], { type: "application/json" });
+      api.exportAccount.mockResolvedValue({ blob, filename: "hive-export-u-20260418.json" });
+      await act(async () => render(<SetupPanel />));
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Export my data" })),
+      );
+      expect(api.exportAccount).toHaveBeenCalled();
+      expect(createObjectURL).toHaveBeenCalledWith(blob);
+      expect(linkClick).toHaveBeenCalled();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock");
+    });
+
+    it("displays error when export fails", async () => {
+      api.exportAccount.mockRejectedValue(new Error("Rate limit exceeded"));
+      await act(async () => render(<SetupPanel />));
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Export my data" })),
+      );
+      await waitFor(() => expect(screen.getByText("Rate limit exceeded")).toBeTruthy());
+    });
+
+    it("falls back to a generic message when rejection has no message", async () => {
+      api.exportAccount.mockRejectedValue({});
+      await act(async () => render(<SetupPanel />));
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Export my data" })),
+      );
+      await waitFor(() => expect(screen.getByText("Export failed")).toBeTruthy());
+    });
+
+    it("no-op when exportAccount returns null (auth-redirect path)", async () => {
+      api.exportAccount.mockResolvedValue(null);
+      await act(async () => render(<SetupPanel />));
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Export my data" })),
+      );
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(linkClick).not.toHaveBeenCalled();
+    });
   });
 });

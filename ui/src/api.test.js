@@ -392,4 +392,103 @@ describe("api", () => {
     expect(storage["hive_mgmt_token"]).toBeUndefined();
     expect(window.location.replace).toHaveBeenCalledWith("/");
   });
+
+  // ---------------------------------------------------------------------------
+  // exportAccount
+  // ---------------------------------------------------------------------------
+
+  function mockExportResponse({
+    ok = true,
+    status = 200,
+    blob = new Blob(),
+    disposition,
+    body,
+  } = {}) {
+    fetchMock.mockResolvedValue({
+      ok,
+      status,
+      statusText: "Error",
+      blob: () => Promise.resolve(blob),
+      json: () => Promise.resolve(body ?? {}),
+      headers: { get: () => disposition ?? null },
+    });
+  }
+
+  it("exportAccount sends Authorization header when token present", async () => {
+    storage["hive_mgmt_token"] = "user-token";
+    mockExportResponse({ disposition: 'attachment; filename="hive-export.json"' });
+    await api.exportAccount();
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toContain("/api/account/export");
+    expect(opts.headers.Authorization).toBe("Bearer user-token");
+  });
+
+  it("exportAccount omits Authorization when no token is stored", async () => {
+    mockExportResponse({ disposition: 'attachment; filename="x.json"' });
+    await api.exportAccount();
+    const opts = fetchMock.mock.calls[0][1];
+    expect(opts.headers.Authorization).toBeUndefined();
+  });
+
+  it("exportAccount returns blob + filename parsed from Content-Disposition", async () => {
+    const blob = new Blob(["{}"], { type: "application/json" });
+    mockExportResponse({
+      blob,
+      disposition: 'attachment; filename="hive-export-user-20260418.json"',
+    });
+    const result = await api.exportAccount();
+    expect(result.blob).toBe(blob);
+    expect(result.filename).toBe("hive-export-user-20260418.json");
+  });
+
+  it("exportAccount falls back to a default filename when disposition is missing", async () => {
+    mockExportResponse({ disposition: null });
+    const result = await api.exportAccount();
+    expect(result.filename).toBe("hive-export.json");
+  });
+
+  it("exportAccount surfaces error detail from JSON body on non-OK responses", async () => {
+    mockExportResponse({
+      ok: false,
+      status: 429,
+      body: { detail: "Exports are limited to one per 5 minutes." },
+    });
+    await expect(api.exportAccount()).rejects.toThrow(
+      "Exports are limited to one per 5 minutes.",
+    );
+  });
+
+  it("exportAccount falls back to statusText when the error body is not JSON", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Server Error",
+      json: () => Promise.reject(new Error("not json")),
+      headers: { get: () => null },
+    });
+    await expect(api.exportAccount()).rejects.toThrow("Server Error");
+  });
+
+  it("exportAccount surfaces generic 'Request failed' when error body is an empty object", async () => {
+    mockExportResponse({ ok: false, status: 500, body: {} });
+    await expect(api.exportAccount()).rejects.toThrow("Export failed");
+  });
+
+  it("exportAccount clears token and redirects on 401", async () => {
+    storage["hive_mgmt_token"] = "old-token";
+    const replace = vi.fn();
+    vi.stubGlobal("location", { replace });
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      headers: { get: () => null },
+      blob: () => Promise.resolve(new Blob()),
+      json: () => Promise.resolve({}),
+    });
+    const result = await api.exportAccount();
+    expect(result).toBeNull();
+    expect(storage["hive_mgmt_token"]).toBeUndefined();
+    expect(replace).toHaveBeenCalledWith("/");
+  });
 });

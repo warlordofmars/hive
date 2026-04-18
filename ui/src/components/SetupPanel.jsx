@@ -1,6 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
-import { AlertTriangle, Check } from "lucide-react";
+import { AlertTriangle, Check, Download } from "lucide-react";
 import { api } from "../api.js";
 import { Button } from "./ui/button.jsx";
 import { Card } from "./ui/card.jsx";
@@ -19,6 +19,28 @@ export default function SetupPanel() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [quota, setQuota] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError("");
+    try {
+      const result = await api.exportAccount();
+      if (!result) return;
+      const { blob, filename } = result;
+      const url = URL.createObjectURL(blob);
+      const link = globalThis.document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setExportError(e.message ?? "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   useEffect(function loadQuota() {
     api.getStats().then(function handleStats(s) {
@@ -222,6 +244,23 @@ export default function SetupPanel() {
           </div>
         </section>
       )}
+
+      <section className="mt-12 border-t border-[var(--border)] pt-8">
+        <h3 className="mb-2 flex items-center gap-2">
+          <Download size={18} />
+          Export my data
+        </h3>
+        <p className="text-[var(--text-muted)] mb-4 text-sm">
+          Download a JSON file containing your profile, memories, OAuth clients, and the last
+          90 days of activity. Limited to one export every 5 minutes.
+        </p>
+        {exportError && (
+          <p className="text-[var(--danger)] text-[13px] mb-3">{exportError}</p>
+        )}
+        <Button variant="secondary" onClick={handleExport} disabled={exporting}>
+          {exporting ? "Preparing…" : "Export my data"}
+        </Button>
+      </section>
 
       <section className="mt-12 border-t border-[var(--border)] pt-8">
         <h3 className="mb-2 flex items-center gap-2 text-[var(--danger)]">

@@ -54,6 +54,10 @@ Sign into the management UI and go to **Settings → Delete account**. This perm
 
 If you can't access your account, contact support.
 
+### How do I export my data?
+
+Sign into the management UI and click **Settings → Export my data**. You'll download a JSON file with your profile, all memories, OAuth clients, and the last 90 days of activity. The same data is available programmatically via `GET /api/account/export` (Bearer auth required). Rate-limited to one export per 5 minutes.
+
 ### Can I use Hive with multiple devices?
 
 Yes. Each device or client registers its own OAuth connection. They all share the same underlying memory store under your account.

@@ -180,3 +180,139 @@ class TestDeleteAccount:
     def test_requires_auth(self, unauthed_client):
         resp = unauthed_client.request("DELETE", "/api/account", json={"confirm": True})
         assert resp.status_code in (401, 403)
+
+
+class TestExportAccount:
+    def test_returns_json_bundle_with_all_sections(self, client):
+        import json
+
+        tc, storage = client
+        from hive.models import ActivityEvent, EventType, OAuthClient
+
+        # Add a client owned by the user and an activity event under it
+        c = OAuthClient(client_name="my-agent", owner_user_id=_USER_ID)
+        storage.put_client(c)
+        storage.log_event(
+            ActivityEvent(
+                event_type=EventType.memory_created,
+                client_id=c.client_id,
+                metadata={"key": "test-key"},
+            )
+        )
+
+        resp = tc.get("/api/account/export")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        disposition = resp.headers["content-disposition"]
+        assert "attachment" in disposition
+        assert f"hive-export-{_USER_ID}" in disposition
+
+        body = json.loads(resp.content)
+        assert set(body.keys()) == {
+            "exported_at",
+            "user",
+            "memories",
+            "clients",
+            "activity_log",
+        }
+        assert body["user"]["user_id"] == _USER_ID
+        assert body["user"]["email"] == "user@example.com"
+        assert len(body["memories"]) == 1
+        assert body["memories"][0]["key"] == "test-key"
+        assert any(client["client_id"] == c.client_id for client in body["clients"])
+        assert any(e["client_id"] == c.client_id for e in body["activity_log"])
+
+    def test_excludes_memories_from_other_users(self, client):
+        import json
+
+        tc, storage = client
+        from hive.models import Memory
+
+        storage.put_memory(
+            Memory(
+                key="someone-else",
+                value="v",
+                owner_client_id="other-client",
+                owner_user_id="other-user",
+            )
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        keys = [m["key"] for m in body["memories"]]
+        assert "someone-else" not in keys
+
+    def test_excludes_activity_events_from_other_clients(self, client):
+        import json
+
+        tc, storage = client
+        from hive.models import ActivityEvent, EventType
+
+        storage.log_event(
+            ActivityEvent(
+                event_type=EventType.memory_created,
+                client_id="not-my-client",
+                metadata={"key": "leak"},
+            )
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        client_ids = {e["client_id"] for e in body["activity_log"]}
+        assert "not-my-client" not in client_ids
+
+    def test_rate_limited_after_first_export(self, client):
+        tc, _ = client
+        first = tc.get("/api/account/export")
+        assert first.status_code == 200
+        # Drain the stream so the counter has been written.
+        _ = first.content
+
+        second = tc.get("/api/account/export")
+        assert second.status_code == 429
+        assert second.headers.get("retry-after") == "300"
+
+    def test_returns_404_if_user_not_found(self, client):
+        tc, storage = client
+        storage.delete_user(_USER_ID)
+        resp = tc.get("/api/account/export")
+        assert resp.status_code == 404
+
+    def test_requires_auth(self, unauthed_client):
+        resp = unauthed_client.get("/api/account/export")
+        assert resp.status_code in (401, 403)
+
+    def test_memory_expires_at_serialised_when_present(self, client):
+        import json
+        from datetime import datetime, timedelta, timezone
+
+        tc, storage = client
+        from hive.models import Memory
+
+        storage.put_memory(
+            Memory(
+                key="ttl-key",
+                value="v",
+                owner_client_id=_USER_ID,
+                owner_user_id=_USER_ID,
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        ttl_mem = next(m for m in body["memories"] if m["key"] == "ttl-key")
+        assert ttl_mem["expires_at"] is not None
+
+    def test_empty_sections_render_as_empty_arrays(self, client):
+        import json
+
+        tc, storage = client
+        # Remove the seeded memory so the memories section is empty
+        m = storage.get_memory_by_key("test-key")
+        storage.delete_memory(m.memory_id)
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        assert body["memories"] == []
+        assert body["clients"] == []
+        assert body["activity_log"] == []
