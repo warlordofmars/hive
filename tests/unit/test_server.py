@@ -1561,6 +1561,7 @@ class TestMcpToolAnnotations:
             ("recall", "Recall", True, None),
             ("forget", "Forget", False, True),
             ("forget_all", "Forget all (by tag)", False, True),
+            ("redact_memory", "Redact memory", False, True),
             ("memory_history", "Memory history", True, None),
             ("restore_memory", "Restore memory", False, False),
             ("list_memories", "List memories", True, None),
@@ -1680,6 +1681,167 @@ class TestRememberOptimisticLocking:
             pytest.raises(ToolError, match="Conflict"),
         ):
             await remember("lock-r2", "v2", [], version=m.version, ctx=_make_ctx(jwt))
+
+
+class TestRedactMemory:
+    """`redact_memory` tombstones a memory's value while preserving the record (#400)."""
+
+    async def test_redacts_existing_memory(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import redact_memory, remember
+
+        await remember("secret", "the wifi password is 1234", ["pii"], ctx=_make_ctx(jwt))
+        result = await redact_memory("secret", reason="pii leak", ctx=_make_ctx(jwt))
+        assert _text(result) == "Redacted memory 'secret'."
+
+        stored = storage.get_memory_by_key("secret")
+        assert stored.is_redacted is True
+        assert stored.value == "__redacted__"
+        assert stored.redacted_at is not None
+
+    async def test_recall_returns_sentinel_on_redacted(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import recall, redact_memory, remember
+
+        await remember("s", "raw secret", [], ctx=_make_ctx(jwt))
+        await redact_memory("s", reason="gdpr", ctx=_make_ctx(jwt))
+
+        result = await recall("s", ctx=_make_ctx(jwt))
+        text = _text(result)
+        assert "redacted" in text.lower()
+        assert "raw secret" not in text
+
+    async def test_list_memories_skips_redacted_by_default(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_memories, redact_memory, remember
+
+        ctx = _make_ctx(jwt)
+        await remember("visible", "keep me", ["r"], ctx=ctx)
+        await remember("hidden", "redact me", ["r"], ctx=ctx)
+        await redact_memory("hidden", ctx=ctx)
+
+        result = await list_memories("r", ctx=ctx)
+        keys = [i["key"] for i in _body(result)["items"]]
+        assert "visible" in keys
+        assert "hidden" not in keys
+
+    async def test_list_memories_include_redacted_surfaces_them(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_memories, redact_memory, remember
+
+        ctx = _make_ctx(jwt)
+        await remember("visible", "keep me", ["r2"], ctx=ctx)
+        await remember("hidden", "redact me", ["r2"], ctx=ctx)
+        await redact_memory("hidden", ctx=ctx)
+
+        result = await list_memories("r2", include_redacted=True, ctx=ctx)
+        keys = [i["key"] for i in _body(result)["items"]]
+        assert "visible" in keys
+        assert "hidden" in keys
+
+    async def test_search_memories_skips_redacted_by_default(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import redact_memory, remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "content about policy", ["t"], ctx=ctx)
+        await remember("b", "content about privacy", ["t"], ctx=ctx)
+        await redact_memory("b", ctx=ctx)
+
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        mock_vs = _make_mock_vector_store([(a.memory_id, 0.9), (b.memory_id, 0.8)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("content", ctx=ctx)
+
+        keys = [i["key"] for i in _body(result)["items"]]
+        assert "a" in keys
+        assert "b" not in keys
+
+    async def test_search_memories_include_redacted_surfaces_them(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import redact_memory, remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "content", ["t"], ctx=ctx)
+        await remember("b", "content", ["t"], ctx=ctx)
+        await redact_memory("b", ctx=ctx)
+
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        mock_vs = _make_mock_vector_store([(a.memory_id, 0.9), (b.memory_id, 0.8)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("content", include_redacted=True, ctx=ctx)
+
+        keys = [i["key"] for i in _body(result)["items"]]
+        assert "a" in keys
+        assert "b" in keys
+
+    async def test_missing_key_raises(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import redact_memory
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="No memory found"):
+            await redact_memory("no-such-key", ctx=_make_ctx(jwt))
+
+    async def test_double_redaction_is_idempotent(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import redact_memory, remember
+
+        await remember("dbl", "v", [], ctx=_make_ctx(jwt))
+        await redact_memory("dbl", ctx=_make_ctx(jwt))
+        result = await redact_memory("dbl", ctx=_make_ctx(jwt))
+        assert "already redacted" in _text(result)
+
+    async def test_audit_log_preserves_pre_redaction_value(self, server_env):
+        storage, _, jwt = server_env
+        from hive.models import EventType
+        from hive.server import redact_memory, remember
+
+        await remember("audit-r", "sensitive original value", [], ctx=_make_ctx(jwt))
+        await redact_memory("audit-r", reason="accidental leak", ctx=_make_ctx(jwt))
+
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        events = storage.get_audit_events_for_dates([today], event_type="memory_redacted")
+        assert len(events) >= 1
+        redaction = events[0]
+        assert redaction.metadata["previous_value"] == "sensitive original value"
+        assert redaction.metadata["reason"] == "accidental leak"
+        assert redaction.event_type == EventType.memory_redacted
+
+    async def test_vector_delete_failure_is_non_fatal(self, server_env):
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import redact_memory, remember
+
+        _, _, jwt = server_env
+        await remember("vd", "v", [], ctx=_make_ctx(jwt))
+
+        mock_vs = MagicMock()
+        mock_vs.delete_memory.side_effect = RuntimeError("bucket down")
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await redact_memory("vd", ctx=_make_ctx(jwt))
+        assert "Redacted" in _text(result)
+
+    async def test_requires_write_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import redact_memory
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await redact_memory("any", ctx=_make_ctx(read_only_jwt))
 
 
 class TestProgressNotifications:

@@ -652,6 +652,23 @@ async def recall(
         await emit_metric("ToolErrors", operation="recall")
         raise ToolError(f"No memory found for key '{key}'.")
 
+    # A redacted memory tombstone surfaces a safe sentinel — the fact that
+    # the memory once existed is itself the signal (#400).
+    if memory.is_redacted:
+        sentinel = (
+            f"Memory '{key}' was redacted on {memory.redacted_at.isoformat()}. Value removed."
+        )
+        _log(
+            storage,
+            ActivityEvent(
+                event_type=EventType.memory_recalled,
+                client_id=client_id,
+                metadata={"key": key, "redacted": True},
+            ),
+        )
+        await emit_metric("ToolInvocations", operation="recall")
+        return _tool_result(sentinel, storage, client_id, memory=memory)
+
     _log(
         storage,
         ActivityEvent(
@@ -785,6 +802,95 @@ async def forget_all(
     return _tool_result(f"Deleted {deleted} memories with tag '{tag}'.", storage, client_id)
 
 
+_REDACTION_SENTINEL = "__redacted__"
+
+
+@mcp.tool(
+    title="Redact memory",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def redact_memory(
+    key: Annotated[str, "Key of the memory to redact"],
+    reason: Annotated[
+        str | None,
+        "Optional reason written to the audit trail (PII, secret leak, etc.)",
+    ] = None,
+    ctx: Context | None = None,
+) -> str:
+    """Tombstone a memory: replace its value with a sentinel and record
+    ``redacted_at``, preserving the audit trail (#400).
+
+    Use this when the value contains content that must be removed (PII,
+    secret accidentally captured, etc.) but the fact that the memory
+    existed is itself meaningful. For full deletion, use ``forget``.
+    """
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
+
+    existing = storage.get_memory_by_key(key)
+    if existing is None:
+        await emit_metric("ToolErrors", operation="redact_memory")
+        raise ToolError(f"No memory found for key '{key}'.")
+    if existing.is_redacted:
+        return _tool_result(f"Memory '{key}' is already redacted.", storage, client_id)
+
+    # Record the pre-redaction value in the audit log BEFORE we overwrite
+    # it — the tombstone path is the only thing that preserves what was
+    # there when a reviewer needs to understand a redaction after-the-fact.
+    storage.log_audit_event(
+        ActivityEvent(
+            event_type=EventType.memory_redacted,
+            client_id=client_id,
+            metadata={
+                "key": key,
+                "memory_id": existing.memory_id,
+                "reason": reason,
+                "previous_value": existing.value,
+                "previous_tags": existing.tags,
+            },
+        )
+    )
+
+    existing.value = _REDACTION_SENTINEL
+    existing.redacted_at = datetime.now(timezone.utc)
+    existing.updated_at = existing.redacted_at
+    storage.put_memory(existing)
+    try:
+        _vector_store().delete_memory(existing.memory_id, client_id)
+    except Exception:
+        logger.warning("Vector delete on redaction failed (non-fatal)", exc_info=True)
+
+    # The user-visible activity log gets a sanitised entry so the Activity Log
+    # UI surfaces the redaction without leaking the pre-redaction value.
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_redacted,
+            client_id=client_id,
+            metadata={"key": key, "reason": reason},
+        )
+    )
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Redacted memory '%s'",
+        key,
+        extra={"tool": "redact_memory", "duration_ms": duration_ms, "status": "success"},
+    )
+    await emit_metric("ToolInvocations", operation="redact_memory")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="redact_memory",
+    )
+    return _tool_result(f"Redacted memory '{key}'.", storage, client_id)
+
+
 @mcp.tool(
     title="Memory history",
     annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
@@ -879,6 +985,10 @@ async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
     cursor: Annotated[str | None, "Pagination cursor from a previous call"] = None,
+    include_redacted: Annotated[
+        bool,
+        "Include tombstoned (redacted) memories in the result. False by default.",
+    ] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
@@ -887,6 +997,8 @@ async def list_memories(
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
+    if not include_redacted:
+        memories = [m for m in memories if not m.is_redacted]
     _log(
         storage,
         ActivityEvent(
@@ -1066,6 +1178,10 @@ async def search_memories(
     w_recency: Annotated[
         float, "Weight for recency decay against last_accessed_at/updated_at (default 0.1)"
     ] = DEFAULT_W_RECENCY,
+    include_redacted: Annotated[
+        bool,
+        "Include tombstoned (redacted) memories in the result. False by default.",
+    ] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Search memories using hybrid retrieval: semantic + keyword + recency.
@@ -1119,6 +1235,9 @@ async def search_memories(
             w_recency=w_recency,
         )
         scored.append((m, blended, sem, kw, rec))
+
+    if not include_redacted:
+        scored = [row for row in scored if not row[0].is_redacted]
 
     if threshold is not None:
         scored = [row for row in scored if row[1] >= threshold]
