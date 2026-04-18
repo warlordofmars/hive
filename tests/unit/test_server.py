@@ -1510,6 +1510,106 @@ class TestMcpToolAnnotations:
         assert tool.annotations.openWorldHint is False
 
 
+class TestRememberOptimisticLocking:
+    """`remember(key, value, version=...)` rejects stale writes with a
+    ToolError carrying the current state so the agent can reconcile."""
+
+    async def test_version_match_updates_successfully(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import recall, remember
+
+        await remember("lock-k", "v1", [], ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("lock-k")
+        result = await remember("lock-k", "v2", [], version=m.version, ctx=_make_ctx(jwt))
+        assert _text(result) == "Updated memory 'lock-k'."
+        assert (await recall("lock-k", ctx=_make_ctx(jwt))).content[0].text == "v2"
+
+    async def test_stale_version_raises_conflict(self, server_env):
+        import json as _json
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        storage, _, jwt = server_env
+        await remember("lock-s", "v1", [], ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("lock-s")
+        # A concurrent writer advances the version out from under us.
+        await remember("lock-s", "concurrent", [], ctx=_make_ctx(jwt))
+
+        with pytest.raises(ToolError) as exc_info:
+            await remember("lock-s", "mine", [], version=m.version, ctx=_make_ctx(jwt))
+
+        msg = str(exc_info.value)
+        assert "Conflict" in msg
+        # Tail of the message is a JSON payload with the conflict state.
+        payload = _json.loads(msg[msg.index("{") :])
+        assert payload["conflict"] is True
+        assert payload["attempted_version"] == m.version
+        assert payload["current_value"] == "concurrent"
+        assert payload["current_version"] != m.version
+
+    async def test_no_version_preserves_backwards_compat(self, server_env):
+        """Unconditional upsert still works when version param is omitted."""
+        storage, _, jwt = server_env
+        from hive.server import remember
+
+        await remember("lock-b", "v1", [], ctx=_make_ctx(jwt))
+        result = await remember("lock-b", "v2", [], ctx=_make_ctx(jwt))
+        assert _text(result) == "Updated memory 'lock-b'."
+        assert storage.get_memory_by_key("lock-b").value == "v2"
+
+    async def test_version_surfaces_in_recall_meta(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import recall, remember
+
+        await remember("lock-r", "v1", [], ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("lock-r")
+        result = await recall("lock-r", ctx=_make_ctx(jwt))
+        meta = _hive_meta(result)
+        assert meta["memory"]["key"] == "lock-r"
+        assert meta["memory"]["version"] == m.version
+
+    async def test_version_surfaces_in_list_memories_items(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_memories, remember
+
+        await remember("lock-l", "v1", ["locktag"], ctx=_make_ctx(jwt))
+        result = await list_memories("locktag", ctx=_make_ctx(jwt))
+        item = next(it for it in _body(result)["items"] if it["key"] == "lock-l")
+        assert "version" in item
+        assert item["version"]
+
+    async def test_conflict_raced_put_surfaces_as_tool_error(self, server_env):
+        """Covers the path where storage raises VersionConflict during the
+        put (e.g. the narrow race between the pre-check read and the
+        conditional write) — remember surfaces it as a ToolError."""
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+        from hive.storage import VersionConflict
+
+        storage, _, jwt = server_env
+        await remember("lock-r2", "v1", [], ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("lock-r2")
+
+        with (
+            patch.object(
+                storage.__class__,
+                "put_memory",
+                side_effect=VersionConflict(
+                    attempted_version=m.version,
+                    current_value="raced-in",
+                    current_version="newer",
+                ),
+            ),
+            pytest.raises(ToolError, match="Conflict"),
+        ):
+            await remember("lock-r2", "v2", [], version=m.version, ctx=_make_ctx(jwt))
+
+
 class TestProgressNotifications:
     """Long-running tools emit MCP ``notifications/progress`` events so
     clients can render a progress indicator. Clients that don't support

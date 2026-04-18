@@ -229,6 +229,91 @@ class TestMemoryStorage:
             with pytest.raises(ClientError):
                 storage.put_memory(m)
 
+    def test_put_memory_with_matching_version_succeeds(self, storage):
+        """expected_version on put_memory matches stored updated_at → write succeeds."""
+        from datetime import datetime, timezone
+
+        # Tags are set so the conditional-write branch also rewrites tag items.
+        m = Memory(key="ver-ok", value="v1", tags=["t1"], owner_client_id="c1")
+        storage.put_memory(m)
+        stored = storage.get_memory_by_id(m.memory_id)
+        assert stored is not None
+
+        stored.value = "v2"
+        stored.tags = ["t1", "t2"]
+        stored.updated_at = datetime.now(timezone.utc)  # mimics server.remember()
+        storage.put_memory(stored, expected_version=m.version)
+        result = storage.get_memory_by_id(m.memory_id)
+        assert result.value == "v2"
+        assert set(result.tags) == {"t1", "t2"}
+
+    def test_put_memory_with_stale_version_raises(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.storage import VersionConflict
+
+        m = Memory(key="ver-stale", value="v1", owner_client_id="c1")
+        storage.put_memory(m)
+
+        # Someone else writes first, moving the version forward (updated_at bumps).
+        m2 = storage.get_memory_by_id(m.memory_id)
+        m2.value = "v2"
+        m2.updated_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+        storage.put_memory(m2)
+
+        # Now a write pinned to the *original* version is rejected.
+        m.value = "stale"
+        with pytest.raises(VersionConflict) as exc_info:
+            storage.put_memory(m, expected_version=m.version)
+        assert exc_info.value.current_value == "v2"
+        assert exc_info.value.current_version != m.version
+
+    def test_put_memory_with_version_but_no_existing_item_raises(self, storage):
+        """Passing expected_version on a brand-new memory is a conflict (there's
+        nothing to lock against)."""
+        from hive.storage import VersionConflict
+
+        m = Memory(key="ver-missing", value="v1", owner_client_id="c1")
+        with pytest.raises(VersionConflict) as exc_info:
+            storage.put_memory(m, expected_version="2024-01-01T00:00:00+00:00")
+        assert exc_info.value.current_value is None
+        assert exc_info.value.current_version is None
+
+    def test_put_memory_conditional_check_failure_surfaces_as_version_conflict(self, storage):
+        """If the conditional put race fires after the pre-read, we re-read
+        and surface the real current state in VersionConflict."""
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        from hive.storage import VersionConflict
+
+        m = Memory(key="ver-race", value="v1", owner_client_id="c1")
+        storage.put_memory(m)
+        stored = storage.get_memory_by_id(m.memory_id)
+
+        stored.value = "v2"
+        stored.updated_at = datetime.now(timezone.utc)
+
+        # Only the conditional META put should fail; version-snapshot writes
+        # (SK=VERSION#…) must still succeed so execution reaches the conditional.
+        real_put = storage.table.put_item
+        error_response = {
+            "Error": {"Code": "ConditionalCheckFailedException", "Message": "mismatch"}
+        }
+
+        def selective(**kwargs):
+            if "ConditionExpression" in kwargs:
+                raise ClientError(error_response, "PutItem")
+            return real_put(**kwargs)
+
+        with (
+            patch.object(storage.table, "put_item", side_effect=selective),
+            pytest.raises(VersionConflict),
+        ):
+            storage.put_memory(stored, expected_version=m.version)
+
     def test_put_and_get_memory_with_ttl(self, storage):
         from datetime import datetime, timedelta, timezone
 

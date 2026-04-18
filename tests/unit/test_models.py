@@ -87,6 +87,15 @@ class TestMemory:
         assert m2.recall_count == 0
         assert m2.last_accessed_at is None
 
+    def test_version_reflects_updated_at(self):
+        """Memory.version is the updated_at isoformat — advances on every write."""
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        assert m.version == m.updated_at.isoformat()
+        old = m.version
+        m.updated_at = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        assert m.version != old
+        assert m.version == m.updated_at.isoformat()
+
 
 class TestOAuthClient:
     def test_defaults(self):

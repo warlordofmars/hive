@@ -21,7 +21,7 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from hive.models import (
@@ -56,6 +56,26 @@ REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
 AUTH_CODE_TTL_SECONDS = 300  # 5 minutes
 PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
 MGMT_PENDING_STATE_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
+
+
+class VersionConflict(Exception):
+    """Raised by put_memory when an optimistic-lock version check fails (#391).
+
+    Carries the state the caller needs to compare-and-retry without an
+    extra round-trip: the attempted version, the actual current value,
+    and the actual current version.
+    """
+
+    def __init__(
+        self,
+        attempted_version: str,
+        current_value: str | None,
+        current_version: str | None,
+    ) -> None:
+        self.attempted_version = attempted_version
+        self.current_value = current_value
+        self.current_version = current_version
+        super().__init__(f"Memory was updated since version {attempted_version!r}")
 
 
 def _now() -> datetime:
@@ -93,27 +113,68 @@ class HiveStorage:
     # Memory CRUD
     # ------------------------------------------------------------------
 
-    def put_memory(self, memory: Memory) -> None:
+    def put_memory(self, memory: Memory, *, expected_version: str | None = None) -> None:
         """Write (create or replace) a memory and all its tag items.
 
         When replacing an existing memory, the previous state is snapshotted
         as a VERSION item so it can be retrieved via list_memory_versions.
+
+        If ``expected_version`` is provided, the META item is written with a
+        conditional expression requiring the stored ``updated_at`` to match
+        — supporting optimistic locking (#391). Raises ``VersionConflict``
+        if the stored version has moved on since the caller read it.
         """
-        # First delete old tag items if the memory already exists
         existing_raw = self._get_memory_meta(memory.memory_id)
+        if expected_version is not None:
+            if existing_raw is None:
+                raise VersionConflict(
+                    attempted_version=expected_version,
+                    current_value=None,
+                    current_version=None,
+                )
+            current = Memory.from_dynamo(existing_raw)
+            if current.version != expected_version:
+                raise VersionConflict(
+                    attempted_version=expected_version,
+                    current_value=current.value,
+                    current_version=current.version,
+                )
+
         if existing_raw:
             old = Memory.from_dynamo(existing_raw)
             self._delete_tag_items(old)
             self.save_memory_version(old)
 
+        meta_item = memory.to_dynamo_meta()
         try:
-            with self.table.batch_writer() as batch:
-                batch.put_item(Item=memory.to_dynamo_meta())
-                for tag_item in memory.to_dynamo_tag_items():
-                    batch.put_item(Item=tag_item)
+            if expected_version is not None:
+                # Conditional put on the META item to close the TOCTOU window
+                # between the read above and the write below. Tag items get
+                # rewritten unconditionally — they carry no value state and
+                # are rebuilt from the memory's tag list on every put.
+                self.table.put_item(
+                    Item=meta_item,
+                    ConditionExpression=Attr("updated_at").eq(expected_version),
+                )
+                with self.table.batch_writer() as batch:
+                    for tag_item in memory.to_dynamo_tag_items():
+                        batch.put_item(Item=tag_item)
+            else:
+                with self.table.batch_writer() as batch:
+                    batch.put_item(Item=meta_item)
+                    for tag_item in memory.to_dynamo_tag_items():
+                        batch.put_item(Item=tag_item)
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
             msg = exc.response["Error"]["Message"]
+            if code == "ConditionalCheckFailedException":
+                latest = self._get_memory_meta(memory.memory_id)
+                latest_mem = Memory.from_dynamo(latest) if latest else None
+                raise VersionConflict(
+                    attempted_version=expected_version or "",
+                    current_value=latest_mem.value if latest_mem else None,
+                    current_version=latest_mem.version if latest_mem else None,
+                ) from exc
             if code == "ValidationException" and "size" in msg.lower():
                 raise ValueError(
                     "Memory value is too large to store (DynamoDB 400 KB item limit exceeded)."
