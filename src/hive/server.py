@@ -36,6 +36,15 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
 from hive.auth.tokens import ISSUER, _origin_verify_secret, validate_bearer_token
+from hive.hybrid_search import (
+    DEFAULT_W_KEYWORD,
+    DEFAULT_W_RECENCY,
+    DEFAULT_W_SEMANTIC,
+    blend_score,
+    keyword_score,
+    recency_score,
+    tokenize,
+)
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
@@ -992,7 +1001,7 @@ async def search_memories(
     top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 10,
     min_score: Annotated[
         float | None,
-        "Minimum similarity score (0.0–1.0). Results below this threshold are "
+        "Minimum blended score (0.0–1.0). Results below this threshold are "
         "excluded. None disables filtering.",
     ] = None,
     filter_tags: Annotated[
@@ -1000,12 +1009,24 @@ async def search_memories(
         "Optional list of tags. Only memories carrying ALL of the given tags "
         "are returned. None disables filtering.",
     ] = None,
+    w_semantic: Annotated[
+        float, "Weight for semantic/vector similarity (default 0.6)"
+    ] = DEFAULT_W_SEMANTIC,
+    w_keyword: Annotated[
+        float, "Weight for keyword (term-frequency) match (default 0.3)"
+    ] = DEFAULT_W_KEYWORD,
+    w_recency: Annotated[
+        float, "Weight for recency decay against last_accessed_at/updated_at (default 0.1)"
+    ] = DEFAULT_W_RECENCY,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Search memories by semantic similarity to a natural language query.
+    """Search memories using hybrid retrieval: semantic + keyword + recency.
 
-    Returns memories ranked by relevance.  ``score`` ranges from 0.0 to 1.0
-    where higher means more semantically similar to the query.
+    Final score is a weighted sum of (a) cosine similarity from the vector
+    store, (b) a term-frequency keyword match, and (c) an exponential
+    recency decay. Weights are re-normalised to sum to 1.0; pass any
+    relative weighting. Per-signal sub-scores are returned on each item
+    for debugging.
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
@@ -1013,9 +1034,10 @@ async def search_memories(
     threshold = max(0.0, min(1.0, min_score)) if min_score is not None else None
     required_tags = set(filter_tags) if filter_tags else None
 
-    # When post-filtering by tags, request the full cap from the vector store
-    # so we have headroom to still return up to top_k matches after filtering.
-    search_top_k = 50 if required_tags else top_k
+    # Always request a wider candidate pool than top_k so keyword + recency
+    # blending has headroom to re-rank, and (if tag filtering is on) so the
+    # post-filter still leaves up to top_k survivors.
+    search_top_k = 50 if required_tags else min(max(top_k * 3, 10), 50)
 
     await _report_progress(ctx, 0, 3, f"Running vector search for '{query}'...")
     try:
@@ -1026,33 +1048,53 @@ async def search_memories(
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
         return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
 
-    if threshold is not None:
-        pairs = [(mid, score) for mid, score in pairs if score >= threshold]
-
     await _report_progress(
         ctx, 1, 3, f"Vector search returned {len(pairs)} candidates; hydrating..."
     )
-    results = storage.hydrate_memory_ids(pairs)
+    hydrated = storage.hydrate_memory_ids(pairs)
+
+    # Score each hydrated memory. sem_map lets us pair each Memory with its
+    # original cosine similarity; absent memories (hydrate dropped expired
+    # ones) are simply skipped.
+    query_tokens = tokenize(query)
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[Memory, float, float, float, float]] = []
+    for m, sem in hydrated:
+        kw = keyword_score(query_tokens, m.value)
+        rec = recency_score(m, now=now)
+        blended = blend_score(
+            semantic=sem,
+            keyword=kw,
+            recency=rec,
+            w_semantic=w_semantic,
+            w_keyword=w_keyword,
+            w_recency=w_recency,
+        )
+        scored.append((m, blended, sem, kw, rec))
+
+    if threshold is not None:
+        scored = [row for row in scored if row[1] >= threshold]
 
     if required_tags:
-        results = [(m, s) for m, s in results if required_tags.issubset(m.tags)]
+        scored = [row for row in scored if required_tags.issubset(row[0].tags)]
 
-    results = results[:top_k]
-    await _report_progress(ctx, 2, 3, f"Ranked {len(results)} result(s); returning.")
+    scored.sort(key=lambda row: row[1], reverse=True)
+    scored = scored[:top_k]
+    await _report_progress(ctx, 2, 3, f"Ranked {len(scored)} result(s); returning.")
 
     _log(
         storage,
         ActivityEvent(
             event_type=EventType.memory_searched,
             client_id=client_id,
-            metadata={"query": query, "result_count": len(results)},
+            metadata={"query": query, "result_count": len(scored)},
         ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Searched memories for '%s', %d result(s)",
         query,
-        len(results),
+        len(scored),
         extra={
             "tool": "search_memories",
             "duration_ms": duration_ms,
@@ -1069,10 +1111,16 @@ async def search_memories(
     return _tool_result(
         {
             "items": [
-                MemorySearchResult.from_memory_and_score(m, score).model_dump()
-                for m, score in results
+                MemorySearchResult.from_memory_and_score(
+                    m,
+                    blended,
+                    semantic_score=sem,
+                    keyword_score=kw,
+                    recency_score=rec,
+                ).model_dump()
+                for m, blended, sem, kw, rec in scored
             ],
-            "count": len(results),
+            "count": len(scored),
             "query": query,
         },
         storage,

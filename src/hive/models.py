@@ -803,21 +803,37 @@ class ApiKeyCreateResponse(ApiKeyResponse):
 
 
 class MemorySearchResult(BaseModel):
-    """A memory returned by semantic search, with a relevance score."""
+    """A memory returned by search, with its blended relevance score.
+
+    ``score`` is the final blended value on [0, 1]. The per-signal sub-scores
+    (``semantic_score`` / ``keyword_score`` / ``recency_score``) are included
+    for debugging and agent-side re-ranking when hybrid mode is on (#481).
+    """
 
     memory_id: str
     key: str
     value: str
     tags: list[str]
     owner_client_id: str | None
-    score: float  # cosine similarity (0.0–1.0); higher = more relevant
+    score: float  # blended score (0.0–1.0); higher = more relevant
+    semantic_score: float = 0.0
+    keyword_score: float = 0.0
+    recency_score: float = 0.0
     created_at: datetime
     updated_at: datetime
     recall_count: int = 0
     last_accessed_at: datetime | None = None
 
     @classmethod
-    def from_memory_and_score(cls, m: Memory, score: float) -> MemorySearchResult:
+    def from_memory_and_score(
+        cls,
+        m: Memory,
+        score: float,
+        *,
+        semantic_score: float = 0.0,
+        keyword_score: float = 0.0,
+        recency_score: float = 0.0,
+    ) -> MemorySearchResult:
         return cls(
             memory_id=m.memory_id,
             key=m.key,
@@ -825,6 +841,9 @@ class MemorySearchResult(BaseModel):
             tags=m.tags,
             owner_client_id=m.owner_client_id,
             score=score,
+            semantic_score=semantic_score,
+            keyword_score=keyword_score,
+            recency_score=recency_score,
             created_at=m.created_at,
             updated_at=m.updated_at,
             recall_count=m.recall_count,
