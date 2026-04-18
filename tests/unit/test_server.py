@@ -440,6 +440,25 @@ class TestRecall:
         with pytest.raises(ToolError, match="No memory found"):
             await recall("no-such-key", ctx=_make_ctx(jwt))
 
+    async def test_recall_bumps_recall_count_and_last_accessed_at(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import recall, remember
+
+        await remember("rec-counter", "v", [], ctx=_make_ctx(jwt))
+        before = storage.get_memory_by_key("rec-counter")
+        assert before.recall_count == 0
+        assert before.last_accessed_at is None
+
+        await recall("rec-counter", ctx=_make_ctx(jwt))
+        after_first = storage.get_memory_by_key("rec-counter")
+        assert after_first.recall_count == 1
+        assert after_first.last_accessed_at is not None
+
+        await recall("rec-counter", ctx=_make_ctx(jwt))
+        after_second = storage.get_memory_by_key("rec-counter")
+        assert after_second.recall_count == 2
+        assert after_second.last_accessed_at >= after_first.last_accessed_at
+
 
 # ---------------------------------------------------------------------------
 # forget
@@ -485,6 +504,21 @@ class TestListMemories:
         assert "lst-b" not in keys
         # Agent attribution is surfaced on every item.
         assert result["items"][0]["owner_client_id"] == client_id
+        # Usage metrics are surfaced too; fresh memories have count=0, no access.
+        assert result["items"][0]["recall_count"] == 0
+        assert result["items"][0]["last_accessed_at"] is None
+
+    async def test_list_memories_surfaces_recall_metrics_after_recall(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_memories, recall, remember
+
+        await remember("bumped", "v", ["alpha"], ctx=_make_ctx(jwt))
+        await recall("bumped", ctx=_make_ctx(jwt))
+
+        result = await list_memories("alpha", ctx=_make_ctx(jwt))
+        item = next(x for x in result["items"] if x["key"] == "bumped")
+        assert item["recall_count"] == 1
+        assert item["last_accessed_at"] is not None
 
     async def test_list_empty_tag_returns_empty(self, server_env):
         _, _, jwt = server_env
