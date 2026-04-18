@@ -35,13 +35,19 @@ describe("McpClientsPage", () => {
   it("renders config snippets for each client", async () => {
     const { container } = await act(async () => renderInRouter(<McpClientsPage />));
     const snippets = container.querySelectorAll("pre");
-    expect(snippets.length).toBe(4);
+    // Claude Code, Claude Desktop, ChatGPT, Cursor, Continue
+    expect(snippets.length).toBe(5);
   });
 
   it("renders Copy buttons", async () => {
     await act(async () => renderInRouter(<McpClientsPage />));
     const copyBtns = screen.getAllByText("Copy");
-    expect(copyBtns.length).toBe(4);
+    expect(copyBtns.length).toBe(5);
+  });
+
+  it("renders ChatGPT card", async () => {
+    await act(async () => renderInRouter(<McpClientsPage />));
+    expect(screen.getByText("ChatGPT")).toBeTruthy();
   });
 
   it("clicking Copy calls clipboard and shows Copied!", async () => {

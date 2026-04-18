@@ -19,16 +19,15 @@ const CLIENTS = [
   },
   {
     name: "Claude Desktop",
-    description: "The Claude desktop app on Mac and Windows. Requires the mcp-remote helper to bridge to HTTP; npx installs it automatically.",
-    config: `{
-  "mcpServers": {
-    "hive": {
-      "command": "npx",
-      "args": ["mcp-remote", "https://hive.warlordofmars.net/mcp"]
-    }
-  }
-}`,
-    configFile: "~/Library/Application Support/Claude/claude_desktop_config.json",
+    description: "The Claude desktop app on Mac and Windows. Add Hive via Settings → Connectors → Add custom connector and paste the URL — no config file or mcp-remote helper needed.",
+    config: `https://hive.warlordofmars.net/mcp`,
+    configFile: "Settings → Connectors → Add custom connector",
+  },
+  {
+    name: "ChatGPT",
+    description: "OpenAI's web client. Add Hive as a remote MCP App via Settings → Connectors (Developer mode required). OAuth happens in the browser.",
+    config: `https://hive.warlordofmars.net/mcp`,
+    configFile: "Settings → Connectors → Add → MCP server",
   },
   {
     name: "Cursor",

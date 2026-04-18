@@ -15,7 +15,7 @@ const FEATURES = [
   {
     icon: Plug,
     title: "Works with any MCP client",
-    body: "Plug in to Claude Code, Claude Desktop, Cursor, Continue, or any client that speaks the Model Context Protocol.",
+    body: "Plug in to Claude Code, Claude Desktop, ChatGPT, Cursor, Continue, or any client that speaks the Model Context Protocol.",
   },
   {
     icon: Users,

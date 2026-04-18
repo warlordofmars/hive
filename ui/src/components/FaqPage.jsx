@@ -15,7 +15,7 @@ const FAQS = [
   },
   {
     q: "Which MCP clients are supported?",
-    a: "Any client that implements the Model Context Protocol works with Hive. Tested clients include Claude Code, Claude Desktop, Cursor, and Continue. If your client supports MCP, it will work.",
+    a: "Any client that implements the Model Context Protocol works with Hive. Tested clients include Claude Code, Claude Desktop, ChatGPT, Cursor, and Continue. If your client supports MCP, it will work.",
   },
   {
     q: "How do I delete my account or data?",

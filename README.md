@@ -31,7 +31,7 @@
 
 Shared persistent memory for AI agents — works with any MCP-compatible client. Free hosted service, no AWS account required.
 
-Hive is an MCP server that gives AI agents durable, shared memory across conversations. Connect any MCP-compatible client — Claude Code, Claude Desktop, Cursor, Continue, or custom agents — store and retrieve memories by key or tag, and manage everything through a web UI.
+Hive is an MCP server that gives AI agents durable, shared memory across conversations. Connect any MCP-compatible client — Claude Code, Claude Desktop, ChatGPT, Cursor, Continue, or custom agents — store and retrieve memories by key or tag, and manage everything through a web UI.
 
 **Hosted at [hive.warlordofmars.net](https://hive.warlordofmars.net) — sign in with Google, no setup required.**
 
@@ -53,7 +53,15 @@ Hive is an MCP server that gives AI agents durable, shared memory across convers
 }
 ```
 
-**Claude Desktop / any stdio-based client** — use [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy:
+**Claude Desktop** / **ChatGPT** — open *Settings → Connectors* and add a custom MCP connector pointing at:
+
+```
+https://hive.warlordofmars.net/mcp
+```
+
+The browser handles OAuth on first use; no config file or local proxy required.
+
+**Older Claude Desktop builds (no Connectors UI)** or any other stdio-based client — fall back to [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy:
 
 ```json
 {
