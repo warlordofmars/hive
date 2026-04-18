@@ -33,3 +33,14 @@ You typically don't need to tell your agent which tool to use — just give natu
 - *"List everything tagged..."* → `list_memories`
 - *"Forget the..."* → `forget`
 - *"Give me a summary of..."* → `summarize_context`
+
+## Progress notifications
+
+Tools whose expected duration exceeds ~2 seconds emit MCP [`notifications/progress`](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress) events at each major stage of work. Supporting clients (Claude Desktop, Claude Code) render these as a progress indicator or streaming status line.
+
+Currently emitted by:
+
+- `search_memories` — reports at 3 stages (vector search → hydrate → rank)
+- `summarize_context` — reports at 2 stages (retrieve → synthesise)
+
+Clients that don't support progress notifications ignore them — the tool still returns its normal final result. Emission is best-effort: if the transport rejects a notification, the tool continues without raising.
