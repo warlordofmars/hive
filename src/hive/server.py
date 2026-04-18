@@ -193,6 +193,19 @@ def _vector_store() -> VectorStore:
     return VectorStore()
 
 
+def _log(storage: HiveStorage, event: ActivityEvent) -> None:
+    """Record the event in both the user-visible activity log and the
+    immutable compliance audit log (#395).
+
+    Memory reads/writes/deletes surface in the Activity Log UI via the
+    LOG# partition; the AUDIT# partition carries the same events but
+    with a distinct retention (``HIVE_AUDIT_RETENTION_DAYS``, default
+    365 days) and survives an activity-log purge.
+    """
+    storage.log_event(event)
+    storage.log_audit_event(event)
+
+
 # ---------------------------------------------------------------------------
 # Response metadata — every tool response carries quota + rate-limit state
 # under ``_meta.hive`` so well-behaved agents can self-throttle.
@@ -421,12 +434,13 @@ async def remember(
         except Exception:
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=event_type,
             client_id=client_id,
             metadata={"key": key, "tags": tags},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -528,12 +542,13 @@ async def remember_if_absent(
     except Exception:
         logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_created,
             client_id=client_id,
             metadata={"key": key, "tags": tags},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -583,12 +598,13 @@ async def recall(
         await emit_metric("ToolErrors", operation="recall")
         raise ToolError(f"No memory found for key '{key}'.")
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_recalled,
             client_id=client_id,
             metadata={"key": key},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -643,12 +659,13 @@ async def forget(
         _vector_store().delete_memory(existing.memory_id, client_id)
     except Exception:
         logger.warning("Vector delete failed (non-fatal)", exc_info=True)
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_deleted,
             client_id=client_id,
             metadata={"key": key},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -685,12 +702,13 @@ async def forget_all(
     storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     deleted = storage.delete_memories_by_tag(tag)
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_deleted,
             client_id=client_id,
             metadata={"tag": tag, "count": deleted},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -778,12 +796,13 @@ async def restore_memory(
     memory.tags = version.tags
     memory.updated_at = datetime.now(timezone.utc)
     storage.put_memory(memory)
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_updated,
             client_id=client_id,
             metadata={"key": key, "version_timestamp": version_timestamp},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     await emit_metric("ToolInvocations", operation="restore_memory")
@@ -814,12 +833,13 @@ async def list_memories(
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_listed,
             client_id=client_id,
             metadata={"tag": tag, "count": len(memories)},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -934,12 +954,13 @@ async def summarize_context(
         "Review the entries above for relevant context.*"
     )
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.context_summarized,
             client_id=client_id,
             metadata={"topic": topic, "memory_count": len(memories)},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -1019,12 +1040,13 @@ async def search_memories(
     results = results[:top_k]
     await _report_progress(ctx, 2, 3, f"Ranked {len(results)} result(s); returning.")
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_searched,
             client_id=client_id,
             metadata={"query": query, "result_count": len(results)},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -1093,12 +1115,13 @@ async def relate_memories(
     pairs = [(mid, score) for mid, score in pairs if mid != memory.memory_id][:top_k]
     results = storage.hydrate_memory_ids(pairs)
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_searched,
             client_id=client_id,
             metadata={"key": key, "result_count": len(results), "related_to": memory.memory_id},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(

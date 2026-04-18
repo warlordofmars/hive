@@ -346,3 +346,67 @@ async def get_alarms(
     Admin-only. Results cached for 5 min.
     """
     return _get_alarm_data()
+
+
+def _storage() -> Any:
+    from hive.storage import HiveStorage
+
+    return HiveStorage()
+
+
+_AUDIT_LIMIT_DEFAULT = 100
+_AUDIT_LIMIT_MAX = 500
+
+
+@router.get(
+    "/audit-log",
+    summary="Query the compliance audit log",
+    description=(
+        "Immutable audit trail of every memory read/write/delete (#395). "
+        "Admin-only. Use ``days`` to widen the window (capped at 90). "
+        "Optional ``client_id`` / ``event_type`` filters narrow the result."
+    ),
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+    },
+)
+async def get_audit_log(
+    _claims: Annotated[dict[str, Any], Depends(require_admin)],
+    storage: Annotated[Any, Depends(_storage)],
+    days: Annotated[int, Query(ge=1, le=90, description="Days of history to return")] = 7,
+    limit: Annotated[
+        int, Query(ge=1, le=_AUDIT_LIMIT_MAX, description="Max events to return")
+    ] = _AUDIT_LIMIT_DEFAULT,
+    client_id: Annotated[str | None, Query(description="Filter by client_id")] = None,
+    event_type: Annotated[str | None, Query(description="Filter by event_type")] = None,
+) -> dict[str, Any]:
+    import datetime as _dt
+
+    today = _dt.date.today()
+    dates = [
+        (today - _dt.timedelta(days=i)).isoformat()
+        for i in range(days)  # NOSONAR — days bounded by FastAPI Query(ge=1, le=90)
+    ]
+    events = storage.get_audit_events_for_dates(
+        dates,
+        client_id=client_id,
+        event_type=event_type,
+        limit=limit + 1,
+    )
+    has_more = len(events) > limit
+    events = events[:limit]
+    return {
+        "items": [
+            {
+                "event_id": e.event_id,
+                "event_type": e.event_type.value,
+                "client_id": e.client_id,
+                "timestamp": e.timestamp.isoformat(),
+                "metadata": e.metadata,
+            }
+            for e in events
+        ],
+        "count": len(events),
+        "has_more": has_more,
+    }
