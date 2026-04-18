@@ -10,29 +10,29 @@ const USE_CASES = [
     icon: BookOpen,
     title: "Remember project context across sessions",
     body: "Store architecture decisions, conventions, and open questions once. Every new Claude session picks up exactly where you left off — no more re-explaining the same context.",
-    snippet: `remember("auth uses JWT, tokens stored in DynamoDB with 24h TTL")
-remember("all API routes require Bearer token, except /health")`,
+    snippet: `You: "Remember that auth uses JWT — tokens in DynamoDB, 24h TTL."
+You: "Remember all API routes require a Bearer token, except /health."`,
   },
   {
     icon: Share2,
     title: "Share team knowledge with AI agents",
     body: "One Hive, many agents. Store shared conventions, runbooks, and team decisions so every team member's AI assistant draws from the same pool of knowledge.",
-    snippet: `remember("deploy via 'uv run inv deploy', never push directly to main")
-remember("on-call rotation: Mon–Wed Alice, Thu–Fri Bob")`,
+    snippet: `You: "Remember: deploy via 'uv run inv deploy', never push to main."
+You: "Remember the on-call rotation — Mon–Wed Alice, Thu–Fri Bob."`,
   },
   {
     icon: Bot,
     title: "Persistent preferences and instructions",
     body: "Store how you like to work — preferred code style, tone, output format — and every session with every MCP-compatible client respects those preferences automatically.",
-    snippet: `remember("always use TypeScript strict mode")
-remember("responses should be concise, no preamble")`,
+    snippet: `You: "Remember: always use TypeScript strict mode."
+You: "Remember: keep responses concise, no preamble."`,
   },
   {
     icon: Workflow,
     title: "Cross-tool memory for automated workflows",
     body: "Connect multiple AI tools to the same memory store. A workflow running in Cursor can leave context that a Claude Code session picks up — seamless handoffs across tools.",
-    snippet: `remember("migration v42 is pending, run after PR #108 merges")
-recall("pending migrations")`,
+    snippet: `You (in Cursor): "Remember migration v42 is pending — run after #108 merges."
+You (in Claude Code, later): "What pending migrations do I have?"`,
   },
 ];
 

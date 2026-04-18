@@ -37,8 +37,8 @@ const HOW_IT_WORKS = [
   },
   {
     step: "2",
-    title: "Register an MCP client",
-    body: "Give your agent a name and copy the one-line config snippet into your MCP client.",
+    title: "Connect your MCP client",
+    body: "Paste Hive's config snippet into your client. On first use your browser opens once to approve access — after that it's automatic.",
   },
   {
     step: "3",
