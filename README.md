@@ -31,7 +31,7 @@
 
 Shared persistent memory for AI agents — works with any MCP-compatible client. Free hosted service, no AWS account required.
 
-Hive is an MCP server that gives AI agents durable, shared memory across conversations. Connect any MCP-compatible client — Claude Code, Claude Desktop, Cursor, Continue, or custom agents — store and retrieve memories by key or tag, and manage everything through a web UI.
+Hive is an MCP server that gives AI agents durable, shared memory across conversations. Connect any MCP-compatible client — Claude Code, Claude Desktop, ChatGPT, Cursor, Continue, or custom agents — store and retrieve memories by key or tag, and manage everything through a web UI.
 
 **Hosted at [hive.warlordofmars.net](https://hive.warlordofmars.net) — sign in with Google, no setup required.**
 
@@ -53,7 +53,15 @@ Hive is an MCP server that gives AI agents durable, shared memory across convers
 }
 ```
 
-**Claude Desktop / any stdio-based client** — use [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy:
+**Claude Desktop** / **ChatGPT** — open *Settings → Connectors* and add a custom MCP connector pointing at:
+
+```
+https://hive.warlordofmars.net/mcp
+```
+
+The browser handles OAuth on first use; no config file or local proxy required.
+
+**Older Claude Desktop builds (no Connectors UI)** or any other stdio-based client — fall back to [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy:
 
 ```json
 {
@@ -81,6 +89,8 @@ AI agents are stateless — every new conversation starts blank. Hive gives them
 | `summarize_context(topic)` | Synthesize memories on a topic into a summary |
 
 Multiple agents or team members connect with their own OAuth clients, so you can track who stored what and revoke access individually.
+
+Keys are opaque to the server, but a structured convention like `{domain}:{entity-type}/{entity-id}:{attribute}` (e.g. `project:task/42:summary`) keeps memory stores organised and collision-free as they grow. See the [key naming conventions](https://hive.warlordofmars.net/docs/concepts/key-conventions) docs page for details.
 
 ## Architecture
 

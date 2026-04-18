@@ -187,6 +187,19 @@ export default function MemoryBrowser() {
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [clientNameById, setClientNameById] = useState({});
+
+  useEffect(function loadClientNames() {
+    api.listClients()
+      .then(function handleClients(data) {
+        const map = {};
+        for (const c of data.items ?? []) {
+          map[c.client_id] = c.client_name;
+        }
+        setClientNameById(map);
+      })
+      .catch(function ignore() {});
+  }, []);
   const searchDebounceRef = useRef(null);
   const listRef = useRef(null);
 
@@ -448,13 +461,18 @@ export default function MemoryBrowser() {
                 onKeyDown={(e) => handleCardKeyDown(e, m)}
               >
                 <div className="flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <strong>{m.key}</strong>
                     {m.score !== undefined && (
                       <Badge>{Math.round(m.score * 100)}% match</Badge>
                     )}
                     {m.expires_at && (
                       <Badge className="border-[var(--amber)] text-[var(--amber)]">Expires {new Date(m.expires_at).toLocaleDateString()}</Badge>
+                    )}
+                    {m.owner_client_id && (
+                      <Badge className="text-[var(--text-muted)]">
+                        by {clientNameById[m.owner_client_id] ?? m.owner_client_id}
+                      </Badge>
                     )}
                   </div>
                   <p className="mt-1 text-[var(--text-muted)] text-[13px] whitespace-pre-wrap">

@@ -33,7 +33,7 @@ No copy-pasting context. No re-explaining your project each session. Your agent 
 | **Persistent storage** | Memories survive indefinitely across conversations |
 | **Semantic search** | Find memories by meaning using natural language |
 | **Tag-based organisation** | Group related memories with tags for easy retrieval |
-| **Multi-client** | Use Hive from Claude Code, Claude Desktop, Cursor, and more simultaneously |
+| **Multi-client** | Use Hive from Claude Code, Claude Desktop, ChatGPT, Cursor, and more simultaneously |
 | **Team sharing** | Multiple agents or team members can share a Hive instance |
 
 ## Who is it for?

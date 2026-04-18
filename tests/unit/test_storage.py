@@ -132,6 +132,40 @@ class TestMemoryStorage:
         keys_z = {m.key for m in tagged_z}
         assert keys_z == {"b", "c"}
 
+    def test_list_distinct_tags_returns_sorted_unique(self, storage):
+        for m in [
+            Memory(key="a", value="1", tags=["zebra", "alpha"], owner_client_id="c1"),
+            Memory(key="b", value="2", tags=["alpha", "mango"], owner_client_id="c1"),
+            Memory(key="c", value="3", tags=[], owner_client_id="c1"),
+        ]:
+            storage.put_memory(m)
+
+        assert storage.list_distinct_tags("c1") == ["alpha", "mango", "zebra"]
+
+    def test_list_distinct_tags_scoped_to_client(self, storage):
+        storage.put_memory(Memory(key="a", value="1", tags=["mine"], owner_client_id="c1"))
+        storage.put_memory(Memory(key="b", value="2", tags=["theirs"], owner_client_id="c2"))
+
+        assert storage.list_distinct_tags("c1") == ["mine"]
+        assert storage.list_distinct_tags("c2") == ["theirs"]
+
+    def test_list_distinct_tags_empty_when_no_memories(self, storage):
+        assert storage.list_distinct_tags("c1") == []
+
+    def test_list_distinct_tags_follows_scan_pages(self, storage):
+        from unittest.mock import patch
+
+        responses = iter(
+            [
+                {"Items": [{"GSI2PK": "TAG#alpha"}], "LastEvaluatedKey": {"PK": "x"}},
+                {"Items": [{"GSI2PK": "TAG#beta"}, {"GSI2PK": "NOT_A_TAG"}]},
+            ]
+        )
+        with patch.object(storage.table, "scan", side_effect=lambda **_kw: next(responses)):
+            result = storage.list_distinct_tags("c1")
+
+        assert result == ["alpha", "beta"]
+
     def test_update_replaces_tags(self, storage):
         m = Memory(key="k", value="v", tags=["old"], owner_client_id="c1")
         storage.put_memory(m)

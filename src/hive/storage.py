@@ -202,6 +202,34 @@ class HiveStorage:
                 results.append((memory, score))
         return results
 
+    def list_distinct_tags(self, client_id: str) -> list[str]:
+        """Return the sorted set of distinct tags on memories owned by ``client_id``.
+
+        Scans the TagIndex GSI (scope is limited to tag items — the base table
+        is never scanned) filtering on ``owner_client_id`` and projecting only
+        the ``GSI2PK`` attribute, which carries the ``TAG#{name}`` marker.
+        """
+        tags: set[str] = set()
+        start_key: dict[str, Any] | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "IndexName": "TagIndex",
+                "FilterExpression": "owner_client_id = :cid",
+                "ExpressionAttributeValues": {":cid": client_id},
+                "ProjectionExpression": "GSI2PK",
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                gsi_pk = item.get("GSI2PK", "")
+                if gsi_pk.startswith("TAG#"):
+                    tags.add(gsi_pk[len("TAG#") :])
+            start_key = resp.get("LastEvaluatedKey")
+            if not start_key:
+                break
+        return sorted(tags)
+
     def list_memories_by_tag(
         self,
         tag: str,

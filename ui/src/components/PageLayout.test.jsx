@@ -117,4 +117,34 @@ describe("PageLayout", () => {
     expect(btn.className).toContain("border-white/60");
     expect(btn.className).toContain("marketing-signin-btn");
   });
+
+  it("mounts the consent banner when no consent has been stored", async () => {
+    localStorage.removeItem("hive_ga_consent");
+    await act(async () =>
+      renderInRouter(<PageLayout><span /></PageLayout>)
+    );
+    expect(screen.getByRole("dialog", { name: "Cookie consent" })).toBeTruthy();
+  });
+
+  it("renders Cookie preferences footer link", async () => {
+    const { container } = await act(async () =>
+      renderInRouter(<PageLayout><span /></PageLayout>)
+    );
+    const footer = container.querySelector("footer");
+    expect(within(footer).getByText("Cookie preferences")).toBeTruthy();
+  });
+
+  it("Cookie preferences click clears stored consent and re-shows the banner", async () => {
+    localStorage.setItem("hive_ga_consent", "reject");
+    const { container } = await act(async () =>
+      renderInRouter(<PageLayout><span /></PageLayout>)
+    );
+    // Banner hidden while consent is stored.
+    expect(screen.queryByRole("dialog", { name: "Cookie consent" })).toBeNull();
+    const footer = container.querySelector("footer");
+    const link = within(footer).getByText("Cookie preferences");
+    await act(async () => fireEvent.click(link));
+    expect(localStorage.getItem("hive_ga_consent")).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Cookie consent" })).toBeTruthy();
+  });
 });

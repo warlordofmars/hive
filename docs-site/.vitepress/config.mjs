@@ -5,7 +5,51 @@ export default defineConfig({
   title: "Hive Docs",
   description: "Shared persistent memory for AI agents — documentation",
   cleanUrls: true,
-  head: [["link", { rel: "icon", type: "image/svg+xml", href: "/docs/favicon.svg" }]],
+  sitemap: {
+    hostname: "https://hive.warlordofmars.net",
+    // VitePress drops `base` from the item URL when writing the sitemap,
+    // so prepend it here to match the deployed path at /docs/.
+    transformItems: (items) =>
+      items.map((item) => ({
+        ...item,
+        url: `docs/${item.url.replace(/^\//, "")}`,
+      })),
+  },
+  head: [
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/docs/favicon.svg" }],
+    ["meta", { property: "og:type", content: "website" }],
+    ["meta", { property: "og:site_name", content: "Hive" }],
+    ["meta", { property: "og:title", content: "Hive Docs — Shared Memory for Claude Agents" }],
+    [
+      "meta",
+      {
+        property: "og:description",
+        content: "Documentation for Hive, a shared persistent memory service for Claude agents and teams.",
+      },
+    ],
+    ["meta", { property: "og:url", content: "https://hive.warlordofmars.net/docs/" }],
+    [
+      "meta",
+      { property: "og:image", content: "https://hive.warlordofmars.net/social-preview.png" },
+    ],
+    ["meta", { property: "og:image:width", content: "1200" }],
+    ["meta", { property: "og:image:height", content: "630" }],
+    ["meta", { property: "og:image:alt", content: "Hive — Shared Memory for Claude Agents" }],
+    ["meta", { name: "twitter:card", content: "summary_large_image" }],
+    ["meta", { name: "twitter:title", content: "Hive Docs — Shared Memory for Claude Agents" }],
+    [
+      "meta",
+      {
+        name: "twitter:description",
+        content: "Documentation for Hive, a shared persistent memory service for Claude agents and teams.",
+      },
+    ],
+    [
+      "meta",
+      { name: "twitter:image", content: "https://hive.warlordofmars.net/social-preview.png" },
+    ],
+    ["meta", { name: "twitter:image:alt", content: "Hive — Shared Memory for Claude Agents" }],
+  ],
 
   themeConfig: {
     logo: { src: "/logo.svg", alt: "Hive" },
@@ -53,6 +97,7 @@ export default defineConfig({
         items: [
           { text: "How memory scoping works", link: "/concepts/memory-scoping" },
           { text: "Tags and organisation", link: "/concepts/tags" },
+          { text: "Key naming conventions", link: "/concepts/key-conventions" },
         ],
       },
       {

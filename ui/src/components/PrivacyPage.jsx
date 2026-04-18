@@ -31,9 +31,9 @@ export default function PrivacyPage() {
           <Section title="1. Who We Are">
             <p>
               Hive is a shared persistent memory service for AI agents and teams. The Service is
-              operated by John Carter. Questions about this policy can be sent to{" "}
-              <a href="mailto:privacy@hive.so" className="text-brand no-underline hover:underline">
-                privacy@hive.so
+              operated by warlordofmars. Questions about this policy can be sent to{" "}
+              <a href="mailto:privacy@warlordofmars.net" className="text-brand no-underline hover:underline">
+                privacy@warlordofmars.net
               </a>
               .
             </p>
@@ -90,8 +90,13 @@ export default function PrivacyPage() {
               same region. No data is replicated to other cloud providers or regions.
             </p>
             <p>
-              AWS is our sole infrastructure provider. Their data-processing terms apply to
-              data at rest and in transit within AWS services.
+              AWS is our primary infrastructure provider. A full list of the third parties
+              that process data on our behalf (including AWS, Google OAuth, and Google
+              Analytics) is maintained on the{" "}
+              <a href="/subprocessors" className="text-brand no-underline hover:underline">
+                Subprocessors
+              </a>{" "}
+              page.
             </p>
           </Section>
 
@@ -115,16 +120,19 @@ export default function PrivacyPage() {
 
           <Section title="6. Google Analytics 4">
             <p>
-              The Hive marketing site (hive.so and its sub-pages, including <code>/pricing</code>,
+              The Hive marketing site (hive.warlordofmars.net and its sub-pages, including <code>/pricing</code>,
               {" "}<code>/faq</code>, <code>/use-cases</code>, and <code>/docs</code>) uses Google
-              Analytics 4 (GA4) to measure page views and navigation events. GA4 may set cookies
-              in your browser and send anonymised usage data to Google.
+              Analytics 4 (GA4) to measure page views and navigation events.
             </p>
             <p>
-              The management UI (<code>/app</code>) does not send data to GA4.
+              GA4 is <strong>opt-in</strong>: we show a consent banner on your first visit with
+              equal-prominence Accept and Reject buttons. No GA4 script loads and no data is sent
+              to Google until you click Accept. You can change your choice at any time via the
+              <strong> Cookie preferences </strong>link in the footer. The management UI
+              (<code>/app</code>) never sends data to GA4, regardless of your choice.
             </p>
             <p>
-              You can opt out of GA4 tracking by enabling "Do Not Track" in your browser, using a
+              You can also opt out at the browser level by enabling "Do Not Track", using a
               content blocker, or installing the{" "}
               <a
                 href="https://tools.google.com/dlpage/gaoptout"
@@ -165,8 +173,8 @@ export default function PrivacyPage() {
             </ul>
             <p>
               To exercise any of these rights, email{" "}
-              <a href="mailto:privacy@hive.so" className="text-brand no-underline hover:underline">
-                privacy@hive.so
+              <a href="mailto:privacy@warlordofmars.net" className="text-brand no-underline hover:underline">
+                privacy@warlordofmars.net
               </a>
               .
             </p>
@@ -193,8 +201,8 @@ export default function PrivacyPage() {
           <Section title="11. Contact">
             <p>
               For privacy questions or to exercise your data rights, contact us at{" "}
-              <a href="mailto:privacy@hive.so" className="text-brand no-underline hover:underline">
-                privacy@hive.so
+              <a href="mailto:privacy@warlordofmars.net" className="text-brand no-underline hover:underline">
+                privacy@warlordofmars.net
               </a>
               .
             </p>

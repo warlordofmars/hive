@@ -6,10 +6,12 @@ All tools validate the OAuth 2.1 Bearer token passed in the MCP request
 context before performing any storage operation.
 
 Tools:
+  ping()                      — health check (auth-only, no storage access)
   remember(key, value, tags)  — store a memory
   recall(key)                 — retrieve a memory by key
   forget(key)                 — delete a memory by key
   list_memories(tag)          — list memories by tag
+  list_tags()                 — list distinct tags for the caller's memories
   summarize_context(topic)    — synthesise memories into a summary
 """
 
@@ -44,6 +46,13 @@ configure_logging("mcp")
 logger = get_logger("hive.server")
 
 _MEMORIES_READ_SCOPE = "memories:read"
+
+DEFAULT_MAX_VALUE_BYTES = 10 * 1024
+
+
+def _max_value_bytes() -> int:
+    """Max UTF-8 byte size of a memory value. Configurable via HIVE_MAX_VALUE_BYTES."""
+    return int(os.environ.get("HIVE_MAX_VALUE_BYTES", str(DEFAULT_MAX_VALUE_BYTES)))
 
 
 class HiveTokenVerifier(TokenVerifier):
@@ -115,7 +124,7 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveStorage, str]:
+async def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveStorage, str]:
     """Validate Bearer token; return (storage, client_id).
 
     Reads the Authorization header from the HTTP request when running under
@@ -124,6 +133,8 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
     context (request_id, client_id).
 
     If required_scope is given, raises ToolError if the token lacks that scope.
+    Emits the ``TokenValidationFailures`` metric on auth rejection so the
+    CloudWatch AuthFailures alarm has something to fire on.
     """
     storage = HiveStorage()
     auth_header: str | None = None
@@ -156,6 +167,7 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
     try:
         token = validate_bearer_token(auth_header, storage)
     except ValueError as exc:
+        await emit_metric("TokenValidationFailures")
         raise ToolError(f"Unauthorized: {exc}") from exc
 
     if required_scope and required_scope not in set(token.scope.split()):
@@ -179,10 +191,37 @@ def _vector_store() -> VectorStore:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Ping",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
+async def ping(ctx: Context | None = None) -> str:
+    """Lightweight health check — returns 'ok' when the Bearer token is valid.
+
+    Performs no storage reads or writes. A successful call confirms both
+    connectivity to the MCP server and that the caller's token is still valid.
+    """
+    await _auth(ctx)
+    await emit_metric("ToolInvocations", operation="ping")
+    return "ok"
+
+
+@mcp.tool(
+    title="Remember",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
-    value: Annotated[str, "Content of the memory"],
+    value: Annotated[
+        str,
+        f"Content of the memory. Maximum {_max_value_bytes()} bytes (UTF-8 encoded); "
+        "configurable via HIVE_MAX_VALUE_BYTES.",
+    ],
     tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
     ttl_seconds: Annotated[
         int | None, "Seconds until the memory expires. None = never expires."
@@ -191,7 +230,14 @@ async def remember(
 ) -> str:
     """Store or update a memory with optional tags and optional TTL."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
+
+    limit = _max_value_bytes()
+    actual = len(value.encode("utf-8"))
+    if actual > limit:
+        await emit_metric("ToolErrors", operation="remember")
+        raise ToolError(f"Value exceeds maximum size of {limit} bytes ({actual} bytes provided)")
+
     tags = tags or []
     expires_at = (
         datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
@@ -280,14 +326,126 @@ async def remember(
     return f"{action} memory '{key}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Remember if absent",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def remember_if_absent(
+    key: Annotated[str, "Unique key to store the memory under"],
+    value: Annotated[
+        str,
+        f"Content of the memory. Maximum {_max_value_bytes()} bytes (UTF-8 encoded); "
+        "configurable via HIVE_MAX_VALUE_BYTES.",
+    ],
+    tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ttl_seconds: Annotated[
+        int | None, "Seconds until the memory expires. None = never expires."
+    ] = None,
+    ctx: Context | None = None,
+) -> str:
+    """Store a memory **only if** no memory with the given key already exists.
+
+    Returns "Stored memory '{key}'." on write, or
+    "Memory '{key}' already exists — not overwritten." on skip.
+
+    Uses a read-then-write check. Two concurrent callers with the same key
+    can still race in the narrow window between the read and the write;
+    strict DynamoDB-level atomicity is tracked in #391.
+    """
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
+
+    limit = _max_value_bytes()
+    actual = len(value.encode("utf-8"))
+    if actual > limit:
+        await emit_metric("ToolErrors", operation="remember_if_absent")
+        raise ToolError(f"Value exceeds maximum size of {limit} bytes ({actual} bytes provided)")
+
+    tags = tags or []
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        if ttl_seconds is not None
+        else None
+    )
+
+    existing = storage.get_memory_by_key(key)
+    if existing:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "Memory '%s' already exists — not overwritten",
+            key,
+            extra={
+                "tool": "remember_if_absent",
+                "duration_ms": duration_ms,
+                "status": "skipped",
+            },
+        )
+        await emit_metric("ToolInvocations", operation="remember_if_absent")
+        return f"Memory '{key}' already exists — not overwritten."
+
+    client = storage.get_client(client_id)
+    owner_user_id = client.owner_user_id if client else None
+    try:
+        check_memory_quota(owner_user_id, storage)
+    except QuotaExceeded as exc:
+        raise ToolError(exc.detail) from exc
+
+    memory = Memory(
+        key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+    )
+    try:
+        storage.put_memory(memory)
+    except ValueError as exc:
+        await emit_metric("ToolErrors", operation="remember_if_absent")
+        raise ToolError(str(exc)) from exc
+    try:
+        _vector_store().upsert_memory(memory)
+    except Exception:
+        logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
+
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_created,
+            client_id=client_id,
+            metadata={"key": key, "tags": tags},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Stored memory '%s' (if_absent)",
+        key,
+        extra={
+            "tool": "remember_if_absent",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="remember_if_absent")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="remember_if_absent",
+    )
+    return f"Stored memory '{key}'."
+
+
+@mcp.tool(
+    title="Recall",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def recall(
     key: Annotated[str, "Key of the memory to retrieve"],
     ctx: Context | None = None,
 ) -> str:
     """Retrieve a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -327,14 +485,22 @@ async def recall(
     return memory.value
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Forget",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def forget(
     key: Annotated[str, "Key of the memory to delete"],
     ctx: Context | None = None,
 ) -> str:
     """Delete a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     existing = storage.get_memory_by_key(key)
     if existing is None:
@@ -379,14 +545,22 @@ async def forget(
     return f"Deleted memory '{key}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Forget all (by tag)",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
 async def forget_all(
     tag: Annotated[str, "Tag of the memories to delete"],
     ctx: Context | None = None,
 ) -> str:
     """Delete all memories that have the given tag."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     deleted = storage.delete_memories_by_tag(tag)
     storage.log_event(
@@ -417,14 +591,17 @@ async def forget_all(
     return f"Deleted {deleted} memories with tag '{tag}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Memory history",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def memory_history(
     key: Annotated[str, "Key of the memory to retrieve history for"],
     ctx: Context | None = None,
 ) -> list[dict[str, Any]]:
     """Return the version history of a memory (previous values before each overwrite)."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = await _auth(ctx, required_scope="memories:read")
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -449,7 +626,15 @@ async def memory_history(
     ]
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Restore memory",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
 async def restore_memory(
     key: Annotated[str, "Key of the memory to restore"],
     version_timestamp: Annotated[str, "Version timestamp to restore (from memory_history)"],
@@ -457,7 +642,7 @@ async def restore_memory(
 ) -> str:
     """Restore a memory to a previous version."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -488,7 +673,10 @@ async def restore_memory(
     return f"Restored memory '{key}' to version '{version_timestamp}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="List memories",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
@@ -497,7 +685,7 @@ async def list_memories(
 ) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
@@ -524,7 +712,15 @@ async def list_memories(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_memories"
     )
     result: dict[str, Any] = {
-        "items": [{"key": m.key, "value": m.value, "tags": m.tags} for m in memories],
+        "items": [
+            {
+                "key": m.key,
+                "value": m.value,
+                "tags": m.tags,
+                "owner_client_id": m.owner_client_id,
+            }
+            for m in memories
+        ],
         "count": len(memories),
         "has_more": next_cursor is not None,
     }
@@ -533,7 +729,40 @@ async def list_memories(
     return result
 
 
-@mcp.tool()
+@mcp.tool(
+    title="List tags",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
+async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
+    """List all distinct tags currently in use across the caller's memories.
+
+    Returns tags sorted alphabetically. Useful for discovering the tag
+    namespace of an existing memory corpus before calling `list_memories`.
+    """
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    tags = storage.list_distinct_tags(client_id)
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Listed %d distinct tags",
+        len(tags),
+        extra={
+            "tool": "list_tags",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="list_tags")
+    await emit_metric(
+        "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_tags"
+    )
+    return {"tags": tags, "count": len(tags)}
+
+
+@mcp.tool(
+    title="Summarise context",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def summarize_context(
     topic: Annotated[str, "Topic or tag to summarise memories about"],
     ctx: Context | None = None,
@@ -545,7 +774,7 @@ async def summarize_context(
     memory and then provides a combined overview paragraph.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
 
@@ -599,10 +828,23 @@ async def summarize_context(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Search memories",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def search_memories(
     query: Annotated[str, "Natural language search query"],
     top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 10,
+    min_score: Annotated[
+        float | None,
+        "Minimum similarity score (0.0–1.0). Results below this threshold are "
+        "excluded. None disables filtering.",
+    ] = None,
+    filter_tags: Annotated[
+        list[str] | None,
+        "Optional list of tags. Only memories carrying ALL of the given tags "
+        "are returned. None disables filtering.",
+    ] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Search memories by semantic similarity to a natural language query.
@@ -611,18 +853,32 @@ async def search_memories(
     where higher means more semantically similar to the query.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     top_k = max(1, min(top_k, 50))
+    threshold = max(0.0, min(1.0, min_score)) if min_score is not None else None
+    required_tags = set(filter_tags) if filter_tags else None
+
+    # When post-filtering by tags, request the full cap from the vector store
+    # so we have headroom to still return up to top_k matches after filtering.
+    search_top_k = 50 if required_tags else top_k
 
     try:
-        pairs = _vector_store().search(query, client_id, top_k=top_k)
+        pairs = _vector_store().search(query, client_id, top_k=search_top_k)
     except VectorIndexNotFoundError:
         return {"items": [], "count": 0, "query": query}
     except Exception:
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
         return {"items": [], "count": 0, "query": query}
 
+    if threshold is not None:
+        pairs = [(mid, score) for mid, score in pairs if score >= threshold]
+
     results = storage.hydrate_memory_ids(pairs)
+
+    if required_tags:
+        results = [(m, s) for m, s in results if required_tags.issubset(m.tags)]
+
+    results = results[:top_k]
 
     storage.log_event(
         ActivityEvent(
@@ -655,6 +911,75 @@ async def search_memories(
         ],
         "count": len(results),
         "query": query,
+    }
+
+
+@mcp.tool(
+    title="Relate memories",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
+async def relate_memories(
+    key: Annotated[str, "Key of the memory to find relations for"],
+    top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 5,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Return memories most semantically similar to the one at ``key``.
+
+    The source memory's value is used as the vector search query and the
+    source memory itself is excluded from the results.  ``score`` ranges
+    from 0.0 to 1.0 where higher means more semantically similar.
+    """
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    top_k = max(1, min(top_k, 50))
+
+    memory = storage.get_memory_by_key(key)
+    if memory is None:
+        raise ToolError(f"No memory found for key '{key}'.")
+
+    try:
+        # Fetch top_k+1 so that dropping the source still leaves up to top_k.
+        pairs = _vector_store().search(memory.value, client_id, top_k=top_k + 1)
+    except VectorIndexNotFoundError:
+        return {"items": [], "count": 0, "key": key}
+    except Exception:
+        logger.warning("Vector search failed (non-fatal)", exc_info=True)
+        return {"items": [], "count": 0, "key": key}
+
+    pairs = [(mid, score) for mid, score in pairs if mid != memory.memory_id][:top_k]
+    results = storage.hydrate_memory_ids(pairs)
+
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_searched,
+            client_id=client_id,
+            metadata={"key": key, "result_count": len(results), "related_to": memory.memory_id},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Related memories for '%s', %d result(s)",
+        key,
+        len(results),
+        extra={
+            "tool": "relate_memories",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="relate_memories")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="relate_memories",
+    )
+    return {
+        "items": [
+            MemorySearchResult.from_memory_and_score(m, score).model_dump() for m, score in results
+        ],
+        "count": len(results),
+        "key": key,
     }
 
 

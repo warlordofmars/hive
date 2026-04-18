@@ -101,4 +101,24 @@ export const api = {
 
   // Account
   deleteAccount: () => request("DELETE", "/api/account", { confirm: true }),
+  exportAccount: async () => {
+    const token = getToken();
+    const headers = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/api/account/export`, { headers });
+    if (res.status === 401) {
+      localStorage.removeItem("hive_mgmt_token");
+      globalThis.location.replace("/");
+      return null;
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail ?? "Export failed");
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("content-disposition") ?? "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : "hive-export.json";
+    return { blob, filename };
+  },
 };

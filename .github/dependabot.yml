@@ -4,8 +4,7 @@ updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "daily"
     groups:
       python-deps:
         patterns: ["*"]
@@ -17,8 +16,7 @@ updates:
   - package-ecosystem: "npm"
     directory: "/ui"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "daily"
     groups:
       npm-deps:
         patterns: ["*"]

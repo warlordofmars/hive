@@ -115,6 +115,50 @@ def server_env():
 
 
 # ---------------------------------------------------------------------------
+# ping
+# ---------------------------------------------------------------------------
+
+
+class TestPing:
+    async def test_returns_ok_for_valid_token(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import ping
+
+        result = await ping(ctx=_make_ctx(jwt))
+        assert result == "ok"
+
+    async def test_missing_auth_raises_tool_error(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import ping
+
+        ctx = MagicMock()
+        ctx.request_context.meta = {}
+        with pytest.raises(ToolError, match="Unauthorized"):
+            await ping(ctx=ctx)
+
+    async def test_auth_rejection_emits_token_validation_failure_metric(self, server_env):
+        """The AuthFailures CloudWatch alarm watches TokenValidationFailures —
+        make sure the MCP auth path actually emits it on rejection."""
+        from unittest.mock import AsyncMock, patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import ping
+
+        ctx = MagicMock()
+        ctx.request_context.meta = {"Authorization": "Bearer totally-bogus"}
+        mock_emit = AsyncMock()
+        with (
+            patch("hive.server.emit_metric", mock_emit),
+            pytest.raises(ToolError, match="Unauthorized"),
+        ):
+            await ping(ctx=ctx)
+        names_emitted = [call.args[0] for call in mock_emit.call_args_list]
+        assert "TokenValidationFailures" in names_emitted
+
+
+# ---------------------------------------------------------------------------
 # remember
 # ---------------------------------------------------------------------------
 
@@ -188,6 +232,52 @@ class TestRemember:
         ):
             await remember("big-key", "x" * 1000, [], ctx=_make_ctx(jwt))
 
+    async def test_value_at_limit_succeeds(self, server_env):
+        from hive.server import DEFAULT_MAX_VALUE_BYTES, remember
+
+        storage, _, jwt = server_env
+        value = "x" * DEFAULT_MAX_VALUE_BYTES
+        result = await remember("at-limit-key", value, [], ctx=_make_ctx(jwt))
+        assert result == "Stored memory 'at-limit-key'."
+
+    async def test_value_over_limit_raises_tool_error(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import DEFAULT_MAX_VALUE_BYTES, remember
+
+        _, _, jwt = server_env
+        actual = DEFAULT_MAX_VALUE_BYTES + 1
+        expected = f"Value exceeds maximum size of {DEFAULT_MAX_VALUE_BYTES} bytes ({actual} bytes provided)"
+        with pytest.raises(ToolError) as exc_info:
+            await remember("over-limit-key", "x" * actual, [], ctx=_make_ctx(jwt))
+        assert str(exc_info.value) == expected
+
+    async def test_value_size_counts_utf8_bytes_not_chars(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        # "€" is 3 bytes in UTF-8, so 5 chars = 15 bytes — exceeds 10 byte limit
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("HIVE_MAX_VALUE_BYTES", "10")
+            with pytest.raises(ToolError, match="15 bytes provided"):
+                await remember("euro-key", "€€€€€", [], ctx=_make_ctx(jwt))
+
+    async def test_value_size_limit_env_override(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("HIVE_MAX_VALUE_BYTES", "5")
+            with pytest.raises(ToolError, match="maximum size of 5 bytes"):
+                await remember("custom-limit-key", "x" * 6, [], ctx=_make_ctx(jwt))
+            # within the override limit is fine
+            result = await remember("within-key", "x" * 5, [], ctx=_make_ctx(jwt))
+            assert result == "Stored memory 'within-key'."
+
     async def test_remember_with_ttl_sets_expires_at(self, server_env):
         storage, client_id, jwt = server_env
         from hive.server import remember
@@ -220,6 +310,111 @@ class TestRemember:
         m2 = storage.get_memory_by_key("idem-ttl")
         assert m2 is not None
         assert m2.expires_at is None
+
+
+# ---------------------------------------------------------------------------
+# remember_if_absent
+# ---------------------------------------------------------------------------
+
+
+class TestRememberIfAbsent:
+    async def test_writes_when_key_absent(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import remember_if_absent
+
+        result = await remember_if_absent("ifa-new", "v", ["t"], ctx=_make_ctx(jwt))
+        assert result == "Stored memory 'ifa-new'."
+        m = storage.get_memory_by_key("ifa-new")
+        assert m is not None
+        assert m.value == "v"
+
+    async def test_skips_when_key_exists(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import remember, remember_if_absent
+
+        await remember("ifa-dupe", "original", ["old"], ctx=_make_ctx(jwt))
+        result = await remember_if_absent("ifa-dupe", "new-value", ["new"], ctx=_make_ctx(jwt))
+        assert result == "Memory 'ifa-dupe' already exists — not overwritten."
+        m = storage.get_memory_by_key("ifa-dupe")
+        assert m.value == "original"
+        assert set(m.tags) == {"old"}
+
+    async def test_sets_ttl_when_writing(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import remember_if_absent
+
+        await remember_if_absent("ifa-ttl", "v", [], ttl_seconds=3600, ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("ifa-ttl")
+        assert m.expires_at is not None
+
+    async def test_oversized_value_raises(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import DEFAULT_MAX_VALUE_BYTES, remember_if_absent
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="exceeds maximum size"):
+            await remember_if_absent(
+                "ifa-big", "x" * (DEFAULT_MAX_VALUE_BYTES + 1), ctx=_make_ctx(jwt)
+            )
+
+    async def test_storage_value_error_becomes_tool_error(self, server_env):
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_if_absent
+
+        storage, _, jwt = server_env
+        with (
+            patch.object(storage.__class__, "get_memory_by_key", return_value=None),
+            patch.object(
+                storage.__class__,
+                "put_memory",
+                side_effect=ValueError("Memory value is too large"),
+            ),
+            pytest.raises(ToolError, match="too large"),
+        ):
+            await remember_if_absent("ifa-err", "v", ctx=_make_ctx(jwt))
+
+    async def test_quota_exceeded_becomes_tool_error(self, server_env):
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember_if_absent
+
+        _, _, jwt = server_env
+        with (
+            patch("hive.server.check_memory_quota", side_effect=QuotaExceeded("quota full")),
+            pytest.raises(ToolError, match="quota full"),
+        ):
+            await remember_if_absent("ifa-q", "v", ctx=_make_ctx(jwt))
+
+    async def test_vector_upsert_failure_is_non_fatal(self, server_env):
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember_if_absent
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.upsert_memory.side_effect = RuntimeError("bedrock down")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await remember_if_absent("ifa-vs-fail", "v", ctx=_make_ctx(jwt))
+
+        assert result == "Stored memory 'ifa-vs-fail'."
+
+    async def test_requires_write_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_if_absent
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await remember_if_absent("ifa-scope", "v", ctx=_make_ctx(read_only_jwt))
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +483,8 @@ class TestListMemories:
         keys = [m["key"] for m in result["items"]]
         assert "lst-a" in keys
         assert "lst-b" not in keys
+        # Agent attribution is surfaced on every item.
+        assert result["items"][0]["owner_client_id"] == client_id
 
     async def test_list_empty_tag_returns_empty(self, server_env):
         _, _, jwt = server_env
@@ -296,6 +493,56 @@ class TestListMemories:
         result = await list_memories("nonexistent-tag", ctx=_make_ctx(jwt))
         assert result["items"] == []
         assert result["has_more"] is False
+
+
+# ---------------------------------------------------------------------------
+# list_tags
+# ---------------------------------------------------------------------------
+
+
+class TestListTags:
+    async def test_returns_sorted_distinct_tags(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_tags, remember
+
+        ctx = _make_ctx(jwt)
+        await remember("a", "1", ["zebra", "alpha"], ctx=ctx)
+        await remember("b", "2", ["alpha", "mango"], ctx=ctx)
+        await remember("c", "3", [], ctx=ctx)
+
+        result = await list_tags(ctx=ctx)
+        assert result == {"tags": ["alpha", "mango", "zebra"], "count": 3}
+
+    async def test_empty_when_no_memories(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import list_tags
+
+        result = await list_tags(ctx=_make_ctx(jwt))
+        assert result == {"tags": [], "count": 0}
+
+    async def test_scoped_to_caller_client(self, server_env):
+        storage, client_id, jwt = server_env
+        from hive.models import Memory
+        from hive.server import list_tags, remember
+
+        await remember("mine", "v", ["owned"], ctx=_make_ctx(jwt))
+        # Write a memory belonging to a different client directly so we bypass auth
+        storage.put_memory(
+            Memory(key="theirs", value="v", tags=["not-mine"], owner_client_id="other-client")
+        )
+
+        result = await list_tags(ctx=_make_ctx(jwt))
+        assert result["tags"] == ["owned"]
+
+    async def test_requires_read_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import list_tags
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await list_tags(ctx=_make_ctx(write_only_jwt))
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +840,7 @@ class TestSearchMemories:
         item = result["items"][0]
         assert item["key"] == "search-key"
         assert item["score"] == 0.88
+        assert item["owner_client_id"] == client_id
 
     async def test_returns_empty_when_no_index(self, server_env):
         from unittest.mock import patch
@@ -632,6 +880,158 @@ class TestSearchMemories:
         write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
         with pytest.raises(ToolError, match="Insufficient scope"):
             await search_memories("q", ctx=_make_ctx(write_only_jwt))
+
+    async def test_min_score_filters_low_ranked_results(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("hi-key", "high match", ["t"], ctx=ctx)
+        await remember("lo-key", "low match", ["t"], ctx=ctx)
+        hi = storage.get_memory_by_key("hi-key")
+        lo = storage.get_memory_by_key("lo-key")
+        mock_vs = _make_mock_vector_store([(hi.memory_id, 0.9), (lo.memory_id, 0.3)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("anything", min_score=0.5, ctx=ctx)
+
+        assert result["count"] == 1
+        assert [item["key"] for item in result["items"]] == ["hi-key"]
+
+    async def test_min_score_none_returns_all(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "a", ["t"], ctx=ctx)
+        await remember("b", "b", ["t"], ctx=ctx)
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        mock_vs = _make_mock_vector_store([(a.memory_id, 0.9), (b.memory_id, 0.05)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", ctx=ctx)
+
+        assert result["count"] == 2
+
+    async def test_min_score_all_below_threshold_returns_empty(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("only-key", "v", ["t"], ctx=ctx)
+        m = storage.get_memory_by_key("only-key")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.2)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", min_score=0.9, ctx=ctx)
+
+        assert result == {"items": [], "count": 0, "query": "q"}
+
+    async def test_filter_tags_requires_all_tags(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "alpha", ["x", "y"], ctx=ctx)
+        await remember("b", "beta", ["x"], ctx=ctx)
+        await remember("c", "gamma", ["y"], ctx=ctx)
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        c = storage.get_memory_by_key("c")
+        mock_vs = _make_mock_vector_store(
+            [(a.memory_id, 0.9), (b.memory_id, 0.8), (c.memory_id, 0.7)]
+        )
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", filter_tags=["x", "y"], ctx=ctx)
+
+        # Only "a" has both x and y
+        assert [item["key"] for item in result["items"]] == ["a"]
+        assert result["count"] == 1
+
+    async def test_filter_tags_none_returns_all(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "v", ["x"], ctx=ctx)
+        a = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(a.memory_id, 0.9)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", ctx=ctx)
+
+        assert result["count"] == 1
+
+    async def test_filter_tags_requests_wider_candidate_pool(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import search_memories
+
+        _, _, jwt = server_env
+        mock_vs = _make_mock_vector_store([])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await search_memories("q", top_k=5, filter_tags=["x"], ctx=_make_ctx(jwt))
+
+        # When filter_tags is set, the vector search asks for the cap (50) so
+        # we can still return up to top_k matches after post-filtering.
+        assert mock_vs.search.call_args.kwargs["top_k"] == 50
+
+    async def test_filter_tags_trims_to_top_k_after_filter(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        for i in range(5):
+            await remember(f"k{i}", f"v{i}", ["x"], ctx=ctx)
+        mems = [storage.get_memory_by_key(f"k{i}") for i in range(5)]
+        mock_vs = _make_mock_vector_store(
+            [(m.memory_id, 0.9 - i * 0.1) for i, m in enumerate(mems)]
+        )
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", top_k=2, filter_tags=["x"], ctx=ctx)
+
+        assert result["count"] == 2
+        assert [item["key"] for item in result["items"]] == ["k0", "k1"]
+
+    async def test_min_score_clamped_to_unit_interval(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("key", "v", ["t"], ctx=ctx)
+        m = storage.get_memory_by_key("key")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 1.0)])
+
+        # min_score > 1.0 gets clamped to 1.0; a perfect score still matches
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("q", min_score=5.0, ctx=ctx)
+
+        assert result["count"] == 1
+
+        # min_score < 0.0 gets clamped to 0.0; everything passes
+        mock_vs2 = _make_mock_vector_store([(m.memory_id, 0.0)])
+        with patch("hive.server._vector_store", return_value=mock_vs2):
+            result = await search_memories("q", min_score=-1.0, ctx=ctx)
+
+        assert result["count"] == 1
 
     async def test_remember_dual_writes_to_vector_store(self, server_env):
         """remember() calls upsert_memory on the VectorStore for new memories."""
@@ -740,6 +1140,124 @@ class TestSearchMemories:
             result = await search_memories("anything", ctx=_make_ctx(jwt))
 
         assert result == {"items": [], "count": 0, "query": "anything"}
+
+
+# ---------------------------------------------------------------------------
+# relate_memories
+# ---------------------------------------------------------------------------
+
+
+class TestRelateMemories:
+    async def test_returns_related_with_source_excluded(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("source", "about cats and dogs", ["t"], ctx=ctx)
+        await remember("a", "cats are great pets", ["t"], ctx=ctx)
+        await remember("b", "dogs are great pets", ["t"], ctx=ctx)
+        src = storage.get_memory_by_key("source")
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        # Vector store also ranks the source highly; relate_memories must drop it.
+        mock_vs = _make_mock_vector_store(
+            [(src.memory_id, 0.99), (a.memory_id, 0.9), (b.memory_id, 0.8)]
+        )
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories("source", top_k=2, ctx=ctx)
+
+        keys = [item["key"] for item in result["items"]]
+        assert keys == ["a", "b"]
+        assert result["count"] == 2
+        assert result["key"] == "source"
+
+    async def test_uses_source_value_as_query(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("source", "unique search phrase", [], ctx=ctx)
+        mock_vs = _make_mock_vector_store([])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("source", ctx=ctx)
+
+        assert mock_vs.search.call_args.args[0] == "unique search phrase"
+        # top_k+1 requested so the source-memory drop still leaves headroom.
+        assert mock_vs.search.call_args.kwargs["top_k"] == 6
+
+    async def test_missing_key_raises_tool_error(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import relate_memories
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="No memory found"):
+            await relate_memories("nonexistent", ctx=_make_ctx(jwt))
+
+    async def test_returns_empty_when_no_index(self, server_env):
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import relate_memories, remember
+        from hive.vector_store import VectorIndexNotFoundError
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("src", "v", [], ctx=ctx)
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = VectorIndexNotFoundError("no index")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories("src", ctx=ctx)
+
+        assert result == {"items": [], "count": 0, "key": "src"}
+
+    async def test_returns_empty_on_vector_error(self, server_env):
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import relate_memories, remember
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("src", "v", [], ctx=ctx)
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = RuntimeError("bedrock down")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories("src", ctx=ctx)
+
+        assert result == {"items": [], "count": 0, "key": "src"}
+
+    async def test_top_k_clamped(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("src", "v", [], ctx=ctx)
+        mock_vs = _make_mock_vector_store([])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("src", top_k=999, ctx=ctx)
+
+        # 50 cap + 1 headroom
+        assert mock_vs.search.call_args.kwargs["top_k"] == 51
+
+    async def test_requires_read_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import relate_memories
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await relate_memories("any", ctx=_make_ctx(write_only_jwt))
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +1394,42 @@ class TestRestoreMemory:
 # ---------------------------------------------------------------------------
 # HiveTokenVerifier
 # ---------------------------------------------------------------------------
+
+
+class TestMcpToolAnnotations:
+    """Every exposed MCP tool should carry a user-friendly title and
+    annotations that let consent-aware clients (Claude Desktop, Claude Code)
+    render destructive operations differently from read-only ones.
+    """
+
+    @pytest.mark.parametrize(
+        "tool_name,title,read_only,destructive",
+        [
+            ("ping", "Ping", True, None),
+            ("remember", "Remember", False, False),
+            ("remember_if_absent", "Remember if absent", False, False),
+            ("recall", "Recall", True, None),
+            ("forget", "Forget", False, True),
+            ("forget_all", "Forget all (by tag)", False, True),
+            ("memory_history", "Memory history", True, None),
+            ("restore_memory", "Restore memory", False, False),
+            ("list_memories", "List memories", True, None),
+            ("list_tags", "List tags", True, None),
+            ("summarize_context", "Summarise context", True, None),
+            ("search_memories", "Search memories", True, None),
+            ("relate_memories", "Relate memories", True, None),
+        ],
+    )
+    async def test_title_and_hints(self, tool_name, title, read_only, destructive):
+        from hive.server import mcp
+
+        tool = await mcp.get_tool(tool_name)
+        assert tool.title == title
+        assert tool.annotations.readOnlyHint is read_only
+        # destructiveHint is only set when meaningful.
+        assert tool.annotations.destructiveHint is destructive
+        # Every Hive tool is closed-world (our DynamoDB only).
+        assert tool.annotations.openWorldHint is False
 
 
 class TestHiveTokenVerifier:

@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import PageLayout from "@/components/PageLayout";
+import { FREE_TIER_MEMORY_LIMIT } from "@/lib/limits";
 
 const FAQS = [
   {
@@ -10,11 +11,11 @@ const FAQS = [
   },
   {
     q: "What are the usage limits?",
-    a: "There are no hard limits on the number of memories or API calls during the free period. We reserve the right to introduce fair-use limits in future to ensure service quality for all users — we'll give plenty of notice before doing so.",
+    a: `Free accounts can store up to ${FREE_TIER_MEMORY_LIMIT} memories. Once you reach the limit, new memories are rejected until you delete existing ones. Additional rate limits may apply to prevent abuse. We'll communicate any changes to these limits with plenty of notice.`,
   },
   {
     q: "Which MCP clients are supported?",
-    a: "Any client that implements the Model Context Protocol works with Hive. Tested clients include Claude Code, Claude Desktop, Cursor, and Continue. If your client supports MCP, it will work.",
+    a: "Any client that implements the Model Context Protocol works with Hive. Tested clients include Claude Code, Claude Desktop, ChatGPT, Cursor, and Continue. If your client supports MCP, it will work.",
   },
   {
     q: "How do I delete my account or data?",
@@ -30,7 +31,7 @@ const FAQS = [
   },
   {
     q: "How do I connect my MCP client?",
-    a: "Sign in, register a client in the management UI, and copy the one-line config snippet into your MCP client's configuration file. Full step-by-step instructions are in the docs.",
+    a: "Sign in and open the Setup tab. Copy the config snippet (a short JSON block) into your MCP client's config file. The first time your client uses a Hive tool it opens a browser window to complete OAuth — after that the connection is maintained automatically. Full step-by-step instructions are in the docs.",
   },
   {
     q: "Does Hive work offline or self-hosted?",

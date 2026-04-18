@@ -39,6 +39,7 @@ from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_s3vectors as s3vectors
 from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as sns_subs
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_wafv2 as wafv2
 from constructs import Construct
@@ -188,6 +189,20 @@ class HiveStack(cdk.Stack):
             tier=ssm.ParameterTier.STANDARD,
         )
         origin_verify_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
+
+        # Email address that receives CloudWatch alarm + recovery notifications.
+        # Set the parameter value in SSM after first deploy, then confirm the
+        # auto-created SNS subscription from your inbox. See
+        # docs-site/ops/alarms.md for the first-deploy checklist.
+        alarm_email_param = ssm.StringParameter(
+            self,
+            "AlarmEmail",
+            parameter_name=_ssm_path("alarm-email"),
+            string_value="CHANGE_ME_ON_FIRST_DEPLOY",
+            description=f"Recipient for CloudWatch alarm notifications ({env_name})",
+            tier=ssm.ParameterTier.STANDARD,
+        )
+        alarm_email_param.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
 
         # ----------------------------------------------------------------
         # Shared Lambda code (Docker-bundled at cdk deploy time)
@@ -498,12 +513,71 @@ class HiveStack(cdk.Stack):
             custom_headers=origin_verify_header,
         )
 
+        # ----------------------------------------------------------------
+        # CloudFront response headers — security hardening
+        #
+        # CSP ships in Report-Only mode first; browser console surfaces
+        # violations without breaking the site. Flip to enforcing in a
+        # follow-up once logs are clean for ~1 week.
+        # ----------------------------------------------------------------
+        csp_report_only = (
+            "default-src 'self'; "
+            "script-src 'self' https://www.googletagmanager.com; "
+            "connect-src 'self' https://www.google-analytics.com "
+            "https://hive.warlordofmars.net; "
+            "img-src 'self' data: https://www.google-analytics.com; "
+            "style-src 'self' 'unsafe-inline'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self';"
+        )
+        security_headers_policy = cloudfront.ResponseHeadersPolicy(
+            self,
+            "HiveSecurityHeadersPolicy",
+            response_headers_policy_name=f"hive-security-headers-{env_name}",
+            comment="Hive security response headers (HSTS, CSP-RO, frame/referrer/permissions)",
+            security_headers_behavior=cloudfront.ResponseSecurityHeadersBehavior(
+                strict_transport_security=cloudfront.ResponseHeadersStrictTransportSecurity(
+                    access_control_max_age=cdk.Duration.seconds(31536000),
+                    include_subdomains=True,
+                    preload=True,
+                    override=True,
+                ),
+                content_type_options=cloudfront.ResponseHeadersContentTypeOptions(
+                    override=True,
+                ),
+                frame_options=cloudfront.ResponseHeadersFrameOptions(
+                    frame_option=cloudfront.HeadersFrameOption.DENY,
+                    override=True,
+                ),
+                referrer_policy=cloudfront.ResponseHeadersReferrerPolicy(
+                    referrer_policy=cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+                    override=True,
+                ),
+            ),
+            custom_headers_behavior=cloudfront.ResponseCustomHeadersBehavior(
+                custom_headers=[
+                    cloudfront.ResponseCustomHeader(
+                        header="Permissions-Policy",
+                        value="camera=(), microphone=(), geolocation=(), payment=()",
+                        override=True,
+                    ),
+                    cloudfront.ResponseCustomHeader(
+                        header="Content-Security-Policy-Report-Only",
+                        value=csp_report_only,
+                        override=True,
+                    ),
+                ],
+            ),
+        )
+
         api_behavior = cloudfront.BehaviorOptions(
             origin=api_cf_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            response_headers_policy=security_headers_policy,
         )
         mcp_behavior = cloudfront.BehaviorOptions(
             origin=mcp_cf_origin,
@@ -511,6 +585,7 @@ class HiveStack(cdk.Stack):
             cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            response_headers_policy=security_headers_policy,
         )
 
         # ----------------------------------------------------------------
@@ -714,6 +789,7 @@ function handler(event) {
             origin=ui_s3_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+            response_headers_policy=security_headers_policy,
             function_associations=[
                 cloudfront.FunctionAssociation(
                     function=docs_rewrite_fn,
@@ -729,6 +805,7 @@ function handler(event) {
                 origin=ui_s3_origin,
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                response_headers_policy=security_headers_policy,
             ),
             additional_behaviors={
                 "/api/*": api_behavior,
@@ -739,12 +816,14 @@ function handler(event) {
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                    response_headers_policy=security_headers_policy,
                 ),
                 "/health": cloudfront.BehaviorOptions(
                     origin=api_cf_origin,
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                    response_headers_policy=security_headers_policy,
                 ),
                 "/mcp*": mcp_behavior,
                 "/docs*": docs_behavior,
@@ -943,12 +1022,21 @@ function handler(event) {
         _API_ERROR_BUDGET_PCT = 1.0
 
         # SNS topic for alarm notifications — prod only gets an email subscription
-        # (subscription address can be set via the console after first deploy).
+        # (subscription address lives in SSM /hive/{env}/alarm-email; set it
+        # post-deploy, then run `aws sns subscribe --protocol email ...`).
         alarm_topic = sns.Topic(
             self,
             "AlarmTopic",
             display_name=f"Hive alarms ({env_name})",
         )
+
+        def _notify(alarm: cw.Alarm) -> cw.Alarm:
+            """Attach SNS alarm + OK actions (prod only), so recovery also pages."""
+            if is_prod:
+                action = cw_actions.SnsAction(alarm_topic)
+                alarm.add_alarm_action(action)
+                alarm.add_ok_action(action)
+            return alarm
 
         def _error_rate_alarm(
             construct_id: str,
@@ -978,9 +1066,7 @@ function handler(event) {
                 treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
                 alarm_description=f"Hive {label} error rate > 5% ({env_name})",
             )
-            if is_prod:
-                alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
-            return alarm
+            return _notify(alarm)
 
         mcp_error_alarm = _error_rate_alarm("McpErrorRateAlarm", mcp_fn, "MCP")
         api_error_alarm = _error_rate_alarm("ApiErrorRateAlarm", api_fn, "API")
@@ -1000,8 +1086,7 @@ function handler(event) {
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description=f"Hive MCP P99 duration > 25s ({env_name})",
         )
-        if is_prod:
-            mcp_p99_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+        _notify(mcp_p99_alarm)
 
         # DynamoDB throttle alarm: any throttled requests over 5 min
         ddb_throttle_alarm = cw.Alarm(
@@ -1021,8 +1106,7 @@ function handler(event) {
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description=f"Hive DynamoDB throttled requests > 0 ({env_name})",
         )
-        if is_prod:
-            ddb_throttle_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+        _notify(ddb_throttle_alarm)
 
         # CloudFront 5xx error rate alarm: > 1% over 5 min
         cf_5xx_alarm = cw.Alarm(
@@ -1045,8 +1129,7 @@ function handler(event) {
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description=f"Hive CloudFront 5xx rate > 1% ({env_name})",
         )
-        if is_prod:
-            cf_5xx_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+        _notify(cf_5xx_alarm)
 
         # Custom EMF metric alarms
         tool_errors_alarm = cw.Alarm(
@@ -1067,8 +1150,7 @@ function handler(event) {
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description=f"Hive tool errors > 10 in 5 min ({env_name})",
         )
-        if is_prod:
-            tool_errors_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+        _notify(tool_errors_alarm)
 
         storage_latency_alarm = cw.Alarm(
             self,
@@ -1088,8 +1170,75 @@ function handler(event) {
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description=f"Hive storage latency p99 > 2000ms ({env_name})",
         )
-        if is_prod:
-            storage_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+        _notify(storage_latency_alarm)
+
+        # Lambda throttles — any throttled invocation is a capacity issue to
+        # investigate immediately; no tolerance.
+        def _throttle_alarm(construct_id: str, fn: lambda_.Function, label: str) -> cw.Alarm:
+            alarm = cw.Alarm(
+                self,
+                construct_id,
+                alarm_name=f"Hive-{env_name}-{construct_id.removesuffix('Alarm')}",
+                metric=fn.metric_throttles(
+                    period=cdk.Duration.minutes(5), statistic="Sum"
+                ),
+                threshold=0,
+                evaluation_periods=1,
+                comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+                treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+                alarm_description=f"Hive {label} Lambda throttles > 0 ({env_name})",
+            )
+            return _notify(alarm)
+
+        mcp_throttles_alarm = _throttle_alarm("McpThrottlesAlarm", mcp_fn, "MCP")
+        api_throttles_alarm = _throttle_alarm("ApiThrottlesAlarm", api_fn, "API")
+
+        # DynamoDB user errors — 4xx-class failures from the SDK (validation,
+        # ConditionalCheckFailed, etc.). A small rate is normal (optimistic
+        # writes race); > 10 in 5 min usually means a bug or a misconfigured
+        # client.
+        ddb_user_errors_alarm = cw.Alarm(
+            self,
+            "DdbUserErrorsAlarm",
+            alarm_name=f"Hive-{env_name}-DdbUserErrors",
+            metric=cw.Metric(
+                namespace="AWS/DynamoDB",
+                metric_name="UserErrors",
+                dimensions_map={"TableName": table.table_name},
+                period=cdk.Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=10,
+            evaluation_periods=1,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive DynamoDB user errors > 10 in 5 min ({env_name})",
+        )
+        _notify(ddb_user_errors_alarm)
+
+        # Business metric: Bearer-token rejections from the existing
+        # `TokenValidationFailures` EMF metric. Spike usually means a
+        # credential leak or a misconfigured client — investigate before it
+        # triggers rate-limiter churn.
+        auth_failures_alarm = cw.Alarm(
+            self,
+            "AuthFailuresAlarm",
+            alarm_name=f"Hive-{env_name}-AuthFailures",
+            metric=cw.Metric(
+                namespace="Hive",
+                metric_name="TokenValidationFailures",
+                dimensions_map={"Environment": env_name},
+                period=cdk.Duration.minutes(5),
+                statistic="Sum",
+            ),
+            threshold=10,
+            evaluation_periods=2,
+            datapoints_to_alarm=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_description=f"Hive auth failures > 10 in 5 min ({env_name})",
+        )
+        _notify(auth_failures_alarm)
 
         # SLO burn rate alarms
         # Fast burn (>5×): error rate exceeds 5 × error_budget over 1 hour
@@ -1133,9 +1282,7 @@ function handler(event) {
                     f"over {window_minutes}m (budget={error_budget_pct}% × {burn_multiplier}×) ({env_name})"
                 ),
             )
-            if is_prod:
-                alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
-            return alarm
+            return _notify(alarm)
 
         mcp_fast_burn_alarm = _burn_rate_alarm(
             "McpFastBurnAlarm", mcp_fn, "MCP", _MCP_ERROR_BUDGET_PCT, 5, 60
@@ -1165,8 +1312,7 @@ function handler(event) {
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
             alarm_description=f"Hive MCP p95 latency > 2000ms over 1h (SLO breach) ({env_name})",
         )
-        if is_prod:
-            mcp_p95_latency_alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
+        _notify(mcp_p95_latency_alarm)
 
         # Dashboard
         dashboard = cw.Dashboard(

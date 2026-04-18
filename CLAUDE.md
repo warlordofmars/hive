@@ -466,10 +466,60 @@ calls and document them in the PR description.
 When given one or more GitHub issue numbers, process them **sequentially**.
 Complete the full cycle for each issue before starting the next.
 
+When given no specific issue number, use the selection algorithm in §0 to
+pick the next one from the queue.
+
 When processing a batch of issues, after completing each issue cycle
 successfully, append the issue number to `.autonomous-progress` in the
 repo root. This allows an interrupted batch to be resumed by checking
 which issues are already recorded there.
+
+#### 0. Pick the next issue (if none was given)
+
+Every open issue should carry three metadata labels:
+
+- **Status** — `status:ready`, `status:blocked`, `status:design-needed`,
+  or `status:needs-info`
+- **Priority** — `priority:p0` (ship this week) through `priority:p3`
+  (someday-maybe)
+- **Size** — `size:xs` (<1h), `size:s` (half-day), `size:m` (1–2 days),
+  `size:l` (3–5 days), `size:xl` (epic; break down before picking up)
+
+Pick the next issue using this deterministic queue:
+
+1. **Filter** to issues matching ALL of:
+   - `state:open`
+   - `status:ready` (exclude `status:blocked`, `status:design-needed`,
+     `status:needs-info`)
+   - no assignee (not already being worked on)
+   - not labelled `epic` (those are tracking issues, not implementation work)
+
+2. **Sort** by priority descending: `p0` > `p1` > `p2` > `p3`.
+   Missing priority label → treat as `p3`.
+
+3. **Break priority ties** by size ascending (smallest first):
+   `xs` > `s` > `m` > `l` > `xl`. Missing size label → treat as `m`.
+
+4. **Break remaining ties** by issue number ascending (oldest first).
+
+Saved GitHub query for the top of the queue:
+
+```
+is:issue is:open no:assignee label:status:ready -label:epic
+```
+
+Sort the result by label priority manually (GitHub search doesn't sort by
+label precedence).
+
+**Never pick** issues labelled `status:design-needed` or `status:needs-info`.
+If you believe one of those issues is actually ready, state the case in a
+comment and ask for the label to be changed — do not proceed unilaterally.
+
+**Never pick** `size:xl` issues. Ask the user to break them into smaller
+issues first.
+
+**Never pick** issues from the "Stop and ask" list below, even if labelled
+`status:ready`.
 
 #### 1. Understand the issue
 
@@ -652,6 +702,40 @@ If the pipeline fails:
 
 Only move to the next issue when the `development` pipeline is green.
 
+#### 9. Check if the milestone is drained
+
+After the development pipeline is green, check whether the closed issue's
+milestone still has any open, non-epic issues:
+
+```bash
+# Resolve the milestone number from the issue just closed (via gh)
+MILESTONE=$(gh issue view <number> --json milestone --jq '.milestone.title')
+
+# If the milestone exists and matches a release-milestone pattern (vX.Y),
+# count the open non-epic issues remaining in it
+if [[ -n "$MILESTONE" && "$MILESTONE" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+  REMAINING=$(gh issue list \
+    --milestone "$MILESTONE" \
+    --state open \
+    --json labels \
+    --jq '[.[] | select(.labels | map(.name) | contains(["epic"]) | not)] | length')
+
+  if [ "$REMAINING" -eq 0 ]; then
+    echo "HUMAN_INPUT_REQUIRED: Milestone $MILESTONE has no open issues — ready to cut release?"
+    exit 0   # stop; do not pick up the next issue
+  fi
+fi
+```
+
+If the release milestone is drained, stop and surface the sentinel so the
+operator can decide whether to cut the release first or continue draining
+from `Backlog`. Do **not** unilaterally create a release branch — releases
+are a human decision per §Releasing to production.
+
+If the milestone is non-release (e.g. `Backlog`, `MVP-hardening`), or the
+issue has no milestone, or there are still open non-epic items: skip this
+step and pick up the next issue normally.
+
 ### Keeping CLAUDE.md current
 
 If you discover that CLAUDE.md is missing information needed to work
@@ -686,6 +770,9 @@ Halt and wait for human input **only** in these situations:
 - A change requires modifying `infra/stacks/hive_stack.py` in a way that
   could affect production resources
 - The same CI check has failed 3 times without a clear fix
+- A release milestone (pattern `vX.Y`) drains to zero open non-epic issues —
+  stop after step 9 and surface so the user can decide whether to cut the
+  release before continuing
 
 In all other cases, make a judgment call and proceed.
 
@@ -698,3 +785,85 @@ In all other cases, make a judgment call and proceed.
 - Use `pip` or `requirements.txt` — always use `uv`
 - Skip `inv pre-push` before creating a PR
 - Pin GitHub Actions to mutable version tags — use full commit SHAs
+
+## Backlog labels and milestones
+
+The selection algorithm in §Autonomous issue workflow §0 assumes every
+open implementation issue carries status + priority + size + area labels.
+This section defines the taxonomy and the creation rules that keep the
+queue trustworthy.
+
+### Status (one, required)
+
+- `status:ready` — fully scoped, queue-eligible
+- `status:blocked` — depends on another issue; body must name the blocker
+  with `Blocked by #N`. Not queue-eligible
+- `status:design-needed` — needs a decision before implementation. Not
+  queue-eligible
+- `status:needs-info` — waiting on reporter/user. Not queue-eligible
+
+### Priority (one, required)
+
+- `priority:p0` — compliance, security, or outage-adjacent; ship this week
+- `priority:p1` — ship this quarter
+- `priority:p2` — ship eventually; useful but not urgent
+- `priority:p3` — someday-maybe
+
+### Size (one, required)
+
+- `size:xs` — less than 1 hour
+- `size:s` — half a day
+- `size:m` — 1–2 days
+- `size:l` — 3–5 days
+- `size:xl` — a week or more; must be broken down before the agent picks
+  it up
+
+### Area (one or more, required)
+
+`ui`, `ux`, `a11y`, `api`, `mcp`, `auth`, `infra`, `ci`, `dx`, `sdk`,
+`security`, `compliance`, `docs`, `design`, `performance`, `observability`,
+`marketing`, `seo`, `growth`, `ops`, `reliability`.
+
+### Special labels
+
+- `epic` — tracking issue with sub-issue checklist; never queue-eligible
+- `bug` / `enhancement` / `chore` — issue type
+
+### Issue creation rules
+
+When filing a new issue:
+
+1. Use the GitHub issue template (defaults to `status:ready`)
+2. Add a `priority:*` label and a `size:*` label before leaving the page
+3. Add at least one area label
+4. If the issue is part of an existing epic, add `Part of #NNN` to the
+   body so the epic's checklist stays linked
+5. If the issue depends on another, add `Blocked by #NNN` to the body and
+   apply `status:blocked`
+
+The `label-check.yml` workflow enforces status + priority + size at PR
+merge time for any PR that contains `Closes #NNN`.
+
+### Milestones
+
+Keep **three** active milestones at any time — no more:
+
+1. **Current release** (e.g. `v0.20`) — what ships next
+2. **Themed hardening bucket** (e.g. `MVP-hardening`) — ship-blocking work
+   that's too large for the current release
+3. **`Backlog`** — accepted but unscheduled p2/p3 work
+
+Epics are **not** milestoned — they span multiple releases.
+
+Do not create future release milestones in advance; they become stockpiles
+and degrade the "what's next" signal. When the current release closes,
+create the next one and promote items from the hardening bucket.
+
+### Triage cadence (human, not agent)
+
+- **Weekly** — glance at issues created in the last 7 days; fix any
+  missing priority / size / area labels
+- **Monthly** — review the hardening bucket and promote shippable items
+  into the current release
+- **Quarterly** — review `priority:p3` and `status:design-needed` issues;
+  promote, rescope, or close. Don't let them rot

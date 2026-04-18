@@ -44,7 +44,7 @@ describe("HomePage", () => {
   it("renders all how-it-works steps", async () => {
     await act(async () => renderInRouter(<HomePage />));
     expect(screen.getByText(/Sign in with Google/)).toBeTruthy();
-    expect(screen.getByText(/Register an MCP client/)).toBeTruthy();
+    expect(screen.getByText(/Connect your MCP client/)).toBeTruthy();
     expect(screen.getByText(/Start remembering/)).toBeTruthy();
   });
 

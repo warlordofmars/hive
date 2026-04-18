@@ -14,7 +14,7 @@ Memories are never shared between accounts, and Hive does not use your data to t
 
 ### Where is my data stored?
 
-Data is stored on AWS infrastructure (DynamoDB, S3 Vectors) in the US East region. Data is encrypted at rest and in transit.
+Data is stored on AWS infrastructure (DynamoDB, S3 Vectors) in the US East region. Data is encrypted at rest and in transit. A full list of third parties that process data on our behalf — AWS, Google OAuth, and Google Analytics — is maintained on the [Subprocessors page](https://hive.warlordofmars.net/subprocessors).
 
 ### Can Anthropic or other AI providers see my memories?
 
@@ -30,7 +30,7 @@ All memories, OAuth clients, tokens, and activity log entries associated with yo
 
 ### How many memories can I store?
 
-There is currently no hard limit on the number of memories per account. Very large memory stores (tens of thousands of memories) may affect search and retrieval performance.
+Free accounts can store up to 500 memories. Once you reach the limit, new `remember` calls are rejected until you delete existing memories. Large memory stores may also affect search and retrieval performance.
 
 ### How large can a memory value be?
 
@@ -38,7 +38,7 @@ Up to approximately 380 KB of text per memory. This is enough for several pages 
 
 ### How long are tokens valid?
 
-Access tokens are valid for **1 hour** and refresh automatically in supported clients (Claude Code, Claude Desktop, claude.ai). Refresh tokens are valid for **30 days**.
+Access tokens are valid for **1 hour** and refresh automatically in supported clients (Claude Code, Claude Desktop, ChatGPT, claude.ai). Refresh tokens are valid for **30 days**.
 
 ---
 
@@ -53,6 +53,10 @@ Go to the **Clients** tab in the management UI and click **Delete** on the clien
 Sign into the management UI and go to **Settings → Delete account**. This permanently deletes all your data.
 
 If you can't access your account, contact support.
+
+### How do I export my data?
+
+Sign into the management UI and click **Settings → Export my data**. You'll download a JSON file with your profile, all memories, OAuth clients, and the last 90 days of activity. The same data is available programmatically via `GET /api/account/export` (Bearer auth required). Rate-limited to one export per 5 minutes.
 
 ### Can I use Hive with multiple devices?
 

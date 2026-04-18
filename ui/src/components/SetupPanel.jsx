@@ -1,6 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
-import { AlertTriangle, Check } from "lucide-react";
+import { AlertTriangle, Check, Download } from "lucide-react";
 import { api } from "../api.js";
 import { Button } from "./ui/button.jsx";
 import { Card } from "./ui/card.jsx";
@@ -10,7 +10,9 @@ const STEP1_KEY = "hive_setup_step1_done";
 export default function SetupPanel() {
   const mcpUrl = import.meta.env.VITE_MCP_BASE ?? `${globalThis.location.origin}/mcp`;
   const [activeTab, setActiveTab] = useState("code");
+  const [desktopMode, setDesktopMode] = useState("url"); // "url" | "json"
   const [copied, setCopied] = useState(false);
+  const [urlCopied, setUrlCopied] = useState(false);
   const [step1Done, setStep1Done] = useState(() => !!localStorage.getItem(STEP1_KEY));
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null); // "ok" | "error"
@@ -19,6 +21,28 @@ export default function SetupPanel() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [quota, setQuota] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError("");
+    try {
+      const result = await api.exportAccount();
+      if (!result) return;
+      const { blob, filename } = result;
+      const url = URL.createObjectURL(blob);
+      const link = globalThis.document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setExportError(e.message ?? "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   useEffect(function loadQuota() {
     api.getStats().then(function handleStats(s) {
@@ -50,6 +74,14 @@ export default function SetupPanel() {
     localStorage.setItem(STEP1_KEY, "1");
     setStep1Done(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  function handleCopyUrl() {
+    navigator.clipboard.writeText(mcpUrl);
+    setUrlCopied(true);
+    localStorage.setItem(STEP1_KEY, "1");
+    setStep1Done(true);
+    setTimeout(() => setUrlCopied(false), 2000);
   }
 
   async function handleDeleteAccount() {
@@ -125,7 +157,7 @@ export default function SetupPanel() {
           needed.
         </p>
 
-        <div className="flex gap-1 mb-0">
+        <div className="flex gap-1 mb-0 flex-wrap">
           <button className={tabClassName("code")} onClick={() => setActiveTab("code")}>
             Claude Code
           </button>
@@ -135,33 +167,51 @@ export default function SetupPanel() {
           <button className={tabClassName("desktop")} onClick={() => setActiveTab("desktop")}>
             Claude Desktop
           </button>
+          <button className={tabClassName("chatgpt")} onClick={() => setActiveTab("chatgpt")}>
+            ChatGPT
+          </button>
         </div>
 
         <div className="border border-[var(--border)] rounded-b rounded-tr p-3 bg-[var(--bg)]">
+          {(activeTab === "desktop" || activeTab === "chatgpt") && (
+            <DesktopOrChatgptInstructions
+              activeTab={activeTab}
+              desktopMode={desktopMode}
+              setDesktopMode={setDesktopMode}
+              mcpUrl={mcpUrl}
+              configs={configs}
+              urlCopied={urlCopied}
+              copied={copied}
+              handleCopy={handleCopy}
+              handleCopyUrl={handleCopyUrl}
+            />
+          )}
           {activeTab === "code" && (
-            <p className="mb-2 text-[var(--text-muted)] text-[13px]">
-              Add to <code>~/.claude/settings.json</code>:
-            </p>
+            <>
+              <p className="mb-2 text-[var(--text-muted)] text-[13px]">
+                Add to <code>~/.claude/settings.json</code>:
+              </p>
+              <pre className="bg-[var(--surface)] border border-[var(--border)] rounded p-3 text-[13px] overflow-x-auto text-[var(--text)]">
+                {configs[activeTab]}
+              </pre>
+              <Button variant="secondary" className="mt-2" onClick={handleCopy}>
+                {copied ? "Copied!" : "Copy"}
+              </Button>
+            </>
           )}
           {activeTab === "cursor" && (
-            <p className="mb-2 text-[var(--text-muted)] text-[13px]">
-              Add to <code>~/.cursor/mcp.json</code> (create it if it doesn't exist):
-            </p>
+            <>
+              <p className="mb-2 text-[var(--text-muted)] text-[13px]">
+                Add to <code>~/.cursor/mcp.json</code> (create it if it doesn't exist):
+              </p>
+              <pre className="bg-[var(--surface)] border border-[var(--border)] rounded p-3 text-[13px] overflow-x-auto text-[var(--text)]">
+                {configs[activeTab]}
+              </pre>
+              <Button variant="secondary" className="mt-2" onClick={handleCopy}>
+                {copied ? "Copied!" : "Copy"}
+              </Button>
+            </>
           )}
-          {activeTab === "desktop" && (
-            <p className="mb-2 text-[var(--text-muted)] text-[13px]">
-              Add to{" "}
-              <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>.
-              Requires <a href="https://github.com/geelen/mcp-remote" target="_blank" rel="noreferrer">mcp-remote</a> (
-              <code>npx</code> will install it automatically):
-            </p>
-          )}
-          <pre className="bg-[var(--surface)] border border-[var(--border)] rounded p-3 text-[13px] overflow-x-auto text-[var(--text)]">
-            {configs[activeTab]}
-          </pre>
-          <Button variant="secondary" className="mt-2" onClick={handleCopy}>
-            {copied ? "Copied!" : "Copy"}
-          </Button>
         </div>
       </section>
 
@@ -173,7 +223,9 @@ export default function SetupPanel() {
         <p className="text-[var(--text-muted)] mb-3">
           {activeTab === "code" && "Open Claude Code. The next time you use a Hive memory tool, it will prompt you to authorise access via your browser. Complete the flow and you're done."}
           {activeTab === "cursor" && "Restart Cursor. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."}
-          {activeTab === "desktop" && "Restart Claude Desktop. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."}
+          {activeTab === "desktop" && desktopMode === "url" && "After saving the connector, Claude Desktop opens your browser to complete OAuth. Confirm access and you're connected."}
+          {activeTab === "desktop" && desktopMode === "json" && "Restart Claude Desktop. On first use it will open a browser window to complete the OAuth flow. After authorising, the connection is maintained automatically."}
+          {activeTab === "chatgpt" && "ChatGPT opens an OAuth pop-up the first time the connector is used. Approve access and the connection is kept open until you revoke it."}
         </p>
         <div className="flex items-center gap-3">
           <Button variant="secondary" onClick={handleTest} disabled={testing}>
@@ -190,6 +242,29 @@ export default function SetupPanel() {
         </div>
       </section>
 
+      <section className="mt-12 border-t border-[var(--border)] pt-8">
+        <h3 className="mb-3">Tip — naming your memories</h3>
+        <p className="text-[var(--text-muted)] mb-3 text-sm">
+          Keys are free-form, but a structured scheme keeps your store organised as it grows.
+          We recommend:
+        </p>
+        <pre className="bg-[var(--surface)] border border-[var(--border)] rounded p-3 text-[13px] overflow-x-auto text-[var(--text)] mb-3">
+          {"{domain}:{entity-type}/{entity-id}:{attribute}\n\nproject:task/42:summary\nuser:profile/alice:preferences\nsession:current:context"}
+        </pre>
+        <p className="text-[var(--text-muted)] text-sm">
+          See the{" "}
+          <a
+            href="/docs/concepts/key-conventions"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[var(--accent)] underline"
+          >
+            key naming conventions
+          </a>{" "}
+          docs for the full guide.
+        </p>
+      </section>
+
       {quota && (
         <section className="mt-12 border-t border-[var(--border)] pt-8">
           <h3 className="mb-4">Usage</h3>
@@ -199,6 +274,23 @@ export default function SetupPanel() {
           </div>
         </section>
       )}
+
+      <section className="mt-12 border-t border-[var(--border)] pt-8">
+        <h3 className="mb-2 flex items-center gap-2">
+          <Download size={18} />
+          Export my data
+        </h3>
+        <p className="text-[var(--text-muted)] mb-4 text-sm">
+          Download a JSON file containing your profile, memories, OAuth clients, and the last
+          90 days of activity. Limited to one export every 5 minutes.
+        </p>
+        {exportError && (
+          <p className="text-[var(--danger)] text-[13px] mb-3">{exportError}</p>
+        )}
+        <Button variant="secondary" onClick={handleExport} disabled={exporting}>
+          {exporting ? "Preparing…" : "Export my data"}
+        </Button>
+      </section>
 
       <section className="mt-12 border-t border-[var(--border)] pt-8">
         <h3 className="mb-2 flex items-center gap-2 text-[var(--danger)]">
@@ -245,6 +337,89 @@ export default function SetupPanel() {
         )}
       </section>
     </div>
+  );
+}
+
+function DesktopOrChatgptInstructions({
+  activeTab,
+  desktopMode,
+  setDesktopMode,
+  mcpUrl,
+  configs,
+  urlCopied,
+  copied,
+  handleCopy,
+  handleCopyUrl,
+}) {
+  const isChatgpt = activeTab === "chatgpt";
+  const showJsonForm = activeTab === "desktop" && desktopMode === "json";
+
+  if (showJsonForm) {
+    return (
+      <>
+        <p className="mb-2 text-[var(--text-muted)] text-[13px]">
+          Add to{" "}
+          <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>.
+          Requires <a href="https://github.com/geelen/mcp-remote" target="_blank" rel="noreferrer">mcp-remote</a> (
+          <code>npx</code> will install it automatically):
+        </p>
+        <pre className="bg-[var(--surface)] border border-[var(--border)] rounded p-3 text-[13px] overflow-x-auto text-[var(--text)]">
+          {configs.desktop}
+        </pre>
+        <Button variant="secondary" className="mt-2" onClick={handleCopy}>
+          {copied ? "Copied!" : "Copy"}
+        </Button>
+        <button
+          type="button"
+          className="block mt-3 text-[13px] text-[var(--accent)] underline bg-transparent"
+          onClick={() => setDesktopMode("url")}
+        >
+          ← Back to the Custom Connector flow (recommended)
+        </button>
+      </>
+    );
+  }
+
+  const steps = isChatgpt
+    ? [
+        "Open ChatGPT → Settings → Connectors (Developer mode required).",
+        "Click Add → MCP server.",
+        "Paste the URL below, save, and approve the OAuth pop-up that follows.",
+      ]
+    : [
+        "Open Claude Desktop → Settings → Connectors.",
+        "Click Add custom connector.",
+        "Paste the URL below, save, and complete the browser OAuth flow.",
+      ];
+
+  return (
+    <>
+      <p className="mb-2 text-[var(--text-muted)] text-[13px]">
+        {isChatgpt
+          ? "Add Hive as a remote MCP App. ChatGPT handles OAuth in the browser — no config file needed."
+          : "Add Hive as a Custom Connector. Claude Desktop handles OAuth in the browser — no config file or mcp-remote helper needed."}
+      </p>
+      <ol className="list-decimal pl-5 mb-3 text-[13px] text-[var(--text)] space-y-1">
+        {steps.map((s) => (
+          <li key={s}>{s}</li>
+        ))}
+      </ol>
+      <pre className="bg-[var(--surface)] border border-[var(--border)] rounded p-3 text-[13px] overflow-x-auto text-[var(--text)]">
+        {mcpUrl}
+      </pre>
+      <Button variant="secondary" className="mt-2" onClick={handleCopyUrl}>
+        {urlCopied ? "Copied!" : "Copy URL"}
+      </Button>
+      {!isChatgpt && (
+        <button
+          type="button"
+          className="block mt-3 text-[13px] text-[var(--text-muted)] underline bg-transparent"
+          onClick={() => setDesktopMode("json")}
+        >
+          Prefer JSON? (legacy mcp-remote setup)
+        </button>
+      )}
+    </>
   );
 }
 

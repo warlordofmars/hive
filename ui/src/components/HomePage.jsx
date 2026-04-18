@@ -15,7 +15,7 @@ const FEATURES = [
   {
     icon: Plug,
     title: "Works with any MCP client",
-    body: "Plug in to Claude Code, Claude Desktop, Cursor, Continue, or any client that speaks the Model Context Protocol.",
+    body: "Plug in to Claude Code, Claude Desktop, ChatGPT, Cursor, Continue, or any client that speaks the Model Context Protocol.",
   },
   {
     icon: Users,
@@ -37,8 +37,8 @@ const HOW_IT_WORKS = [
   },
   {
     step: "2",
-    title: "Register an MCP client",
-    body: "Give your agent a name and copy the one-line config snippet into your MCP client.",
+    title: "Connect your MCP client",
+    body: "Paste Hive's config snippet into your client. On first use your browser opens once to approve access — after that it's automatic.",
   },
   {
     step: "3",
