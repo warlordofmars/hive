@@ -38,7 +38,7 @@ Up to approximately 380 KB of text per memory. This is enough for several pages 
 
 ### How long are tokens valid?
 
-Access tokens are valid for **1 hour** and refresh automatically in supported clients (Claude Code, Claude Desktop, claude.ai). Refresh tokens are valid for **30 days**.
+Access tokens are valid for **1 hour** and refresh automatically in supported clients (Claude Code, Claude Desktop, ChatGPT, claude.ai). Refresh tokens are valid for **30 days**.
 
 ---
 

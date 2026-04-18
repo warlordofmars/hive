@@ -8,9 +8,16 @@ Go to [hive.warlordofmars.net](https://hive.warlordofmars.net) and sign in with 
 
 ## Step 2 — Connect your MCP client
 
-Add Hive to your MCP client config. The config depends on which client you use:
+Connect Hive to your MCP client. The exact path depends on the client:
 
 ::: code-group
+
+```text [Claude Desktop / ChatGPT]
+Settings → Connectors → Add custom connector
+(or Add → MCP server in ChatGPT)
+
+URL: https://hive.warlordofmars.net/mcp
+```
 
 ```json [Claude Code / Cursor]
 // ~/.claude/settings.json  (Claude Code)
@@ -25,8 +32,9 @@ Add Hive to your MCP client config. The config depends on which client you use:
 }
 ```
 
-```json [Claude Desktop]
+```json [Claude Desktop (legacy mcp-remote)]
 // ~/Library/Application Support/Claude/claude_desktop_config.json
+// Use this only if your Claude Desktop build pre-dates the Connectors UI.
 {
   "mcpServers": {
     "hive": {

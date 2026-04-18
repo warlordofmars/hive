@@ -56,11 +56,50 @@ describe("SetupPanel", () => {
     expect(document.body.textContent).toContain('"type": "http"');
   });
 
-  it("switches to Claude Desktop tab and shows mcp-remote config", async () => {
+  it("Claude Desktop tab leads with the Custom Connector URL flow", async () => {
     await act(async () => render(<SetupPanel />));
     fireEvent.click(screen.getByText("Claude Desktop"));
+    expect(document.body.textContent).toContain("Add custom connector");
+    expect(document.body.textContent).toContain("/mcp");
+    // The mcp-remote JSON config is hidden behind the legacy disclosure
+    expect(document.body.textContent).not.toContain('"command": "npx"');
+  });
+
+  it("Claude Desktop legacy disclosure reveals the mcp-remote JSON form", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Claude Desktop"));
+    fireEvent.click(screen.getByText(/Prefer JSON/));
     expect(document.body.textContent).toContain("mcp-remote");
     expect(document.body.textContent).toContain('"command": "npx"');
+  });
+
+  it("ChatGPT tab shows the URL flow with the connector steps", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("ChatGPT"));
+    expect(document.body.textContent).toContain("Add → MCP server");
+    expect(document.body.textContent).toContain("/mcp");
+    expect(document.body.textContent).not.toContain('"command": "npx"');
+  });
+
+  it("Copy URL button copies the URL and marks step 1 done", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Claude Desktop"));
+    fireEvent.click(screen.getByText("Copy URL"));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("/mcp"),
+    );
+    expect(_storage["hive_setup_step1_done"]).toBe("1");
+  });
+
+  it("Copy URL shows Copied! and reverts after 2s", async () => {
+    vi.useFakeTimers();
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Claude Desktop"));
+    fireEvent.click(screen.getByText("Copy URL"));
+    expect(screen.getByText("Copied!")).toBeTruthy();
+    act(() => vi.runAllTimers());
+    expect(screen.getByText("Copy URL")).toBeTruthy();
+    vi.useRealTimers();
   });
 
   it("shows Copy button initially", async () => {
@@ -90,11 +129,24 @@ describe("SetupPanel", () => {
     expect(document.body.textContent).toContain("/mcp");
   });
 
-  it("step 2 text updates when switching tabs", async () => {
+  it("step 2 text updates when switching tabs (Claude Desktop URL flow)", async () => {
     await act(async () => render(<SetupPanel />));
     expect(document.body.textContent).toContain("Claude Code");
     fireEvent.click(screen.getByText("Claude Desktop"));
+    expect(document.body.textContent).toContain("After saving the connector");
+  });
+
+  it("step 2 text updates for the Claude Desktop legacy JSON flow", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Claude Desktop"));
+    fireEvent.click(screen.getByText(/Prefer JSON/));
     expect(document.body.textContent).toContain("Restart Claude Desktop");
+  });
+
+  it("step 2 text updates when switching to ChatGPT tab", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("ChatGPT"));
+    expect(document.body.textContent).toContain("ChatGPT opens an OAuth pop-up");
   });
 
   it("switching back to Claude Code tab restores http config", async () => {

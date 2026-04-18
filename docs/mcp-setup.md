@@ -29,7 +29,16 @@ On first use Claude Code will open a browser window to complete the OAuth flow. 
 
 ## Claude Desktop
 
-Claude Desktop doesn't support HTTP MCP servers directly. Use [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy — it handles DCR and the OAuth flow automatically.
+Recent Claude Desktop builds support remote MCP servers as **Custom Connectors** — no config file or local proxy required.
+
+1. Open Claude Desktop → **Settings → Connectors**.
+2. Click **Add custom connector**.
+3. Paste `https://hive.warlordofmars.net/mcp` and save.
+4. Approve the OAuth flow in the browser pop-up.
+
+### Older builds (pre-Connectors UI)
+
+Use [`mcp-remote`](https://github.com/geelen/mcp-remote) as a local proxy — it handles DCR and the OAuth flow automatically.
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -45,6 +54,17 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```
 
 Restart Claude Desktop. On first use `mcp-remote` will open a browser window to complete the OAuth flow.
+
+---
+
+## ChatGPT
+
+ChatGPT supports remote MCP servers as **Apps** under Developer mode (eligibility varies by plan).
+
+1. Open ChatGPT → **Settings → Connectors**.
+2. Click **Add → MCP server**.
+3. Paste `https://hive.warlordofmars.net/mcp` and save.
+4. Approve the OAuth pop-up that follows.
 
 ---
 
