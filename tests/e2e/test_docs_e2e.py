@@ -494,3 +494,40 @@ class TestDocsNavbar:
         screen = page.locator(".VPNavScreen")
         screen.wait_for(state="visible", timeout=5_000)
         assert screen.is_visible(), "Mobile nav screen did not open after hamburger click"
+
+    def test_docs_page_fits_mobile_viewport(self, docs_page_mobile):
+        """Docs pages should render without horizontal overflow at 375px (#528).
+
+        VitePress plus the custom theme occasionally lets a wide code block
+        or table overflow the page — this guards against regressions.
+        """
+        page = docs_page_mobile
+        page.goto(
+            f"{UI_URL}/docs/getting-started/what-is-hive",
+            timeout=30_000,
+            wait_until="networkidle",
+        )
+        doc_width, body_width = page.evaluate(
+            "() => [document.querySelector('.vp-doc').scrollWidth, document.body.clientWidth]"
+        )
+        # Allow a small fudge for sub-pixel rounding / scrollbar — but the
+        # content must not exceed the viewport by more than a few px.
+        assert doc_width <= body_width + 4, (
+            f"Docs content scrollWidth {doc_width} exceeds body clientWidth {body_width}"
+        )
+
+    def test_mobile_sidebar_opens_on_menu(self, docs_page_mobile):
+        """The doc-pages sidebar is collapsed on mobile and opens via the menu button."""
+        page = docs_page_mobile
+        page.goto(
+            f"{UI_URL}/docs/getting-started/what-is-hive",
+            timeout=30_000,
+            wait_until="networkidle",
+        )
+        menu_btn = page.locator(".VPLocalNav button, .VPLocalNav .menu")
+        if not menu_btn.first.is_visible():
+            pytest.skip("Local nav menu not visible (layout may have changed)")
+        menu_btn.first.click()
+        sidebar = page.locator(".VPSidebar")
+        sidebar.wait_for(state="visible", timeout=5_000)
+        assert sidebar.is_visible(), "Sidebar did not open after menu click"

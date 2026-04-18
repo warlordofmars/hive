@@ -123,12 +123,20 @@
 
 /* Desktop navbar group: Docs link + Sign in button rendered via
    nav-bar-content-after so they appear at the far right, in order, matching
-   the marketing site layout. */
+   the marketing site layout. Hidden below the VitePress nav-screen breakpoint
+   (768px) — mobile users get the same links via `nav-screen-content-after`
+   inside the hamburger menu (#528). */
 .docs-nav-group {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 4px;
   margin-left: 8px;
+}
+
+@media (min-width: 768px) {
+  .docs-nav-group {
+    display: flex;
+  }
 }
 
 .docs-nav-link {
@@ -296,4 +304,37 @@
 .VPFooter .copyright {
   font-size: 12px !important;
   color: rgba(255, 255, 255, 0.45) !important;
+}
+
+/* ============================================================
+   Mobile safety — #528
+   Keep long code blocks and wide tables from busting the
+   375px viewport. VitePress already wraps tables in a
+   `.vp-doc .table-wrapper` with overflow-x auto and sets
+   `overflow-x: auto` on `.vp-code` wrappers, but nested
+   `<pre>` blocks and markdown-rendered tables occasionally
+   slip through — this is belt-and-braces.
+   ============================================================ */
+.vp-doc pre,
+.vp-doc .vp-code,
+.vp-doc .language- {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.vp-doc table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* On narrow screens, trim VitePress's default content padding so
+   the reading column isn't squeezed to ~40% of the viewport. */
+@media (max-width: 375px) {
+  .VPDoc .container,
+  .VPDoc.has-aside .content-container {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
 }
