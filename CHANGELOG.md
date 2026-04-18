@@ -4,6 +4,18 @@ All notable changes to Hive are documented here. Releases correspond to GitHub t
 
 See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) for full release notes generated from merged PRs.
 
+## [Unreleased]
+
+_Changes accumulated on `development` since v0.20.0. Will be rolled into v0.21.0._
+
+## v0.20.0 — 2026-04-17
+
+> **Note**: v0.20.0 was cut from a single PR that bypassed the normal release-branch workflow. The intended scope of this milestone (compliance work, accuracy audit, MCP annotations, etc.) was merged to `development` after the tag was already pushed and will ship in v0.21.0. This entry documents what actually shipped in v0.20.0. See #475 for the branch-protection follow-up to prevent this recurring.
+
+### Added
+
+- Terms of Service and Privacy Policy marketing pages (#401)
+
 ## v0.19.1 — 2026-04-13
 
 ### Fixed
