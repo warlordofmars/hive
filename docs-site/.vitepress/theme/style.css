@@ -123,12 +123,20 @@
 
 /* Desktop navbar group: Docs link + Sign in button rendered via
    nav-bar-content-after so they appear at the far right, in order, matching
-   the marketing site layout. */
+   the marketing site layout. Hidden below the VitePress nav-screen breakpoint
+   (768px) — mobile users get the same links via `nav-screen-content-after`
+   inside the hamburger menu (#528). */
 .docs-nav-group {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 4px;
   margin-left: 8px;
+}
+
+@media (min-width: 768px) {
+  .docs-nav-group {
+    display: flex;
+  }
 }
 
 .docs-nav-link {
