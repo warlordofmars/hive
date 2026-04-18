@@ -293,6 +293,51 @@ def _tool_result(
     return ToolResult(content=payload, meta=meta)
 
 
+_SUMMARY_MAX_TOKENS = 512
+_SUMMARY_SYSTEM_PROMPT = (
+    "You synthesise a set of memories into a concise briefing for the agent "
+    "that will use them. Return only the synthesis — no preamble, no "
+    "disclaimers. Preserve specific names, numbers, and decisions verbatim; "
+    "paraphrase the rest. Target 2-5 short paragraphs."
+)
+
+
+async def _sampled_summary(
+    ctx: Context | None,
+    topic: str,
+    memories: list[Memory],
+    fallback: str,
+) -> str:
+    """Synthesise a set of memories via MCP Sampling (#448).
+
+    Sends a ``sampling/createMessage`` request back to the client and uses
+    its model to produce the summary. If the client doesn't support
+    sampling, the transport rejects it, or ctx is unavailable (e.g. direct
+    invocation in tests), returns ``fallback`` — the deterministic
+    concatenated listing — so the tool never fails just because an agent
+    can't sample.
+    """
+    if ctx is None:
+        return fallback
+
+    body = "\n\n".join(f"- **{m.key}**: {m.value}" for m in memories)
+    prompt = (
+        f"The following memories are tagged '{topic}'. Synthesise them into a briefing.\n\n{body}"
+    )
+    try:
+        result = await ctx.sample(
+            prompt,
+            system_prompt=_SUMMARY_SYSTEM_PROMPT,
+            max_tokens=_SUMMARY_MAX_TOKENS,
+        )
+    except Exception:
+        logger.info("MCP sampling unavailable; falling back to concat summary", exc_info=True)
+        return fallback
+
+    text = getattr(result, "text", None) or fallback
+    return text.strip() or fallback
+
+
 async def _report_progress(
     ctx: Context | None, progress: float, total: float | None, message: str
 ) -> None:
@@ -958,10 +1003,13 @@ async def summarize_context(
     for m in memories:
         lines.append(f"**{m.key}**: {m.value}")
 
-    lines.append(
-        f"\n---\n*Summary: {len(memories)} memory/memories found for topic '{topic}'. "
-        "Review the entries above for relevant context.*"
-    )
+    lines.append(f"\n---\n*{len(memories)} memory/memories found for topic '{topic}'.*")
+    concat_summary = "\n".join(lines)
+
+    # Try MCP Sampling first (#448). If the client supports it, we get a real
+    # LLM synthesis without any server-side Bedrock cost; otherwise the
+    # sampler raises and we fall back to the concatenated listing above.
+    summary = await _sampled_summary(ctx, topic, memories, concat_summary)
 
     _log(
         storage,
@@ -989,7 +1037,7 @@ async def summarize_context(
         unit="Milliseconds",
         operation="summarize_context",
     )
-    return _tool_result("\n".join(lines), storage, client_id)
+    return _tool_result(summary, storage, client_id)
 
 
 @mcp.tool(

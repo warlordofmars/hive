@@ -638,6 +638,71 @@ class TestSummarizeContext:
         result = await summarize_context("nonexistent-topic", ctx=_make_ctx(jwt))
         assert "No memories found" in _text(result)
 
+    async def test_summarize_uses_mcp_sampling_when_available(self, server_env):
+        """When ctx.sample returns a result, the synthesised text replaces
+        the concat fallback."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from hive.server import remember, summarize_context
+
+        _, _, jwt = server_env
+        await remember("s-a", "policy X says Y", ["sampled"], ctx=_make_ctx(jwt))
+
+        ctx = _make_ctx(jwt)
+        sampled = MagicMock()
+        sampled.text = "SYNTHESISED BRIEFING OUTPUT"
+        ctx.sample = AsyncMock(return_value=sampled)
+
+        result = await summarize_context("sampled", ctx=ctx)
+        assert _text(result) == "SYNTHESISED BRIEFING OUTPUT"
+        # Client was asked with a system prompt + the memories inline.
+        ctx.sample.assert_awaited_once()
+        args, kwargs = ctx.sample.call_args
+        assert "policy X says Y" in args[0]
+        assert "system_prompt" in kwargs
+
+    async def test_summarize_falls_back_when_sampling_raises(self, server_env):
+        """If the client rejects sampling (or transport errors), the concat
+        listing is returned — the tool never fails because sampling isn't
+        supported."""
+        from unittest.mock import AsyncMock
+
+        from hive.server import remember, summarize_context
+
+        _, _, jwt = server_env
+        await remember("f-a", "raw detail one", ["fallback"], ctx=_make_ctx(jwt))
+
+        ctx = _make_ctx(jwt)
+        ctx.sample = AsyncMock(side_effect=RuntimeError("sampling not supported"))
+
+        result = await summarize_context("fallback", ctx=ctx)
+        text = _text(result)
+        assert "raw detail one" in text  # concat fallback contains the verbatim values
+
+    async def test_sampled_summary_empty_text_falls_back(self, server_env):
+        """An empty/whitespace-only sampling response falls back to concat."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from hive.server import remember, summarize_context
+
+        _, _, jwt = server_env
+        await remember("e-a", "verbatim detail", ["empty"], ctx=_make_ctx(jwt))
+
+        ctx = _make_ctx(jwt)
+        sampled = MagicMock()
+        sampled.text = "   "
+        ctx.sample = AsyncMock(return_value=sampled)
+
+        result = await summarize_context("empty", ctx=ctx)
+        assert "verbatim detail" in _text(result)
+
+    async def test_sampled_summary_handles_ctx_none(self):
+        """Direct call to the helper with ctx=None returns the fallback verbatim."""
+        from hive.server import _sampled_summary
+
+        out = await _sampled_summary(None, "t", [], "FALLBACK_TEXT")
+        assert out == "FALLBACK_TEXT"
+
 
 # ---------------------------------------------------------------------------
 # _app_version() branches — covers server.py:39 and 42-43
