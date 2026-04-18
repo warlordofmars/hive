@@ -6,11 +6,38 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.21.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.22.0. Will be rolled into the next release._
+
+## v0.22.0 — 2026-04-18
 
 ### Added
 
-- Every MCP tool response now carries the caller's quota and rate-limit state under a top-level `_meta.hive` block (`memory_quota.{used,limit,remaining}` + `rate_limit.{per_minute_limit,per_day_limit}`), so well-behaved agents can self-throttle before hitting a hard limit. New docs page `/docs/concepts/quotas` documents the schema. `memory_history` now returns `{versions, count}` instead of a bare list so the structured-content envelope is consistent across tools. (#453)
+#### MCP surface
+
+- Every MCP tool response carries the caller's quota and rate-limit state under a top-level `_meta.hive` block (`memory_quota.{used,limit,remaining}` + `rate_limit.{per_minute_limit,per_day_limit}`) so well-behaved agents can self-throttle before hitting a hard limit. New docs page `/docs/concepts/quotas` documents the schema. `memory_history` now returns `{versions, count}` instead of a bare list for a consistent structured-content envelope. (#453)
+- Long-running tools (`search_memories`, `summarize_context`) emit MCP `notifications/progress` events at major stages; supporting clients render progress indicators. Best-effort — falls through on clients that don't support it. (#449)
+- `remember(key, value, …, version=)` accepts an optimistic-lock token from a prior `recall`/`list_memories` response; concurrent-write conflicts raise a `ToolError` with the current state JSON-encoded so agents can compare-and-retry. (#391)
+- `search_memories` now hybrid-retrieves: weighted blend of semantic similarity, term-frequency keyword match, and half-life recency decay against `last_accessed_at`/`updated_at`. Three optional `w_semantic/w_keyword/w_recency` params re-normalise to 1.0. Per-signal sub-scores exposed for debugging + agent-side re-ranking. (#481)
+- `summarize_context` synthesises memories via MCP Sampling — the client's own model produces the briefing, with a deterministic concat fallback for clients that don't support sampling. (#448)
+- New `redact_memory(key, reason=None)` tool tombstones a value while preserving the record: sets `Memory.redacted_at`, replaces value with `__redacted__`, writes the pre-redaction value to the audit log. `recall` on a redacted memory returns a sentinel; `list_memories` + `search_memories` skip redacted items by default (opt-in via `include_redacted`). (#400)
+- `Memory.recall_count` + `last_accessed_at` — bumped atomically on every successful `recall`; surfaced on list/search results for ranking, dashboards, and memory-decay scoring. (#394)
+
+#### Compliance & observability
+
+- `log_audit_event` is now called from every memory-touching tool, producing an immutable `AUDIT#` trail separate from the user-visible activity log. Audit items carry a DynamoDB TTL (`HIVE_AUDIT_RETENTION_DAYS`, default 365) and a new `GET /api/admin/audit-log` endpoint exposes them with `client_id` / `event_type` / date-range filters. (#395)
+- `POST /api/csp-report` receives browser CSP violation reports (both legacy `application/csp-report` and modern `application/reports+json`), logs them structured to CloudWatch, and emits a `CSPViolations` EMF metric (aggregate + per-directive drill-down). Unauthenticated by design; per-IP rate-limited. Admin dashboard gets a "Security" section showing the count. (#488)
+
+#### Dev experience & CI
+
+- Release Drafter keeps a draft GitHub release current as PRs merge into `development`, grouped by category label — no more hand-maintained `[Unreleased]`. Label-check workflow now requires a category label on every linked issue. (#420)
+- `release-milestone-watcher` workflow opens a "Release: cut vX.Y" tracking issue when any `vX.Y` milestone drains to zero open non-epic issues. Pairs with the in-session stop condition. (#484, #512)
+
+### Meta
+
+- CLAUDE.md: design-review workflow + product-decision section. (#506)
+- CLAUDE.md: milestone preference added to the issue selection algorithm. (#514)
+
+## v0.21.0 — 2026-04-18
 
 ## v0.21.0 — 2026-04-18
 
