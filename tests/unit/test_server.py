@@ -911,7 +911,12 @@ class TestSearchMemories:
         assert body["query"] == "searchable content"
         item = body["items"][0]
         assert item["key"] == "search-key"
-        assert item["score"] == 0.88
+        # Hybrid re-ranking exposes the original semantic score alongside the
+        # blended score — both "searchable" and "content" tokens match so the
+        # blended score exceeds the raw 0.88.
+        assert item["semantic_score"] == 0.88
+        assert item["keyword_score"] == 1.0
+        assert item["score"] >= 0.88
         assert item["owner_client_id"] == client_id
 
     async def test_returns_empty_when_no_index(self, server_env):
@@ -1091,17 +1096,19 @@ class TestSearchMemories:
 
         storage, _, jwt = server_env
         ctx = _make_ctx(jwt)
-        await remember("key", "v", ["t"], ctx=ctx)
+        # Disable recency weighting so floating-point decay against
+        # updated_at doesn't push blended below 1.0 and mask the clamp test.
+        await remember("key", "q", ["t"], ctx=ctx)
         m = storage.get_memory_by_key("key")
         mock_vs = _make_mock_vector_store([(m.memory_id, 1.0)])
 
-        # min_score > 1.0 gets clamped to 1.0; a perfect score still matches
+        # min_score > 1.0 gets clamped to 1.0; with w_recency=0 blended = 1.0.
         with patch("hive.server._vector_store", return_value=mock_vs):
-            result = await search_memories("q", min_score=5.0, ctx=ctx)
+            result = await search_memories("q", min_score=5.0, w_recency=0, ctx=ctx)
 
         assert _body(result)["count"] == 1
 
-        # min_score < 0.0 gets clamped to 0.0; everything passes
+        # min_score < 0.0 gets clamped to 0.0; everything passes.
         mock_vs2 = _make_mock_vector_store([(m.memory_id, 0.0)])
         with patch("hive.server._vector_store", return_value=mock_vs2):
             result = await search_memories("q", min_score=-1.0, ctx=ctx)
