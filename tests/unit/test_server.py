@@ -71,10 +71,24 @@ def _create_table(table_name: str = "hive-unit-server") -> None:
     )
 
 
-def _make_ctx(jwt: str) -> MagicMock:
-    """Build a minimal mock Context that passes token via meta."""
+def _make_ctx(jwt: str, *, progress_sink: list | None = None) -> MagicMock:
+    """Build a minimal mock Context that passes token via meta.
+
+    If ``progress_sink`` is provided, each ``report_progress`` call is
+    appended to it so tests can assert on the emitted notifications.
+    """
+    from unittest.mock import AsyncMock
+
     ctx = MagicMock()
     ctx.request_context.meta = {"Authorization": f"Bearer {jwt}"}
+    if progress_sink is not None:
+
+        async def _capture(**kwargs):
+            progress_sink.append(kwargs)
+
+        ctx.report_progress = AsyncMock(side_effect=_capture)
+    else:
+        ctx.report_progress = AsyncMock()
     return ctx
 
 
@@ -1494,6 +1508,74 @@ class TestMcpToolAnnotations:
         assert tool.annotations.destructiveHint is destructive
         # Every Hive tool is closed-world (our DynamoDB only).
         assert tool.annotations.openWorldHint is False
+
+
+class TestProgressNotifications:
+    """Long-running tools emit MCP ``notifications/progress`` events so
+    clients can render a progress indicator. Clients that don't support
+    them must still get a usable result — emission is best-effort."""
+
+    async def test_summarize_context_emits_progress(self, server_env):
+        _, _, jwt = server_env
+        from hive.server import remember, summarize_context
+
+        sink: list = []
+        ctx = _make_ctx(jwt, progress_sink=sink)
+        await remember("p-a", "about foo", ["prog"], ctx=_make_ctx(jwt))
+        await remember("p-b", "more about foo", ["prog"], ctx=_make_ctx(jwt))
+
+        await summarize_context("prog", ctx=ctx)
+
+        assert len(sink) >= 2
+        progresses = [c["progress"] for c in sink]
+        totals = {c["total"] for c in sink}
+        assert progresses[0] == 0
+        assert progresses[-1] == 1
+        assert totals == {2}
+
+    async def test_search_memories_emits_progress(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = server_env
+        await remember("ps-a", "searchable content", ["t"], ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("ps-a")
+
+        sink: list = []
+        ctx = _make_ctx(jwt, progress_sink=sink)
+        from unittest.mock import MagicMock as _MM
+
+        mock_vs = _MM()
+        mock_vs.search.return_value = [(m.memory_id, 0.9)]
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await search_memories("searchable", ctx=ctx)
+
+        # 3 stages: before vector search, after hydrate, after ranking
+        assert len(sink) == 3
+        assert [c["progress"] for c in sink] == [0, 1, 2]
+        assert {c["total"] for c in sink} == {3}
+
+    async def test_progress_emission_is_non_fatal(self, server_env):
+        """If ctx.report_progress raises (client doesn't support it), the
+        tool still returns successfully — progress is advisory only."""
+        from unittest.mock import AsyncMock
+
+        from hive.server import remember, summarize_context
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        ctx.report_progress = AsyncMock(side_effect=RuntimeError("client refused"))
+        await remember("np-a", "v", ["np"], ctx=_make_ctx(jwt))
+
+        result = await summarize_context("np", ctx=ctx)
+        assert _text(result)  # still returned a usable summary
+
+    async def test_report_progress_noop_when_ctx_is_none(self):
+        """Direct call with ctx=None must not raise."""
+        from hive.server import _report_progress
+
+        await _report_progress(None, 0, 2, "no-ctx")
 
 
 class TestHiveTokenVerifier:

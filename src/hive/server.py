@@ -233,6 +233,24 @@ def _tool_result(payload: Any, storage: HiveStorage, client_id: str) -> ToolResu
     return ToolResult(content=payload, meta=meta)
 
 
+async def _report_progress(
+    ctx: Context | None, progress: float, total: float | None, message: str
+) -> None:
+    """Emit an MCP ``notifications/progress`` event if the client supports it.
+
+    Any exception from the transport (client doesn't support progress, the
+    ctx is stale, etc.) is swallowed — progress is advisory, never fatal.
+    Policy: tools whose expected duration exceeds ~2s call this at sensible
+    milestones so clients can render a progress indicator.
+    """
+    if ctx is None:
+        return
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception:
+        logger.debug("progress notification dropped", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -832,7 +850,11 @@ async def summarize_context(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
+    await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
+    await _report_progress(
+        ctx, 1, 2, f"Retrieved {len(memories)} memories; synthesising summary..."
+    )
 
     if not memories:
         logger.info(
@@ -918,6 +940,7 @@ async def search_memories(
     # so we have headroom to still return up to top_k matches after filtering.
     search_top_k = 50 if required_tags else top_k
 
+    await _report_progress(ctx, 0, 3, f"Running vector search for '{query}'...")
     try:
         pairs = _vector_store().search(query, client_id, top_k=search_top_k)
     except VectorIndexNotFoundError:
@@ -929,12 +952,16 @@ async def search_memories(
     if threshold is not None:
         pairs = [(mid, score) for mid, score in pairs if score >= threshold]
 
+    await _report_progress(
+        ctx, 1, 3, f"Vector search returned {len(pairs)} candidates; hydrating..."
+    )
     results = storage.hydrate_memory_ids(pairs)
 
     if required_tags:
         results = [(m, s) for m, s in results if required_tags.issubset(m.tags)]
 
     results = results[:top_k]
+    await _report_progress(ctx, 2, 3, f"Ranked {len(results)} result(s); returning.")
 
     storage.log_event(
         ActivityEvent(
