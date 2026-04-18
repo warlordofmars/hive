@@ -135,6 +135,9 @@ hive/
 - Token items: `PK=TOKEN#{jti}`, `SK=META` (TTL enabled)
 - Activity log items: `PK=LOG#{date}#{hour}`, `SK={timestamp}#{event_id}`
   (hour-sharded to avoid hot partitions)
+- Audit log items: `PK=AUDIT#{date}#{hour}`, `SK={timestamp}#{event_id}`
+  (immutable compliance trail, TTL via `HIVE_AUDIT_RETENTION_DAYS`,
+  default 365 days; survives user-initiated activity-log purges)
 - User items: `PK=USER#{user_id}`, `SK=META`
 - Mgmt state items: `PK=MGMT_STATE#{state}`, `SK=META`
   (TTL enabled, used for OAuth state parameter)

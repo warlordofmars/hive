@@ -903,13 +903,52 @@ class HiveStorage:
         """Write an audit event to the immutable audit log (AUDIT# PK prefix).
 
         Audit events use a separate PK prefix from activity log events (LOG#)
-        and are never deleted, even when a user's activity log is purged.
+        so they survive a user-requested activity-log purge. A DynamoDB TTL
+        provides a hard retention horizon (``HIVE_AUDIT_RETENTION_DAYS``,
+        default 365) so items age out automatically and we stay compliant
+        with data-minimisation expectations.
         """
         item = event.to_dynamo()
-        # Override the PK prefix so audit events are stored separately
         date_hour_str = event.timestamp.strftime("%Y-%m-%d#%H")
         item["PK"] = f"AUDIT#{date_hour_str}"
+        retention_days = int(os.environ.get("HIVE_AUDIT_RETENTION_DAYS", "365"))
+        item["ttl"] = int(event.timestamp.timestamp()) + retention_days * 86400
         self.table.put_item(Item=item)
+
+    def get_audit_events_for_dates(
+        self,
+        dates: list[str],
+        *,
+        client_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[ActivityEvent]:
+        """Fetch audit events across multiple dates, newest-first, capped at limit.
+
+        Optional post-query filters on ``client_id`` and ``event_type`` keep
+        the admin audit-log endpoint simple; the partition scan itself reads
+        every hour-shard in parallel.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _query(pk: str) -> list[ActivityEvent]:
+            resp = self.table.query(KeyConditionExpression=Key("PK").eq(pk))
+            return [ActivityEvent.from_dynamo(i) for i in resp.get("Items", [])]
+
+        pks = [f"AUDIT#{d}#{hour:02d}" for d in dates for hour in range(24)]
+        events: list[ActivityEvent] = []
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(_query, pk): pk for pk in pks}
+            for future in as_completed(futures):
+                events.extend(future.result())
+
+        if client_id is not None:
+            events = [e for e in events if e.client_id == client_id]
+        if event_type is not None:
+            events = [e for e in events if e.event_type.value == event_type]
+
+        events.sort(key=lambda e: e.timestamp, reverse=True)
+        return events[:limit]
 
     # ------------------------------------------------------------------
     # Account deletion

@@ -561,6 +561,92 @@ class TestActivityLog:
         assert len(events) == 1
         assert events[0].event_id == event.event_id
 
+
+class TestAuditLog:
+    def test_log_audit_event_sets_ttl_from_retention_env(self, storage):
+        from datetime import datetime, timezone
+
+        event = ActivityEvent(
+            event_type=EventType.memory_created,
+            client_id="c1",
+            metadata={"key": "k1"},
+            timestamp=datetime(2026, 4, 18, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("HIVE_AUDIT_RETENTION_DAYS", "30")
+            storage.log_audit_event(event)
+
+        # Re-read the raw item to verify TTL was written.
+        date_hour_str = event.timestamp.strftime("%Y-%m-%d#%H")
+        resp = storage.table.get_item(
+            Key={
+                "PK": f"AUDIT#{date_hour_str}",
+                "SK": f"{event.timestamp.isoformat()}#{event.event_id}",
+            }
+        )
+        item = resp["Item"]
+        assert "ttl" in item
+        assert int(item["ttl"]) == int(event.timestamp.timestamp()) + 30 * 86400
+
+    def test_audit_events_separate_from_activity_events(self, storage):
+        """Writing to the audit log must not leak into the activity log."""
+        event = ActivityEvent(
+            event_type=EventType.memory_created,
+            client_id="c1",
+            metadata={},
+        )
+        storage.log_audit_event(event)
+        # No activity log entry should exist
+        assert storage.get_events_for_date(event.timestamp.strftime("%Y-%m-%d")) == []
+
+    def test_get_audit_events_filters_by_client_id_and_event_type(self, storage):
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc)
+        events = [
+            ActivityEvent(event_type=EventType.memory_created, client_id="c1", timestamp=ts),
+            ActivityEvent(event_type=EventType.memory_deleted, client_id="c1", timestamp=ts),
+            ActivityEvent(event_type=EventType.memory_created, client_id="c2", timestamp=ts),
+        ]
+        for e in events:
+            storage.log_audit_event(e)
+
+        dates = [ts.strftime("%Y-%m-%d")]
+
+        all_events = storage.get_audit_events_for_dates(dates)
+        assert len(all_events) == 3
+
+        c1_only = storage.get_audit_events_for_dates(dates, client_id="c1")
+        assert {e.client_id for e in c1_only} == {"c1"}
+
+        created_only = storage.get_audit_events_for_dates(dates, event_type="memory_created")
+        assert {e.event_type.value for e in created_only} == {"memory_created"}
+
+        combined = storage.get_audit_events_for_dates(
+            dates, client_id="c1", event_type="memory_created"
+        )
+        assert len(combined) == 1
+        assert combined[0].client_id == "c1"
+        assert combined[0].event_type == EventType.memory_created
+
+    def test_get_audit_events_limit_and_sort(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        base = datetime.now(timezone.utc).replace(microsecond=0)
+        for i in range(5):
+            e = ActivityEvent(
+                event_type=EventType.memory_created,
+                client_id="c",
+                timestamp=base - timedelta(seconds=i),
+            )
+            storage.log_audit_event(e)
+
+        dates = [base.strftime("%Y-%m-%d")]
+        events = storage.get_audit_events_for_dates(dates, limit=3)
+        assert len(events) == 3
+        # Newest-first
+        assert events[0].timestamp > events[1].timestamp > events[2].timestamp
+
     def test_hour_sharded_pk(self, storage):
         """Events must be written to LOG#{date}#{hour} partitions."""
         event = ActivityEvent(
