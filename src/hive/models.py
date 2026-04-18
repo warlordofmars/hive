@@ -59,6 +59,8 @@ class Memory(BaseModel):
     owner_client_id: str  # which OAuth client owns this memory
     owner_user_id: str | None = None  # which user owns this memory (None for pre-migration items)
     expires_at: datetime | None = None  # optional TTL; None means never expires
+    recall_count: int = 0  # incremented on every successful recall
+    last_accessed_at: datetime | None = None  # set on every successful recall
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -76,6 +78,7 @@ class Memory(BaseModel):
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "owner_client_id": self.owner_client_id,
+            "recall_count": self.recall_count,
             # GSI: look up by key across all memories
             "GSI1PK": f"KEY#{self.key}",
             "GSI1SK": self.memory_id,
@@ -85,6 +88,8 @@ class Memory(BaseModel):
         if self.expires_at is not None:
             item["expires_at"] = self.expires_at.isoformat()
             item["ttl"] = int(self.expires_at.timestamp())
+        if self.last_accessed_at is not None:
+            item["last_accessed_at"] = self.last_accessed_at.isoformat()
         return item
 
     def to_dynamo_tag_items(self) -> list[dict[str, Any]]:
@@ -110,6 +115,9 @@ class Memory(BaseModel):
         expires_at = None
         if ea := item.get("expires_at"):
             expires_at = datetime.fromisoformat(ea)
+        last_accessed_at = None
+        if la := item.get("last_accessed_at"):
+            last_accessed_at = datetime.fromisoformat(la)
         return cls(
             memory_id=item["memory_id"],
             key=item["key"],
@@ -120,6 +128,8 @@ class Memory(BaseModel):
             owner_client_id=item["owner_client_id"],
             owner_user_id=item.get("owner_user_id"),
             expires_at=expires_at,
+            recall_count=int(item.get("recall_count", 0) or 0),
+            last_accessed_at=last_accessed_at,
         )
 
     @property
@@ -555,6 +565,8 @@ class MemoryResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     expires_at: datetime | None = None
+    recall_count: int = 0
+    last_accessed_at: datetime | None = None
 
     @classmethod
     def from_memory(cls, m: Memory) -> MemoryResponse:
@@ -566,6 +578,8 @@ class MemoryResponse(BaseModel):
             created_at=m.created_at,
             updated_at=m.updated_at,
             expires_at=m.expires_at,
+            recall_count=m.recall_count,
+            last_accessed_at=m.last_accessed_at,
         )
 
 
@@ -789,6 +803,8 @@ class MemorySearchResult(BaseModel):
     score: float  # cosine similarity (0.0–1.0); higher = more relevant
     created_at: datetime
     updated_at: datetime
+    recall_count: int = 0
+    last_accessed_at: datetime | None = None
 
     @classmethod
     def from_memory_and_score(cls, m: Memory, score: float) -> MemorySearchResult:
@@ -801,4 +817,6 @@ class MemorySearchResult(BaseModel):
             score=score,
             created_at=m.created_at,
             updated_at=m.updated_at,
+            recall_count=m.recall_count,
+            last_accessed_at=m.last_accessed_at,
         )

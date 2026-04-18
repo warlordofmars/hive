@@ -259,6 +259,35 @@ class TestMemoryStorage:
         result = storage.get_memory_by_key("expired-key2")
         assert result is None
 
+    def test_record_recall_increments_count_and_sets_timestamp(self, storage):
+        m = Memory(key="recall-k", value="v", owner_client_id="c1")
+        storage.put_memory(m)
+
+        first = storage.record_recall("recall-k")
+        assert first is not None
+        assert first.recall_count == 1
+        assert first.last_accessed_at is not None
+
+        second = storage.record_recall("recall-k")
+        assert second is not None
+        assert second.recall_count == 2
+        assert second.last_accessed_at is not None
+        assert second.last_accessed_at >= first.last_accessed_at
+
+    def test_record_recall_returns_none_for_missing_key(self, storage):
+        assert storage.record_recall("does-not-exist") is None
+
+    def test_record_recall_returns_none_for_expired_memory(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        storage.put_memory(
+            Memory(key="expired-recall", value="v", owner_client_id="c1", expires_at=past)
+        )
+        # update_item still runs, but record_recall returns None because the
+        # memory is past its TTL (matches get_memory_by_key behaviour).
+        assert storage.record_recall("expired-recall") is None
+
     def test_memory_serialise_ttl_in_dynamo(self):
         from datetime import datetime, timedelta, timezone
 

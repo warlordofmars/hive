@@ -143,6 +143,37 @@ class HiveStorage:
         memory_id = items[0]["memory_id"]
         return self.get_memory_by_id(memory_id)
 
+    def record_recall(self, key: str) -> Memory | None:
+        """Atomically increment ``recall_count`` and refresh ``last_accessed_at``
+        on the memory with the given key, returning the updated Memory.
+
+        Returns ``None`` if the key doesn't exist or the memory is expired.
+        Does the work in a single DynamoDB ``update_item`` (with ``ALL_NEW``
+        return values) so we don't pay two round-trips per recall.
+        """
+        resp = self.table.query(
+            IndexName="KeyIndex",
+            KeyConditionExpression=Key("GSI1PK").eq(f"KEY#{key}"),
+            Limit=1,
+        )
+        items = resp.get("Items", [])
+        if not items:
+            return None
+        memory_id = items[0]["memory_id"]
+        now_iso = _now().isoformat()
+        updated = self.table.update_item(
+            Key={"PK": f"MEMORY#{memory_id}", "SK": "META"},
+            UpdateExpression=("SET last_accessed_at = :now ADD recall_count :one"),
+            ExpressionAttributeValues={":now": now_iso, ":one": Decimal("1")},
+            ReturnValues="ALL_NEW",
+        )
+        # ALL_NEW always populates Attributes once the KeyIndex lookup above
+        # has confirmed the item exists, so there's no "None" path to guard.
+        memory = Memory.from_dynamo(updated["Attributes"])
+        if memory.is_expired:
+            return None
+        return memory
+
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory and all its tag items. Returns True if found."""
         existing = self._get_memory_meta(memory_id)
