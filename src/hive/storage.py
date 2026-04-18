@@ -167,10 +167,9 @@ class HiveStorage:
             ExpressionAttributeValues={":now": now_iso, ":one": Decimal("1")},
             ReturnValues="ALL_NEW",
         )
-        item = updated.get("Attributes")
-        if item is None:
-            return None
-        memory = Memory.from_dynamo(item)
+        # ALL_NEW always populates Attributes once the KeyIndex lookup above
+        # has confirmed the item exists, so there's no "None" path to guard.
+        memory = Memory.from_dynamo(updated["Attributes"])
         if memory.is_expired:
             return None
         return memory
