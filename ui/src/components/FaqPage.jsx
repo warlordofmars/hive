@@ -31,7 +31,7 @@ const FAQS = [
   },
   {
     q: "How do I connect my MCP client?",
-    a: "Sign in, register a client in the management UI, and copy the one-line config snippet into your MCP client's configuration file. Full step-by-step instructions are in the docs.",
+    a: "Sign in and open the Setup tab. Copy the config snippet (a short JSON block) into your MCP client's config file. The first time your client uses a Hive tool it opens a browser window to complete OAuth — after that the connection is maintained automatically. Full step-by-step instructions are in the docs.",
   },
   {
     q: "Does Hive work offline or self-hosted?",

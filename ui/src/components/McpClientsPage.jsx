@@ -6,7 +6,7 @@ import PageLayout from "@/components/PageLayout";
 const CLIENTS = [
   {
     name: "Claude Code",
-    description: "Anthropic's official CLI for Claude. Add Hive as an MCP server in your project or global config.",
+    description: "Anthropic's official CLI for Claude. Add Hive to your global settings (or a project's .mcp.json).",
     config: `{
   "mcpServers": {
     "hive": {
@@ -15,24 +15,24 @@ const CLIENTS = [
     }
   }
 }`,
-    configFile: "~/.claude/claude_desktop_config.json or .mcp.json",
+    configFile: "~/.claude/settings.json (or .mcp.json)",
   },
   {
     name: "Claude Desktop",
-    description: "The Claude desktop app on Mac and Windows. Add Hive to your MCP server list in settings.",
+    description: "The Claude desktop app on Mac and Windows. Requires the mcp-remote helper to bridge to HTTP; npx installs it automatically.",
     config: `{
   "mcpServers": {
     "hive": {
-      "type": "http",
-      "url": "https://hive.warlordofmars.net/mcp"
+      "command": "npx",
+      "args": ["mcp-remote", "https://hive.warlordofmars.net/mcp"]
     }
   }
 }`,
-    configFile: "Claude Desktop → Settings → MCP Servers",
+    configFile: "~/Library/Application Support/Claude/claude_desktop_config.json",
   },
   {
     name: "Cursor",
-    description: "The AI-first code editor. Add Hive as an MCP server in your Cursor settings.",
+    description: "The AI-first code editor. Add Hive as an MCP server in your Cursor config.",
     config: `{
   "mcpServers": {
     "hive": {
@@ -46,19 +46,13 @@ const CLIENTS = [
   {
     name: "Continue",
     description: "The open-source AI code assistant for VS Code and JetBrains. Add Hive in your Continue config.",
-    config: `{
-  "experimental": {
-    "modelContextProtocolServers": [
-      {
-        "transport": {
-          "type": "http",
-          "url": "https://hive.warlordofmars.net/mcp"
-        }
-      }
-    ]
-  }
-}`,
-    configFile: "~/.continue/config.json",
+    config: `mcpServers:
+  - name: hive
+    command: npx
+    args:
+      - mcp-remote
+      - https://hive.warlordofmars.net/mcp`,
+    configFile: "~/.continue/config.yaml",
   },
 ];
 
