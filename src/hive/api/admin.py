@@ -140,6 +140,22 @@ def _build_metric_queries(period_label: str) -> list[dict[str, Any]]:
             },
         }
     )
+    # CSPViolations is emitted with `directive` + `blocked_domain` dimensions;
+    # the Environment-only aggregate is fetched here for the dashboard count.
+    queries.append(
+        {
+            "Id": "csp_violations",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": NAMESPACE,
+                    "MetricName": "CSPViolations",
+                    "Dimensions": [{"Name": "Environment", "Value": ENVIRONMENT}],
+                },
+                "Period": stat_period,
+                "Stat": "Sum",
+            },
+        }
+    )
 
     return queries
 

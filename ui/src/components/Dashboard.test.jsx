@@ -54,6 +54,7 @@ const METRICS = {
     p99_searchmemories: { timestamps: [], values: [] },
     tokens_issued: { timestamps: ["2026-04-01T12:00:00Z"], values: [7] },
     token_failures: { timestamps: ["2026-04-01T12:00:00Z"], values: [2] },
+    csp_violations: { timestamps: ["2026-04-01T12:00:00Z"], values: [17] },
   },
 };
 
@@ -266,6 +267,7 @@ describe("Dashboard", () => {
     expect(screen.getByText("Tool Invocations")).toBeTruthy();
     expect(screen.getByText("Tool Latency p99 (ms)")).toBeTruthy();
     expect(screen.getByText("Auth Events")).toBeTruthy();
+    expect(screen.getByText("Security")).toBeTruthy();
     expect(screen.getByText("Daily AWS Spend (Last 30 Days)")).toBeTruthy();
     expect(screen.getByText("Monthly AWS Spend")).toBeTruthy();
   });
@@ -274,6 +276,11 @@ describe("Dashboard", () => {
     await act(async () => render(<Dashboard />));
     await waitFor(() => expect(screen.getByText("Tokens Issued")).toBeTruthy());
     expect(screen.getByText("Validation Failures")).toBeTruthy();
+  });
+
+  it("renders CSP violations stat card from metric data", async () => {
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("CSP Violations")).toBeTruthy());
   });
 
   it("renders cost note", async () => {
