@@ -18,6 +18,7 @@ Tools:
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -45,7 +46,7 @@ from hive.rate_limiter import (
     RateLimitExceeded,
     check_rate_limit,
 )
-from hive.storage import HiveStorage
+from hive.storage import HiveStorage, VersionConflict
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
 configure_logging("mcp")
@@ -223,11 +224,48 @@ def _quota_meta(storage: HiveStorage, client_id: str) -> dict[str, Any]:
     }
 
 
-def _tool_result(payload: Any, storage: HiveStorage, client_id: str) -> ToolResult:
+def _conflict_message(
+    key: str,
+    attempted_version: str | None,
+    current_value: str | None,
+    current_version: str | None,
+) -> str:
+    """Serialise an optimistic-lock conflict into a ToolError message (#391).
+
+    ToolError currently has no structured-data slot, so agents parse the
+    JSON block appended to the text message to decide how to reconcile.
+    """
+    payload = {
+        "conflict": True,
+        "key": key,
+        "attempted_version": attempted_version,
+        "current_version": current_version,
+        "current_value": current_value,
+    }
+    return (
+        f"Conflict: memory {key!r} was updated since version "
+        f"{attempted_version!r}. " + json.dumps(payload)
+    )
+
+
+def _tool_result(
+    payload: Any,
+    storage: HiveStorage,
+    client_id: str,
+    *,
+    memory: Memory | None = None,
+) -> ToolResult:
     """Wrap a tool's return value in an MCP ``ToolResult`` carrying quota +
     rate-limit metadata in ``_meta.hive``. Strings become text content;
-    dicts become structured content so clients can still use them directly."""
+    dicts become structured content so clients can still use them directly.
+
+    When the tool operated on a specific memory, pass it via ``memory=`` so
+    its optimistic-lock version is surfaced as ``_meta.hive.memory.version``
+    — the agent can thread that back into a subsequent ``remember`` call.
+    """
     meta = _quota_meta(storage, client_id)
+    if memory is not None:
+        meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
     if isinstance(payload, dict):
         return ToolResult(structured_content=payload, meta=meta)
     return ToolResult(content=payload, meta=meta)
@@ -291,6 +329,12 @@ async def remember(
     ttl_seconds: Annotated[
         int | None, "Seconds until the memory expires. None = never expires."
     ] = None,
+    version: Annotated[
+        str | None,
+        "Optimistic-lock token from a prior recall/list_memories response. "
+        "If provided, the write is rejected with a conflict error when the "
+        "stored memory's version has moved on since the caller read it.",
+    ] = None,
     ctx: Context | None = None,
 ) -> str:
     """Store or update a memory with optional tags and optional TTL."""
@@ -314,6 +358,10 @@ async def remember(
     existing = storage.get_memory_by_key(key)
 
     if existing:
+        # Optimistic lock: reject early if the caller's version is already stale.
+        if version is not None and existing.version != version:
+            await emit_metric("ToolErrors", operation="remember")
+            raise ToolError(_conflict_message(key, version, existing.value, existing.version))
         # Idempotent: skip write and log if nothing changed
         if (
             existing.value == value
@@ -334,7 +382,12 @@ async def remember(
         existing.expires_at = expires_at
         existing.updated_at = datetime.now(timezone.utc)
         try:
-            storage.put_memory(existing)
+            storage.put_memory(existing, expected_version=version)
+        except VersionConflict as exc:
+            await emit_metric("ToolErrors", operation="remember")
+            raise ToolError(
+                _conflict_message(key, exc.attempted_version, exc.current_value, exc.current_version)
+            ) from exc
         except ValueError as exc:
             await emit_metric("ToolErrors", operation="remember")
             raise ToolError(str(exc)) from exc
@@ -549,7 +602,7 @@ async def recall(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="recall"
     )
-    return _tool_result(memory.value, storage, client_id)
+    return _tool_result(memory.value, storage, client_id, memory=memory)
 
 
 @mcp.tool(
@@ -792,6 +845,7 @@ async def list_memories(
                 "last_accessed_at": (
                     m.last_accessed_at.isoformat() if m.last_accessed_at else None
                 ),
+                "version": m.version,
             }
             for m in memories
         ],

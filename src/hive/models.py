@@ -136,6 +136,16 @@ class Memory(BaseModel):
     def is_expired(self) -> bool:
         return self.expires_at is not None and _now_utc() >= self.expires_at
 
+    @property
+    def version(self) -> str:
+        """Opaque version token for optimistic locking (#391).
+
+        Derived from ``updated_at`` so every write produces a fresh value.
+        Agents pass this back to ``remember(key, ..., version=...)`` to
+        detect concurrent-write conflicts.
+        """
+        return self.updated_at.isoformat()
+
 
 # ---------------------------------------------------------------------------
 # OAuth Client (RFC 7591 Dynamic Client Registration)
