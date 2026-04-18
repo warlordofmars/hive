@@ -508,8 +508,7 @@ class TestDocsNavbar:
             wait_until="networkidle",
         )
         doc_width, body_width = page.evaluate(
-            "() => [document.querySelector('.vp-doc').scrollWidth,"
-            " document.body.clientWidth]"
+            "() => [document.querySelector('.vp-doc').scrollWidth, document.body.clientWidth]"
         )
         # Allow a small fudge for sub-pixel rounding / scrollbar — but the
         # content must not exceed the viewport by more than a few px.
