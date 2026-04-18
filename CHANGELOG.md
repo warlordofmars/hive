@@ -8,6 +8,10 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 _Changes accumulated on `development` since v0.21.0. Will be rolled into the next release._
 
+### Added
+
+- Every MCP tool response now carries the caller's quota and rate-limit state under a top-level `_meta.hive` block (`memory_quota.{used,limit,remaining}` + `rate_limit.{per_minute_limit,per_day_limit}`), so well-behaved agents can self-throttle before hitting a hard limit. New docs page `/docs/concepts/quotas` documents the schema. `memory_history` now returns `{versions, count}` instead of a bare list so the structured-content envelope is consistent across tools. (#453)
+
 ## v0.21.0 — 2026-04-18
 
 ### Added

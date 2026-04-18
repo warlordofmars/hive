@@ -28,6 +28,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
 from fastmcp.server.dependencies import get_http_request
+from fastmcp.tools.tool import ToolResult
 from pydantic import AnyHttpUrl
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -37,8 +38,13 @@ from hive.auth.tokens import ISSUER, _origin_verify_secret, validate_bearer_toke
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
-from hive.quota import QuotaExceeded, check_memory_quota
-from hive.rate_limiter import RateLimitExceeded, check_rate_limit
+from hive.quota import QuotaExceeded, check_memory_quota, get_memory_limit
+from hive.rate_limiter import (
+    DEFAULT_RATE_LIMIT_RPD,
+    DEFAULT_RATE_LIMIT_RPM,
+    RateLimitExceeded,
+    check_rate_limit,
+)
 from hive.storage import HiveStorage
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
@@ -187,6 +193,47 @@ def _vector_store() -> VectorStore:
 
 
 # ---------------------------------------------------------------------------
+# Response metadata — every tool response carries quota + rate-limit state
+# under ``_meta.hive`` so well-behaved agents can self-throttle.
+# ---------------------------------------------------------------------------
+
+
+def _quota_meta(storage: HiveStorage, client_id: str) -> dict[str, Any]:
+    """Build the ``_meta.hive`` block from the caller's current quota state."""
+    client = storage.get_client(client_id)
+    owner_user_id = client.owner_user_id if client else None
+    memory_limit = get_memory_limit()
+    used = storage.count_memories(owner_user_id=owner_user_id) if owner_user_id else 0
+    return {
+        "hive": {
+            "memory_quota": {
+                "used": used,
+                "limit": memory_limit,
+                "remaining": max(0, memory_limit - used),
+            },
+            "rate_limit": {
+                "per_minute_limit": int(
+                    os.environ.get("HIVE_RATE_LIMIT_RPM", str(DEFAULT_RATE_LIMIT_RPM))
+                ),
+                "per_day_limit": int(
+                    os.environ.get("HIVE_RATE_LIMIT_RPD", str(DEFAULT_RATE_LIMIT_RPD))
+                ),
+            },
+        }
+    }
+
+
+def _tool_result(payload: Any, storage: HiveStorage, client_id: str) -> ToolResult:
+    """Wrap a tool's return value in an MCP ``ToolResult`` carrying quota +
+    rate-limit metadata in ``_meta.hive``. Strings become text content;
+    dicts become structured content so clients can still use them directly."""
+    meta = _quota_meta(storage, client_id)
+    if isinstance(payload, dict):
+        return ToolResult(structured_content=payload, meta=meta)
+    return ToolResult(content=payload, meta=meta)
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -201,9 +248,9 @@ async def ping(ctx: Context | None = None) -> str:
     Performs no storage reads or writes. A successful call confirms both
     connectivity to the MCP server and that the caller's token is still valid.
     """
-    await _auth(ctx)
+    storage, client_id = await _auth(ctx)
     await emit_metric("ToolInvocations", operation="ping")
-    return "ok"
+    return _tool_result("ok", storage, client_id)
 
 
 @mcp.tool(
@@ -263,7 +310,7 @@ async def remember(
                     "status": "unchanged",
                 },
             )
-            return f"Memory '{key}' unchanged."
+            return _tool_result(f"Memory '{key}' unchanged.", storage, client_id)
         existing.value = value
         existing.tags = tags
         existing.expires_at = expires_at
@@ -323,7 +370,7 @@ async def remember(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="remember"
     )
-    return f"{action} memory '{key}'."
+    return _tool_result(f"{action} memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -386,7 +433,7 @@ async def remember_if_absent(
             },
         )
         await emit_metric("ToolInvocations", operation="remember_if_absent")
-        return f"Memory '{key}' already exists — not overwritten."
+        return _tool_result(f"Memory '{key}' already exists — not overwritten.", storage, client_id)
 
     client = storage.get_client(client_id)
     owner_user_id = client.owner_user_id if client else None
@@ -432,7 +479,7 @@ async def remember_if_absent(
         unit="Milliseconds",
         operation="remember_if_absent",
     )
-    return f"Stored memory '{key}'."
+    return _tool_result(f"Stored memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -484,7 +531,7 @@ async def recall(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="recall"
     )
-    return memory.value
+    return _tool_result(memory.value, storage, client_id)
 
 
 @mcp.tool(
@@ -544,7 +591,7 @@ async def forget(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="forget"
     )
-    return f"Deleted memory '{key}'."
+    return _tool_result(f"Deleted memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -590,7 +637,7 @@ async def forget_all(
         unit="Milliseconds",
         operation="forget_all",
     )
-    return f"Deleted {deleted} memories with tag '{tag}'."
+    return _tool_result(f"Deleted {deleted} memories with tag '{tag}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -600,7 +647,7 @@ async def forget_all(
 async def memory_history(
     key: Annotated[str, "Key of the memory to retrieve history for"],
     ctx: Context | None = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Return the version history of a memory (previous values before each overwrite)."""
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope="memories:read")
@@ -617,7 +664,7 @@ async def memory_history(
         unit="Milliseconds",
         operation="memory_history",
     )
-    return [
+    items = [
         {
             "version_timestamp": v.version_timestamp,
             "value": v.value,
@@ -626,6 +673,7 @@ async def memory_history(
         }
         for v in versions
     ]
+    return _tool_result({"versions": items, "count": len(items)}, storage, client_id)
 
 
 @mcp.tool(
@@ -672,7 +720,9 @@ async def restore_memory(
         unit="Milliseconds",
         operation="restore_memory",
     )
-    return f"Restored memory '{key}' to version '{version_timestamp}'."
+    return _tool_result(
+        f"Restored memory '{key}' to version '{version_timestamp}'.", storage, client_id
+    )
 
 
 @mcp.tool(
@@ -732,7 +782,7 @@ async def list_memories(
     }
     if next_cursor:
         result["next_cursor"] = next_cursor
-    return result
+    return _tool_result(result, storage, client_id)
 
 
 @mcp.tool(
@@ -762,7 +812,7 @@ async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_tags"
     )
-    return {"tags": tags, "count": len(tags)}
+    return _tool_result({"tags": tags, "count": len(tags)}, storage, client_id)
 
 
 @mcp.tool(
@@ -795,7 +845,7 @@ async def summarize_context(
             },
         )
         await emit_metric("ToolInvocations", operation="summarize_context")
-        return f"No memories found for topic '{topic}'."
+        return _tool_result(f"No memories found for topic '{topic}'.", storage, client_id)
 
     lines = [f"## Memories tagged '{topic}'\n"]
     for m in memories:
@@ -831,7 +881,7 @@ async def summarize_context(
         unit="Milliseconds",
         operation="summarize_context",
     )
-    return "\n".join(lines)
+    return _tool_result("\n".join(lines), storage, client_id)
 
 
 @mcp.tool(
@@ -871,10 +921,10 @@ async def search_memories(
     try:
         pairs = _vector_store().search(query, client_id, top_k=search_top_k)
     except VectorIndexNotFoundError:
-        return {"items": [], "count": 0, "query": query}
+        return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
     except Exception:
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
-        return {"items": [], "count": 0, "query": query}
+        return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
 
     if threshold is not None:
         pairs = [(mid, score) for mid, score in pairs if score >= threshold]
@@ -911,13 +961,18 @@ async def search_memories(
         unit="Milliseconds",
         operation="search_memories",
     )
-    return {
-        "items": [
-            MemorySearchResult.from_memory_and_score(m, score).model_dump() for m, score in results
-        ],
-        "count": len(results),
-        "query": query,
-    }
+    return _tool_result(
+        {
+            "items": [
+                MemorySearchResult.from_memory_and_score(m, score).model_dump()
+                for m, score in results
+            ],
+            "count": len(results),
+            "query": query,
+        },
+        storage,
+        client_id,
+    )
 
 
 @mcp.tool(
@@ -947,10 +1002,10 @@ async def relate_memories(
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
         pairs = _vector_store().search(memory.value, client_id, top_k=top_k + 1)
     except VectorIndexNotFoundError:
-        return {"items": [], "count": 0, "key": key}
+        return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
-        return {"items": [], "count": 0, "key": key}
+        return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
 
     pairs = [(mid, score) for mid, score in pairs if mid != memory.memory_id][:top_k]
     results = storage.hydrate_memory_ids(pairs)
@@ -980,13 +1035,18 @@ async def relate_memories(
         unit="Milliseconds",
         operation="relate_memories",
     )
-    return {
-        "items": [
-            MemorySearchResult.from_memory_and_score(m, score).model_dump() for m, score in results
-        ],
-        "count": len(results),
-        "key": key,
-    }
+    return _tool_result(
+        {
+            "items": [
+                MemorySearchResult.from_memory_and_score(m, score).model_dump()
+                for m, score in results
+            ],
+            "count": len(results),
+            "key": key,
+        },
+        storage,
+        client_id,
+    )
 
 
 # ---------------------------------------------------------------------------

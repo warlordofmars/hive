@@ -78,6 +78,21 @@ def _make_ctx(jwt: str) -> MagicMock:
     return ctx
 
 
+def _text(r) -> str:
+    """Extract text payload from a ToolResult (for string-returning tools)."""
+    return r.content[0].text
+
+
+def _body(r) -> dict:
+    """Extract structured content from a ToolResult (for dict-returning tools)."""
+    return r.structured_content
+
+
+def _hive_meta(r) -> dict:
+    """Extract the ``_meta.hive`` quota/rate-limit block from a ToolResult."""
+    return r.meta["hive"]
+
+
 @pytest.fixture()
 def server_env():
     """moto-backed storage + valid JWT for MCP tool tests."""
@@ -125,7 +140,11 @@ class TestPing:
         from hive.server import ping
 
         result = await ping(ctx=_make_ctx(jwt))
-        assert result == "ok"
+        assert _text(result) == "ok"
+        # Every tool response carries quota + rate-limit state under _meta.hive
+        meta = _hive_meta(result)
+        assert "memory_quota" in meta
+        assert "rate_limit" in meta
 
     async def test_missing_auth_raises_tool_error(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -169,7 +188,7 @@ class TestRemember:
         from hive.server import remember
 
         result = await remember("my-key", "my-value", ["tag1"], ctx=_make_ctx(jwt))
-        assert result == "Stored memory 'my-key'."
+        assert _text(result) == "Stored memory 'my-key'."
         assert storage.get_memory_by_key("my-key") is not None
 
     async def test_update_existing_memory(self, server_env):
@@ -178,7 +197,7 @@ class TestRemember:
 
         await remember("upd-key", "original", [], ctx=_make_ctx(jwt))
         result = await remember("upd-key", "updated", ["new-tag"], ctx=_make_ctx(jwt))
-        assert result == "Updated memory 'upd-key'."
+        assert _text(result) == "Updated memory 'upd-key'."
         m = storage.get_memory_by_key("upd-key")
         assert m is not None
         assert m.value == "updated"
@@ -189,7 +208,7 @@ class TestRemember:
 
         await remember("same-key", "same-value", ["t"], ctx=_make_ctx(jwt))
         result = await remember("same-key", "same-value", ["t"], ctx=_make_ctx(jwt))
-        assert result == "Memory 'same-key' unchanged."
+        assert _text(result) == "Memory 'same-key' unchanged."
 
     async def test_missing_auth_raises_tool_error(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -213,7 +232,7 @@ class TestRemember:
         ctx = MagicMock()
         ctx.request_context.meta = meta
         result = await remember("pydantic-meta-key", "v", [], ctx=ctx)
-        assert result == "Stored memory 'pydantic-meta-key'."
+        assert _text(result) == "Stored memory 'pydantic-meta-key'."
 
     async def test_oversized_value_raises_tool_error(self, server_env):
         from unittest.mock import patch
@@ -238,7 +257,7 @@ class TestRemember:
         storage, _, jwt = server_env
         value = "x" * DEFAULT_MAX_VALUE_BYTES
         result = await remember("at-limit-key", value, [], ctx=_make_ctx(jwt))
-        assert result == "Stored memory 'at-limit-key'."
+        assert _text(result) == "Stored memory 'at-limit-key'."
 
     async def test_value_over_limit_raises_tool_error(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -276,14 +295,14 @@ class TestRemember:
                 await remember("custom-limit-key", "x" * 6, [], ctx=_make_ctx(jwt))
             # within the override limit is fine
             result = await remember("within-key", "x" * 5, [], ctx=_make_ctx(jwt))
-            assert result == "Stored memory 'within-key'."
+            assert _text(result) == "Stored memory 'within-key'."
 
     async def test_remember_with_ttl_sets_expires_at(self, server_env):
         storage, client_id, jwt = server_env
         from hive.server import remember
 
         result = await remember("ttl-key", "ttl-val", [], ttl_seconds=3600, ctx=_make_ctx(jwt))
-        assert result == "Stored memory 'ttl-key'."
+        assert _text(result) == "Stored memory 'ttl-key'."
         m = storage.get_memory_by_key("ttl-key")
         assert m is not None
         assert m.expires_at is not None
@@ -306,7 +325,7 @@ class TestRemember:
         assert m1 is not None
         # Second call with same value but no ttl should NOT be idempotent
         result = await remember("idem-ttl", "v", [], ttl_seconds=None, ctx=_make_ctx(jwt))
-        assert result == "Updated memory 'idem-ttl'."
+        assert _text(result) == "Updated memory 'idem-ttl'."
         m2 = storage.get_memory_by_key("idem-ttl")
         assert m2 is not None
         assert m2.expires_at is None
@@ -323,7 +342,7 @@ class TestRememberIfAbsent:
         from hive.server import remember_if_absent
 
         result = await remember_if_absent("ifa-new", "v", ["t"], ctx=_make_ctx(jwt))
-        assert result == "Stored memory 'ifa-new'."
+        assert _text(result) == "Stored memory 'ifa-new'."
         m = storage.get_memory_by_key("ifa-new")
         assert m is not None
         assert m.value == "v"
@@ -334,7 +353,7 @@ class TestRememberIfAbsent:
 
         await remember("ifa-dupe", "original", ["old"], ctx=_make_ctx(jwt))
         result = await remember_if_absent("ifa-dupe", "new-value", ["new"], ctx=_make_ctx(jwt))
-        assert result == "Memory 'ifa-dupe' already exists — not overwritten."
+        assert _text(result) == "Memory 'ifa-dupe' already exists — not overwritten."
         m = storage.get_memory_by_key("ifa-dupe")
         assert m.value == "original"
         assert set(m.tags) == {"old"}
@@ -404,7 +423,7 @@ class TestRememberIfAbsent:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await remember_if_absent("ifa-vs-fail", "v", ctx=_make_ctx(jwt))
 
-        assert result == "Stored memory 'ifa-vs-fail'."
+        assert _text(result) == "Stored memory 'ifa-vs-fail'."
 
     async def test_requires_write_scope(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -429,7 +448,7 @@ class TestRecall:
 
         await remember("rec-key", "the-value", [], ctx=_make_ctx(jwt))
         result = await recall("rec-key", ctx=_make_ctx(jwt))
-        assert result == "the-value"
+        assert _text(result) == "the-value"
 
     async def test_recall_nonexistent_raises(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -472,7 +491,7 @@ class TestForget:
 
         await remember("del-key", "v", [], ctx=_make_ctx(jwt))
         result = await forget("del-key", ctx=_make_ctx(jwt))
-        assert result == "Deleted memory 'del-key'."
+        assert _text(result) == "Deleted memory 'del-key'."
         assert storage.get_memory_by_key("del-key") is None
 
     async def test_forget_nonexistent_raises(self, server_env):
@@ -498,15 +517,16 @@ class TestListMemories:
         await remember("lst-a", "v1", ["alpha"], ctx=_make_ctx(jwt))
         await remember("lst-b", "v2", ["beta"], ctx=_make_ctx(jwt))
         result = await list_memories("alpha", ctx=_make_ctx(jwt))
-        assert "items" in result and "has_more" in result
-        keys = [m["key"] for m in result["items"]]
+        body = _body(result)
+        assert "items" in body and "has_more" in body
+        keys = [m["key"] for m in body["items"]]
         assert "lst-a" in keys
         assert "lst-b" not in keys
         # Agent attribution is surfaced on every item.
-        assert result["items"][0]["owner_client_id"] == client_id
+        assert body["items"][0]["owner_client_id"] == client_id
         # Usage metrics are surfaced too; fresh memories have count=0, no access.
-        assert result["items"][0]["recall_count"] == 0
-        assert result["items"][0]["last_accessed_at"] is None
+        assert body["items"][0]["recall_count"] == 0
+        assert body["items"][0]["last_accessed_at"] is None
 
     async def test_list_memories_surfaces_recall_metrics_after_recall(self, server_env):
         _, _, jwt = server_env
@@ -516,7 +536,7 @@ class TestListMemories:
         await recall("bumped", ctx=_make_ctx(jwt))
 
         result = await list_memories("alpha", ctx=_make_ctx(jwt))
-        item = next(x for x in result["items"] if x["key"] == "bumped")
+        item = next(x for x in _body(result)["items"] if x["key"] == "bumped")
         assert item["recall_count"] == 1
         assert item["last_accessed_at"] is not None
 
@@ -525,8 +545,9 @@ class TestListMemories:
         from hive.server import list_memories
 
         result = await list_memories("nonexistent-tag", ctx=_make_ctx(jwt))
-        assert result["items"] == []
-        assert result["has_more"] is False
+        body = _body(result)
+        assert body["items"] == []
+        assert body["has_more"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -545,14 +566,14 @@ class TestListTags:
         await remember("c", "3", [], ctx=ctx)
 
         result = await list_tags(ctx=ctx)
-        assert result == {"tags": ["alpha", "mango", "zebra"], "count": 3}
+        assert _body(result) == {"tags": ["alpha", "mango", "zebra"], "count": 3}
 
     async def test_empty_when_no_memories(self, server_env):
         _, _, jwt = server_env
         from hive.server import list_tags
 
         result = await list_tags(ctx=_make_ctx(jwt))
-        assert result == {"tags": [], "count": 0}
+        assert _body(result) == {"tags": [], "count": 0}
 
     async def test_scoped_to_caller_client(self, server_env):
         storage, client_id, jwt = server_env
@@ -566,7 +587,7 @@ class TestListTags:
         )
 
         result = await list_tags(ctx=_make_ctx(jwt))
-        assert result["tags"] == ["owned"]
+        assert _body(result)["tags"] == ["owned"]
 
     async def test_requires_read_scope(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -592,15 +613,16 @@ class TestSummarizeContext:
         await remember("sum-a", "detail about foo", ["foo"], ctx=_make_ctx(jwt))
         await remember("sum-b", "more about foo", ["foo"], ctx=_make_ctx(jwt))
         result = await summarize_context("foo", ctx=_make_ctx(jwt))
-        assert "foo" in result
-        assert "sum-a" in result or "detail about foo" in result
+        text = _text(result)
+        assert "foo" in text
+        assert "sum-a" in text or "detail about foo" in text
 
     async def test_summarize_no_memories(self, server_env):
         _, _, jwt = server_env
         from hive.server import summarize_context
 
         result = await summarize_context("nonexistent-topic", ctx=_make_ctx(jwt))
-        assert "No memories found" in result
+        assert "No memories found" in _text(result)
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +685,7 @@ class TestAuthHttpPath:
 
         with patch("hive.server.get_http_request", return_value=mock_request):
             result = await remember("http-path-key", "value", [], ctx=ctx)
-        assert "http-path-key" in result
+        assert "http-path-key" in _text(result)
 
 
 # ---------------------------------------------------------------------------
@@ -708,8 +730,9 @@ class TestListMemoriesPagination:
             await remember(f"pg-key-{i}", f"val-{i}", ["pagtest"], ctx=ctx)
 
         result = await list_memories("pagtest", limit=1, ctx=ctx)
-        assert result["has_more"] is True
-        assert "next_cursor" in result
+        body = _body(result)
+        assert body["has_more"] is True
+        assert "next_cursor" in body
 
 
 # ---------------------------------------------------------------------------
@@ -869,9 +892,10 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("searchable content", top_k=5, ctx=ctx)
 
-        assert result["count"] == 1
-        assert result["query"] == "searchable content"
-        item = result["items"][0]
+        body = _body(result)
+        assert body["count"] == 1
+        assert body["query"] == "searchable content"
+        item = body["items"][0]
         assert item["key"] == "search-key"
         assert item["score"] == 0.88
         assert item["owner_client_id"] == client_id
@@ -889,7 +913,7 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("anything", ctx=_make_ctx(jwt))
 
-        assert result == {"items": [], "count": 0, "query": "anything"}
+        assert _body(result) == {"items": [], "count": 0, "query": "anything"}
 
     async def test_caps_top_k_at_50(self, server_env):
         from unittest.mock import patch
@@ -931,8 +955,9 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("anything", min_score=0.5, ctx=ctx)
 
-        assert result["count"] == 1
-        assert [item["key"] for item in result["items"]] == ["hi-key"]
+        body = _body(result)
+        assert body["count"] == 1
+        assert [item["key"] for item in body["items"]] == ["hi-key"]
 
     async def test_min_score_none_returns_all(self, server_env):
         from unittest.mock import patch
@@ -950,7 +975,7 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("q", ctx=ctx)
 
-        assert result["count"] == 2
+        assert _body(result)["count"] == 2
 
     async def test_min_score_all_below_threshold_returns_empty(self, server_env):
         from unittest.mock import patch
@@ -966,7 +991,7 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("q", min_score=0.9, ctx=ctx)
 
-        assert result == {"items": [], "count": 0, "query": "q"}
+        assert _body(result) == {"items": [], "count": 0, "query": "q"}
 
     async def test_filter_tags_requires_all_tags(self, server_env):
         from unittest.mock import patch
@@ -988,9 +1013,10 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("q", filter_tags=["x", "y"], ctx=ctx)
 
+        body = _body(result)
         # Only "a" has both x and y
-        assert [item["key"] for item in result["items"]] == ["a"]
-        assert result["count"] == 1
+        assert [item["key"] for item in body["items"]] == ["a"]
+        assert body["count"] == 1
 
     async def test_filter_tags_none_returns_all(self, server_env):
         from unittest.mock import patch
@@ -1006,7 +1032,7 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("q", ctx=ctx)
 
-        assert result["count"] == 1
+        assert _body(result)["count"] == 1
 
     async def test_filter_tags_requests_wider_candidate_pool(self, server_env):
         from unittest.mock import patch
@@ -1040,8 +1066,9 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("q", top_k=2, filter_tags=["x"], ctx=ctx)
 
-        assert result["count"] == 2
-        assert [item["key"] for item in result["items"]] == ["k0", "k1"]
+        body = _body(result)
+        assert body["count"] == 2
+        assert [item["key"] for item in body["items"]] == ["k0", "k1"]
 
     async def test_min_score_clamped_to_unit_interval(self, server_env):
         from unittest.mock import patch
@@ -1058,14 +1085,14 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("q", min_score=5.0, ctx=ctx)
 
-        assert result["count"] == 1
+        assert _body(result)["count"] == 1
 
         # min_score < 0.0 gets clamped to 0.0; everything passes
         mock_vs2 = _make_mock_vector_store([(m.memory_id, 0.0)])
         with patch("hive.server._vector_store", return_value=mock_vs2):
             result = await search_memories("q", min_score=-1.0, ctx=ctx)
 
-        assert result["count"] == 1
+        assert _body(result)["count"] == 1
 
     async def test_remember_dual_writes_to_vector_store(self, server_env):
         """remember() calls upsert_memory on the VectorStore for new memories."""
@@ -1124,7 +1151,7 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await remember("vec-fail-new", "v", [], ctx=_make_ctx(jwt))
 
-        assert "Stored" in result
+        assert "Stored" in _text(result)
 
     async def test_remember_vector_upsert_failure_on_update_is_non_fatal(self, server_env):
         """VectorStore errors during remember() update are logged but do not raise."""
@@ -1142,7 +1169,7 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await remember("vec-fail-upd", "updated", [], ctx=_make_ctx(jwt))
 
-        assert "Updated" in result
+        assert "Updated" in _text(result)
 
     async def test_forget_vector_delete_failure_is_non_fatal(self, server_env):
         """VectorStore errors during forget() are logged but do not raise."""
@@ -1158,7 +1185,7 @@ class TestSearchMemories:
             await remember("vec-fail-forget", "v", [], ctx=_make_ctx(jwt))
             result = await forget("vec-fail-forget", ctx=_make_ctx(jwt))
 
-        assert "Deleted" in result
+        assert "Deleted" in _text(result)
 
     async def test_search_vector_failure_returns_empty(self, server_env):
         """Unexpected VectorStore errors during search_memories() return empty results."""
@@ -1173,7 +1200,7 @@ class TestSearchMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await search_memories("anything", ctx=_make_ctx(jwt))
 
-        assert result == {"items": [], "count": 0, "query": "anything"}
+        assert _body(result) == {"items": [], "count": 0, "query": "anything"}
 
 
 # ---------------------------------------------------------------------------
@@ -1203,10 +1230,11 @@ class TestRelateMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await relate_memories("source", top_k=2, ctx=ctx)
 
-        keys = [item["key"] for item in result["items"]]
+        body = _body(result)
+        keys = [item["key"] for item in body["items"]]
         assert keys == ["a", "b"]
-        assert result["count"] == 2
-        assert result["key"] == "source"
+        assert body["count"] == 2
+        assert body["key"] == "source"
 
     async def test_uses_source_value_as_query(self, server_env):
         from unittest.mock import patch
@@ -1249,7 +1277,7 @@ class TestRelateMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await relate_memories("src", ctx=ctx)
 
-        assert result == {"items": [], "count": 0, "key": "src"}
+        assert _body(result) == {"items": [], "count": 0, "key": "src"}
 
     async def test_returns_empty_on_vector_error(self, server_env):
         from unittest.mock import MagicMock, patch
@@ -1265,7 +1293,7 @@ class TestRelateMemories:
         with patch("hive.server._vector_store", return_value=mock_vs):
             result = await relate_memories("src", ctx=ctx)
 
-        assert result == {"items": [], "count": 0, "key": "src"}
+        assert _body(result) == {"items": [], "count": 0, "key": "src"}
 
     async def test_top_k_clamped(self, server_env):
         from unittest.mock import patch
@@ -1308,7 +1336,7 @@ class TestForgetAll:
         await remember("fa-b", "v2", ["purge"], ctx=_make_ctx(jwt))
         await remember("fa-c", "v3", ["keep"], ctx=_make_ctx(jwt))
         result = await forget_all("purge", ctx=_make_ctx(jwt))
-        assert "2" in result
+        assert "2" in _text(result)
         assert storage.get_memory_by_key("fa-a") is None
         assert storage.get_memory_by_key("fa-b") is None
         assert storage.get_memory_by_key("fa-c") is not None
@@ -1318,7 +1346,7 @@ class TestForgetAll:
         from hive.server import forget_all
 
         result = await forget_all("no-such-tag", ctx=_make_ctx(jwt))
-        assert "0" in result
+        assert "0" in _text(result)
 
     async def test_forget_all_requires_write_scope(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -1344,8 +1372,10 @@ class TestMemoryHistory:
         await remember("hist-k", "v1", [], ctx=_make_ctx(jwt))
         await remember("hist-k", "v2", [], ctx=_make_ctx(jwt))
         result = await memory_history("hist-k", ctx=_make_ctx(jwt))
-        assert len(result) == 1
-        assert result[0]["value"] == "v1"
+        body = _body(result)
+        assert body["count"] == 1
+        assert len(body["versions"]) == 1
+        assert body["versions"][0]["value"] == "v1"
 
     async def test_memory_history_empty_for_new_memory(self, server_env):
         storage, client_id, jwt = server_env
@@ -1353,7 +1383,7 @@ class TestMemoryHistory:
 
         await remember("new-hist", "v1", [], ctx=_make_ctx(jwt))
         result = await memory_history("new-hist", ctx=_make_ctx(jwt))
-        assert result == []
+        assert _body(result) == {"versions": [], "count": 0}
 
     async def test_memory_history_raises_for_missing_key(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -1388,9 +1418,9 @@ class TestRestoreMemory:
         await remember("rst-k", "v1", [], ctx=_make_ctx(jwt))
         await remember("rst-k", "v2", [], ctx=_make_ctx(jwt))
         versions = await memory_history("rst-k", ctx=_make_ctx(jwt))
-        vts = versions[0]["version_timestamp"]
+        vts = _body(versions)["versions"][0]["version_timestamp"]
         result = await restore_memory("rst-k", vts, ctx=_make_ctx(jwt))
-        assert "rst-k" in result
+        assert "rst-k" in _text(result)
         m = storage.get_memory_by_key("rst-k")
         assert m is not None
         assert m.value == "v1"
