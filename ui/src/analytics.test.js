@@ -56,11 +56,13 @@ describe("analytics (GA enabled — production with ID)", () => {
     vi.resetModules();
     vi.stubEnv("DEV", false);
     vi.stubEnv("VITE_GA_MEASUREMENT_ID", "G-TEST123");
+    localStorage.setItem("hive_ga_consent", "accept");
     window.gtag = vi.fn();
   });
 
   afterEach(() => {
     delete window.gtag;
+    localStorage.clear();
     vi.unstubAllEnvs();
   });
 
@@ -100,5 +102,41 @@ describe("analytics (GA enabled — production with ID)", () => {
     delete window.gtag;
     const { trackEvent } = await import("./analytics.js");
     expect(() => trackEvent("cta_click")).not.toThrow();
+  });
+});
+
+describe("analytics (GA gated on consent)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubEnv("DEV", false);
+    vi.stubEnv("VITE_GA_MEASUREMENT_ID", "G-TEST123");
+    localStorage.clear();
+    window.gtag = vi.fn();
+  });
+
+  afterEach(() => {
+    delete window.gtag;
+    localStorage.clear();
+    vi.unstubAllEnvs();
+  });
+
+  it("trackPageView is a no-op when no consent is stored", async () => {
+    const { trackPageView } = await import("./analytics.js");
+    trackPageView("/pricing");
+    expect(window.gtag).not.toHaveBeenCalled();
+  });
+
+  it("trackPageView is a no-op when consent is rejected", async () => {
+    localStorage.setItem("hive_ga_consent", "reject");
+    const { trackPageView } = await import("./analytics.js");
+    trackPageView("/pricing");
+    expect(window.gtag).not.toHaveBeenCalled();
+  });
+
+  it("trackEvent is a no-op when consent is rejected", async () => {
+    localStorage.setItem("hive_ga_consent", "reject");
+    const { trackEvent } = await import("./analytics.js");
+    trackEvent("cta_click");
+    expect(window.gtag).not.toHaveBeenCalled();
   });
 });

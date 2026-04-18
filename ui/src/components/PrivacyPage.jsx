@@ -117,14 +117,17 @@ export default function PrivacyPage() {
             <p>
               The Hive marketing site (hive.warlordofmars.net and its sub-pages, including <code>/pricing</code>,
               {" "}<code>/faq</code>, <code>/use-cases</code>, and <code>/docs</code>) uses Google
-              Analytics 4 (GA4) to measure page views and navigation events. GA4 may set cookies
-              in your browser and send anonymised usage data to Google.
+              Analytics 4 (GA4) to measure page views and navigation events.
             </p>
             <p>
-              The management UI (<code>/app</code>) does not send data to GA4.
+              GA4 is <strong>opt-in</strong>: we show a consent banner on your first visit with
+              equal-prominence Accept and Reject buttons. No GA4 script loads and no data is sent
+              to Google until you click Accept. You can change your choice at any time via the
+              <strong> Cookie preferences </strong>link in the footer. The management UI
+              (<code>/app</code>) never sends data to GA4, regardless of your choice.
             </p>
             <p>
-              You can opt out of GA4 tracking by enabling "Do Not Track" in your browser, using a
+              You can also opt out at the browser level by enabling "Do Not Track", using a
               content blocker, or installing the{" "}
               <a
                 href="https://tools.google.com/dlpage/gaoptout"
