@@ -313,6 +313,107 @@ async def remember(
 
 
 @mcp.tool()
+async def remember_if_absent(
+    key: Annotated[str, "Unique key to store the memory under"],
+    value: Annotated[
+        str,
+        f"Content of the memory. Maximum {_max_value_bytes()} bytes (UTF-8 encoded); "
+        "configurable via HIVE_MAX_VALUE_BYTES.",
+    ],
+    tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ttl_seconds: Annotated[
+        int | None, "Seconds until the memory expires. None = never expires."
+    ] = None,
+    ctx: Context | None = None,
+) -> str:
+    """Store a memory **only if** no memory with the given key already exists.
+
+    Returns "Stored memory '{key}'." on write, or
+    "Memory '{key}' already exists — not overwritten." on skip.
+
+    Uses a read-then-write check. Two concurrent callers with the same key
+    can still race in the narrow window between the read and the write;
+    strict DynamoDB-level atomicity is tracked in #391.
+    """
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope="memories:write")
+
+    limit = _max_value_bytes()
+    actual = len(value.encode("utf-8"))
+    if actual > limit:
+        await emit_metric("ToolErrors", operation="remember_if_absent")
+        raise ToolError(f"Value exceeds maximum size of {limit} bytes ({actual} bytes provided)")
+
+    tags = tags or []
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        if ttl_seconds is not None
+        else None
+    )
+
+    existing = storage.get_memory_by_key(key)
+    if existing:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "Memory '%s' already exists — not overwritten",
+            key,
+            extra={
+                "tool": "remember_if_absent",
+                "duration_ms": duration_ms,
+                "status": "skipped",
+            },
+        )
+        await emit_metric("ToolInvocations", operation="remember_if_absent")
+        return f"Memory '{key}' already exists — not overwritten."
+
+    client = storage.get_client(client_id)
+    owner_user_id = client.owner_user_id if client else None
+    try:
+        check_memory_quota(owner_user_id, storage)
+    except QuotaExceeded as exc:
+        raise ToolError(exc.detail) from exc
+
+    memory = Memory(
+        key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+    )
+    try:
+        storage.put_memory(memory)
+    except ValueError as exc:
+        await emit_metric("ToolErrors", operation="remember_if_absent")
+        raise ToolError(str(exc)) from exc
+    try:
+        _vector_store().upsert_memory(memory)
+    except Exception:
+        logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
+
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_created,
+            client_id=client_id,
+            metadata={"key": key, "tags": tags},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Stored memory '%s' (if_absent)",
+        key,
+        extra={
+            "tool": "remember_if_absent",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="remember_if_absent")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="remember_if_absent",
+    )
+    return f"Stored memory '{key}'."
+
+
+@mcp.tool()
 async def recall(
     key: Annotated[str, "Key of the memory to retrieve"],
     ctx: Context | None = None,

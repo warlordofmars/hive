@@ -293,6 +293,111 @@ class TestRemember:
 
 
 # ---------------------------------------------------------------------------
+# remember_if_absent
+# ---------------------------------------------------------------------------
+
+
+class TestRememberIfAbsent:
+    async def test_writes_when_key_absent(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import remember_if_absent
+
+        result = await remember_if_absent("ifa-new", "v", ["t"], ctx=_make_ctx(jwt))
+        assert result == "Stored memory 'ifa-new'."
+        m = storage.get_memory_by_key("ifa-new")
+        assert m is not None
+        assert m.value == "v"
+
+    async def test_skips_when_key_exists(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import remember, remember_if_absent
+
+        await remember("ifa-dupe", "original", ["old"], ctx=_make_ctx(jwt))
+        result = await remember_if_absent("ifa-dupe", "new-value", ["new"], ctx=_make_ctx(jwt))
+        assert result == "Memory 'ifa-dupe' already exists — not overwritten."
+        m = storage.get_memory_by_key("ifa-dupe")
+        assert m.value == "original"
+        assert set(m.tags) == {"old"}
+
+    async def test_sets_ttl_when_writing(self, server_env):
+        storage, _, jwt = server_env
+        from hive.server import remember_if_absent
+
+        await remember_if_absent("ifa-ttl", "v", [], ttl_seconds=3600, ctx=_make_ctx(jwt))
+        m = storage.get_memory_by_key("ifa-ttl")
+        assert m.expires_at is not None
+
+    async def test_oversized_value_raises(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import DEFAULT_MAX_VALUE_BYTES, remember_if_absent
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="exceeds maximum size"):
+            await remember_if_absent(
+                "ifa-big", "x" * (DEFAULT_MAX_VALUE_BYTES + 1), ctx=_make_ctx(jwt)
+            )
+
+    async def test_storage_value_error_becomes_tool_error(self, server_env):
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_if_absent
+
+        storage, _, jwt = server_env
+        with (
+            patch.object(storage.__class__, "get_memory_by_key", return_value=None),
+            patch.object(
+                storage.__class__,
+                "put_memory",
+                side_effect=ValueError("Memory value is too large"),
+            ),
+            pytest.raises(ToolError, match="too large"),
+        ):
+            await remember_if_absent("ifa-err", "v", ctx=_make_ctx(jwt))
+
+    async def test_quota_exceeded_becomes_tool_error(self, server_env):
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember_if_absent
+
+        _, _, jwt = server_env
+        with (
+            patch("hive.server.check_memory_quota", side_effect=QuotaExceeded("quota full")),
+            pytest.raises(ToolError, match="quota full"),
+        ):
+            await remember_if_absent("ifa-q", "v", ctx=_make_ctx(jwt))
+
+    async def test_vector_upsert_failure_is_non_fatal(self, server_env):
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember_if_absent
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.upsert_memory.side_effect = RuntimeError("bedrock down")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await remember_if_absent("ifa-vs-fail", "v", ctx=_make_ctx(jwt))
+
+        assert result == "Stored memory 'ifa-vs-fail'."
+
+    async def test_requires_write_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_if_absent
+
+        storage, _, _ = server_env
+        read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await remember_if_absent("ifa-scope", "v", ctx=_make_ctx(read_only_jwt))
+
+
+# ---------------------------------------------------------------------------
 # recall
 # ---------------------------------------------------------------------------
 
