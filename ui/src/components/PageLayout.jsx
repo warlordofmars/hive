@@ -2,8 +2,16 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import ConsentBanner from "@/components/ConsentBanner";
+import { CONSENT_RESET_EVENT, clearConsent } from "@/lib/consent";
 
 const NAV_LINK_BASE = "text-sm no-underline hover:text-white transition-colors";
+
+function handleReopenConsent(e) {
+  e.preventDefault();
+  clearConsent();
+  globalThis.dispatchEvent(new CustomEvent(CONSENT_RESET_EVENT));
+}
 
 export default function PageLayout({ children }) {
   const navigate = useNavigate();
@@ -65,11 +73,19 @@ export default function PageLayout({ children }) {
               <a href="/status" className="no-underline hover:text-[var(--text)] transition-colors">Status</a>
               <a href="/terms" className="no-underline hover:text-[var(--text)] transition-colors">Terms</a>
               <a href="/privacy" className="no-underline hover:text-[var(--text)] transition-colors">Privacy</a>
+              <a
+                href="#cookie-preferences"
+                onClick={handleReopenConsent}
+                className="no-underline hover:text-[var(--text)] transition-colors"
+              >
+                Cookie preferences
+              </a>
             </div>
           </div>
           <p className="mt-6 text-[13px] text-[var(--text-muted)]">© 2026 Hive. Free to use.</p>
         </div>
       </footer>
+      <ConsentBanner />
     </div>
   );
 }

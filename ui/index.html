@@ -24,14 +24,21 @@
     <meta name="twitter:description" content="Persistent, shared memory for Claude agents and teams. Free hosted service." />
     <meta name="twitter:image" content="https://hive.warlordofmars.net/social-preview.png" />
     <meta name="twitter:image:alt" content="Hive — Shared Memory for Claude Agents" />
-    <!-- Google Analytics 4 — only injected when VITE_GA_MEASUREMENT_ID is set at build time -->
+    <!-- Google Analytics 4 — gated on the consent banner. Only loads when
+         VITE_GA_MEASUREMENT_ID is set AND the visitor has opted in. -->
     <script>
       (function () {
         var id = "%VITE_GA_MEASUREMENT_ID%";
         if (!id) return;
+        try {
+          if (localStorage.getItem("hive_ga_consent") !== "accept") return;
+        } catch (e) {
+          return;
+        }
         var s = document.createElement("script");
         s.src = "https://www.googletagmanager.com/gtag/js?id=" + id;
         s.async = true;
+        s.dataset.hiveGa = "1";
         document.head.appendChild(s);
         window.dataLayer = window.dataLayer || [];
         function gtag() { window.dataLayer.push(arguments); }
