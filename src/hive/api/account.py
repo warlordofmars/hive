@@ -106,12 +106,11 @@ async def export_account(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    now = datetime.now(timezone.utc)
-    bucket = int(now.timestamp()) // EXPORT_RATE_LIMIT_SECONDS
+    # Rate limit: one export per EXPORT_RATE_LIMIT_SECONDS. The counter item
+    # has a matching TTL and is only set on first write (``if_not_exists``),
+    # so DynamoDB cleans it up on its own after the window passes.
     count = storage.increment_rate_limit_counter(
-        user_id,
-        f"export#{bucket}",
-        ttl_seconds=EXPORT_RATE_LIMIT_SECONDS * 2,
+        user_id, "export", ttl_seconds=EXPORT_RATE_LIMIT_SECONDS
     )
     if count > 1:
         raise HTTPException(
@@ -119,6 +118,8 @@ async def export_account(
             detail="Exports are limited to one per 5 minutes.",
             headers={"Retry-After": str(EXPORT_RATE_LIMIT_SECONDS)},
         )
+
+    now = datetime.now(timezone.utc)
 
     clients, _ = storage.list_clients(owner_user_id=user_id, limit=EXPORT_CLIENTS_LIMIT)
     client_ids = {c.client_id for c in clients}

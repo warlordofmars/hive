@@ -316,3 +316,31 @@ class TestExportAccount:
         assert body["memories"] == []
         assert body["clients"] == []
         assert body["activity_log"] == []
+
+    def test_multiple_clients_and_events_render_with_separators(self, client):
+        import json
+
+        tc, storage = client
+        from hive.models import ActivityEvent, EventType, OAuthClient
+
+        # Two clients and two events for the user — exercises the inter-item
+        # separator branches in the streamed JSON builder.
+        c1 = OAuthClient(client_name="agent-1", owner_user_id=_USER_ID)
+        c2 = OAuthClient(client_name="agent-2", owner_user_id=_USER_ID)
+        storage.put_client(c1)
+        storage.put_client(c2)
+        for c in (c1, c2):
+            storage.log_event(
+                ActivityEvent(
+                    event_type=EventType.memory_created,
+                    client_id=c.client_id,
+                    metadata={"key": "k"},
+                )
+            )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        ids = {c["client_id"] for c in body["clients"]}
+        assert {c1.client_id, c2.client_id}.issubset(ids)
+        event_client_ids = [e["client_id"] for e in body["activity_log"]]
+        assert len(event_client_ids) >= 2
