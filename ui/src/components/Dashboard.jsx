@@ -442,6 +442,15 @@ export default function Dashboard() {
       ]
     : [];
 
+  const securityData = metrics
+    ? [
+        {
+          name: "CSP Violations",
+          value: (metrics.metrics?.csp_violations?.values ?? []).reduce((s, v) => s + v, 0),
+        },
+      ]
+    : [];
+
   const xAxisProps = {
     dataKey: "ts",
     tick: { fontSize: 11, fill: "var(--text-muted)" },
@@ -544,6 +553,16 @@ export default function Dashboard() {
       {authData.length > 0 && (
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
           {authData.map((d) => (
+            <StatCard key={d.name} label={d.name} value={d.value} />
+          ))}
+        </div>
+      )}
+
+      {/* Security */}
+      <SectionHeader title="Security" />
+      {securityData.length > 0 && (
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          {securityData.map((d) => (
             <StatCard key={d.name} label={d.name} value={d.value} />
           ))}
         </div>

@@ -520,6 +520,9 @@ class HiveStack(cdk.Stack):
         # violations without breaking the site. Flip to enforcing in a
         # follow-up once logs are clean for ~1 week.
         # ----------------------------------------------------------------
+        # Violations POST to /api/csp-report on the same origin; the endpoint
+        # is unauthenticated + per-IP rate-limited. `report-uri` is the legacy
+        # directive; `report-to default` targets the modern Reporting API.
         csp_report_only = (
             "default-src 'self'; "
             "script-src 'self' https://www.googletagmanager.com; "
@@ -529,7 +532,9 @@ class HiveStack(cdk.Stack):
             "style-src 'self' 'unsafe-inline'; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
-            "form-action 'self';"
+            "form-action 'self'; "
+            "report-uri /api/csp-report; "
+            "report-to default;"
         )
         security_headers_policy = cloudfront.ResponseHeadersPolicy(
             self,
