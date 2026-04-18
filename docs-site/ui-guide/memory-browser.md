@@ -12,6 +12,7 @@ Your memories are listed in the main panel. Each card shows:
 - The memory **key**
 - A preview of the **value** (first 160 characters)
 - Any **tags** attached to the memory
+- A **by {client name}** badge attributing the memory to the OAuth client that created it (falls back to the client id when the name has been deleted)
 
 ## Searching memories
 
