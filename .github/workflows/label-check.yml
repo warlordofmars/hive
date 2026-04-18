@@ -44,10 +44,15 @@ jobs:
           echo "$LABELS" | grep -qE '(^|,)status:' || MISSING+=("status:*")
           echo "$LABELS" | grep -qE '(^|,)priority:' || MISSING+=("priority:p0|p1|p2|p3")
           echo "$LABELS" | grep -qE '(^|,)size:' || MISSING+=("size:xs|s|m|l|xl")
+          # Release Drafter (#420) groups PRs by category label, so every
+          # issue linked from a PR must carry one of these category labels
+          # so the auto-drafted release notes land in the right section.
+          echo "$LABELS" | grep -qE '(^|,)(enhancement|bug|docs|chore|infra|ci|security|breaking)(,|$)' \
+            || MISSING+=("category (enhancement|bug|docs|chore|infra|ci|security|breaking)")
 
           if [ ${#MISSING[@]} -gt 0 ]; then
             echo "::error::Issue #$ISSUE_NUM is missing required labels: ${MISSING[*]}"
-            echo "Add status, priority, and size labels to the issue before merging this PR."
+            echo "Add status, priority, size, and a category label to the issue before merging this PR."
             exit 1
           fi
 

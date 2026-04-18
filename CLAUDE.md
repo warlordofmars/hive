@@ -353,8 +353,11 @@ gh pr merge --auto --merge
    ```
 
 2. **Update `CHANGELOG.md`** — move items from `[Unreleased]` to a new
-   versioned section, e.g. `## [X.Y.Z] - 2026-04-11`.
-   Commit the change:
+   versioned section, e.g. `## [X.Y.Z] - 2026-04-11`. The **draft release
+   auto-maintained by Release Drafter** (see
+   https://github.com/warlordofmars/hive/releases) is the source of
+   truth — copy its body into the new section rather than re-deriving
+   from PR history. Commit the change:
 
    ```bash
    git add CHANGELOG.md
