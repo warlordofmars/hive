@@ -7,9 +7,6 @@ name: Release drafter
 on:
   push:
     branches: [development]
-  pull_request:
-    types: [opened, reopened, synchronize]
-    branches: [development]
 
 permissions:
   contents: write
