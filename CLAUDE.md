@@ -225,6 +225,32 @@ first).
   (e.g. `uses: actions/checkout@<sha> # v4`); use
   `gh api repos/{owner}/{repo}/git/ref/tags/{tag}` to resolve SHAs
 
+## Product decisions
+
+Durable architectural choices that constrain future designs. Don't
+re-derive these during design review — cite them.
+
+- **Workspaces are the tenancy root** (#482) — any multi-tenancy feature
+  consumes the workspace model. Don't invent a second tenancy axis
+  (per-user, per-client-group, etc.) without explicit design review.
+- **Billing deferred** — ship features free. Do not design tier
+  abstractions, per-seat accounting, or billing gates until billing is
+  an active constraint. Keep the concept out of data models for as long
+  as possible.
+- **Client-side LLM preferred** — features needing an LLM (extraction,
+  classification, synthesis) use MCP Sampling (#448). Don't add
+  Bedrock / OpenAI dependencies when the MCP client can provide the model.
+- **Shared-infra features ship full scope** — when two capabilities share
+  ~80% of the infrastructure (e.g. text-large + binary memory in #451,
+  webhook + SSE + MCP notification in #392), ship them together in one
+  release. Splitting a shared-infra pair doubles release cost for
+  marginal benefit.
+- **Agents swap tokens to switch context** — don't design tool APIs that
+  take a `workspace_id` / `namespace` param on every call. Scope comes
+  from the token claim (`workspace_id`, `conversation_id` where
+  applicable); agents register a new DCR client per context and swap
+  tokens to switch.
+
 ## UI conventions
 
 - **CSS variables only** — never hardcode colours; use `var(--text-muted)`,
@@ -447,6 +473,103 @@ This is enforced automatically if you install the git hook:
 `uv run inv install-hooks`
 
 If infra files changed, also run: `uv run inv synth`
+
+---
+
+## Design-review workflow
+
+Governs how to process `status:design-needed` issues. Distinct from the
+autonomous issue workflow below — design review is **interactive**
+(requires user decisions), not unattended.
+
+### Pre-flight triage
+
+Before starting a design review, apply scope triage:
+
+1. **Redundant?** If another open issue or recently-landed feature
+   already covers the same use case with a broader surface, close as
+   redundant (see §Closing as redundant) rather than reviewing.
+2. **`priority:p3` + `size:xl`?** Park — keep the `status:design-needed`
+   label, skip the review. These rarely pay off soon and design effort
+   decays.
+3. **Everything else** — proceed to the 3-phase review.
+
+### Phase 1 — decisions comment
+
+Post a structured comment on the issue with this skeleton:
+
+```markdown
+## Design decisions
+
+### Resolved
+
+1. **<question>** — <answer> — <one-line rationale>
+2. ...
+
+### Derived decisions
+
+- <consequence that follows from the resolved answers>
+- ...
+
+### Breakdown (only if size:xl)
+
+This issue is `size:xl` and will be delivered via the sub-issues linked
+below. This issue stays open as the epic tracker.
+```
+
+Every open design question from the issue body must be addressed —
+either **resolved** (a decision is made and recorded) or **flagged**
+(marked as needing user input, which pauses the review).
+
+### Phase 2 — label flip
+
+Apply the correct status label based on the outcome:
+
+| Outcome | Label |
+|---|---|
+| Fully specified, no external blockers | `status:ready` |
+| Depends on another open issue in this repo | `status:blocked` (body must include `Blocked by #N`) |
+| Waiting on off-platform info (billing, account, external service) | `status:needs-info` |
+
+For `size:xl` issues that have been design-approved, also add the `epic`
+label so the autonomous loop never picks up the tracker itself.
+
+### Phase 3 — sub-issue breakdown (only if size:xl)
+
+For epics:
+
+1. Create one sub-issue per deliverable unit (typically 5–8 sub-issues)
+2. Each sub-issue body starts with `Part of #<epic>` and lists any
+   `Blocked by #N` cross-sub-issue dependencies
+3. Link each sub-issue to the epic via `mcp__github__sub_issue_write`
+   (GitHub's first-class sub-issue API), not just via the text reference
+4. Sub-issues get normal labels: `status:ready` or `status:blocked`,
+   plus priority / size / area. Never `epic`.
+
+### Closing as redundant
+
+When closing an issue rather than design-reviewing it:
+
+- **`state_reason: not_planned`** — for redundant issues (a broader
+  feature subsumes the narrower one). Post an explanatory comment
+  referencing the broader issue and explaining why the narrower one no
+  longer adds capability.
+- **`state_reason: duplicate`** + `duplicate_of: <#N>` — for true
+  duplicates (same underlying mechanism, different framing).
+
+Never close an issue as redundant without an explanatory comment — the
+audit trail matters.
+
+### Asking for user input
+
+Use the `AskUserQuestion` tool for binding decisions. Rules:
+
+- Only include options when you genuinely don't know the right call
+- Lead with the recommended option labelled `(Recommended)`
+- Describe the trade-off in each option's `description` field, not the
+  question body
+- Batch 2–4 logically related questions in one call — don't ask one at
+  a time when they're all on the table
 
 ---
 
@@ -795,12 +918,14 @@ queue trustworthy.
 
 ### Status (one, required)
 
-- `status:ready` — fully scoped, queue-eligible
-- `status:blocked` — depends on another issue; body must name the blocker
-  with `Blocked by #N`. Not queue-eligible
-- `status:design-needed` — needs a decision before implementation. Not
-  queue-eligible
-- `status:needs-info` — waiting on reporter/user. Not queue-eligible
+- `status:ready` — fully scoped, no blockers, queue-eligible
+- `status:blocked` — depends on another **open issue in this repo**;
+  body must name the blocker with `Blocked by #N`. Not queue-eligible.
+- `status:needs-info` — waiting on **off-platform info** (billing,
+  account state, external service verification, legal review). Distinct
+  from `blocked` — the resolution isn't in this repo. Not queue-eligible.
+- `status:design-needed` — not yet reviewed; needs a design pass per
+  §Design-review workflow. Not queue-eligible.
 
 ### Priority (one, required)
 
