@@ -61,6 +61,7 @@ class Memory(BaseModel):
     expires_at: datetime | None = None  # optional TTL; None means never expires
     recall_count: int = 0  # incremented on every successful recall
     last_accessed_at: datetime | None = None  # set on every successful recall
+    redacted_at: datetime | None = None  # when redact_memory tombstoned the value (#400)
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -90,6 +91,8 @@ class Memory(BaseModel):
             item["ttl"] = int(self.expires_at.timestamp())
         if self.last_accessed_at is not None:
             item["last_accessed_at"] = self.last_accessed_at.isoformat()
+        if self.redacted_at is not None:
+            item["redacted_at"] = self.redacted_at.isoformat()
         return item
 
     def to_dynamo_tag_items(self) -> list[dict[str, Any]]:
@@ -118,6 +121,9 @@ class Memory(BaseModel):
         last_accessed_at = None
         if la := item.get("last_accessed_at"):
             last_accessed_at = datetime.fromisoformat(la)
+        redacted_at = None
+        if ra := item.get("redacted_at"):
+            redacted_at = datetime.fromisoformat(ra)
         return cls(
             memory_id=item["memory_id"],
             key=item["key"],
@@ -130,11 +136,17 @@ class Memory(BaseModel):
             expires_at=expires_at,
             recall_count=int(item.get("recall_count", 0) or 0),
             last_accessed_at=last_accessed_at,
+            redacted_at=redacted_at,
         )
 
     @property
     def is_expired(self) -> bool:
         return self.expires_at is not None and _now_utc() >= self.expires_at
+
+    @property
+    def is_redacted(self) -> bool:
+        """True when ``redact_memory`` has tombstoned this memory (#400)."""
+        return self.redacted_at is not None
 
     @property
     def version(self) -> str:
@@ -447,6 +459,7 @@ class EventType(str, Enum):
     memory_created = "memory_created"
     memory_updated = "memory_updated"
     memory_deleted = "memory_deleted"
+    memory_redacted = "memory_redacted"
     memory_recalled = "memory_recalled"
     memory_listed = "memory_listed"
     memory_searched = "memory_searched"
