@@ -189,6 +189,9 @@ class TestMcpQuotaIntegration:
             existing_memory.tags = []
             instance = MockStorage.return_value
             instance.get_memory_by_key.return_value = existing_memory
+            # Response-meta builder reads count_memories; return a real int.
+            instance.count_memories.return_value = 0
+            instance.get_client.return_value = None
 
             from hive.server import remember
 

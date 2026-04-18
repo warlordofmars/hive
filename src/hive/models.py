@@ -59,6 +59,9 @@ class Memory(BaseModel):
     owner_client_id: str  # which OAuth client owns this memory
     owner_user_id: str | None = None  # which user owns this memory (None for pre-migration items)
     expires_at: datetime | None = None  # optional TTL; None means never expires
+    recall_count: int = 0  # incremented on every successful recall
+    last_accessed_at: datetime | None = None  # set on every successful recall
+    redacted_at: datetime | None = None  # when redact_memory tombstoned the value (#400)
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -76,6 +79,7 @@ class Memory(BaseModel):
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "owner_client_id": self.owner_client_id,
+            "recall_count": self.recall_count,
             # GSI: look up by key across all memories
             "GSI1PK": f"KEY#{self.key}",
             "GSI1SK": self.memory_id,
@@ -85,6 +89,10 @@ class Memory(BaseModel):
         if self.expires_at is not None:
             item["expires_at"] = self.expires_at.isoformat()
             item["ttl"] = int(self.expires_at.timestamp())
+        if self.last_accessed_at is not None:
+            item["last_accessed_at"] = self.last_accessed_at.isoformat()
+        if self.redacted_at is not None:
+            item["redacted_at"] = self.redacted_at.isoformat()
         return item
 
     def to_dynamo_tag_items(self) -> list[dict[str, Any]]:
@@ -110,6 +118,12 @@ class Memory(BaseModel):
         expires_at = None
         if ea := item.get("expires_at"):
             expires_at = datetime.fromisoformat(ea)
+        last_accessed_at = None
+        if la := item.get("last_accessed_at"):
+            last_accessed_at = datetime.fromisoformat(la)
+        redacted_at = None
+        if ra := item.get("redacted_at"):
+            redacted_at = datetime.fromisoformat(ra)
         return cls(
             memory_id=item["memory_id"],
             key=item["key"],
@@ -120,11 +134,29 @@ class Memory(BaseModel):
             owner_client_id=item["owner_client_id"],
             owner_user_id=item.get("owner_user_id"),
             expires_at=expires_at,
+            recall_count=int(item.get("recall_count", 0) or 0),
+            last_accessed_at=last_accessed_at,
+            redacted_at=redacted_at,
         )
 
     @property
     def is_expired(self) -> bool:
         return self.expires_at is not None and _now_utc() >= self.expires_at
+
+    @property
+    def is_redacted(self) -> bool:
+        """True when ``redact_memory`` has tombstoned this memory (#400)."""
+        return self.redacted_at is not None
+
+    @property
+    def version(self) -> str:
+        """Opaque version token for optimistic locking (#391).
+
+        Derived from ``updated_at`` so every write produces a fresh value.
+        Agents pass this back to ``remember(key, ..., version=...)`` to
+        detect concurrent-write conflicts.
+        """
+        return self.updated_at.isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +459,7 @@ class EventType(str, Enum):
     memory_created = "memory_created"
     memory_updated = "memory_updated"
     memory_deleted = "memory_deleted"
+    memory_redacted = "memory_redacted"
     memory_recalled = "memory_recalled"
     memory_listed = "memory_listed"
     memory_searched = "memory_searched"
@@ -555,6 +588,8 @@ class MemoryResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     expires_at: datetime | None = None
+    recall_count: int = 0
+    last_accessed_at: datetime | None = None
 
     @classmethod
     def from_memory(cls, m: Memory) -> MemoryResponse:
@@ -566,6 +601,8 @@ class MemoryResponse(BaseModel):
             created_at=m.created_at,
             updated_at=m.updated_at,
             expires_at=m.expires_at,
+            recall_count=m.recall_count,
+            last_accessed_at=m.last_accessed_at,
         )
 
 
@@ -779,19 +816,37 @@ class ApiKeyCreateResponse(ApiKeyResponse):
 
 
 class MemorySearchResult(BaseModel):
-    """A memory returned by semantic search, with a relevance score."""
+    """A memory returned by search, with its blended relevance score.
+
+    ``score`` is the final blended value on [0, 1]. The per-signal sub-scores
+    (``semantic_score`` / ``keyword_score`` / ``recency_score``) are included
+    for debugging and agent-side re-ranking when hybrid mode is on (#481).
+    """
 
     memory_id: str
     key: str
     value: str
     tags: list[str]
     owner_client_id: str | None
-    score: float  # cosine similarity (0.0–1.0); higher = more relevant
+    score: float  # blended score (0.0–1.0); higher = more relevant
+    semantic_score: float = 0.0
+    keyword_score: float = 0.0
+    recency_score: float = 0.0
     created_at: datetime
     updated_at: datetime
+    recall_count: int = 0
+    last_accessed_at: datetime | None = None
 
     @classmethod
-    def from_memory_and_score(cls, m: Memory, score: float) -> MemorySearchResult:
+    def from_memory_and_score(
+        cls,
+        m: Memory,
+        score: float,
+        *,
+        semantic_score: float = 0.0,
+        keyword_score: float = 0.0,
+        recency_score: float = 0.0,
+    ) -> MemorySearchResult:
         return cls(
             memory_id=m.memory_id,
             key=m.key,
@@ -799,6 +854,11 @@ class MemorySearchResult(BaseModel):
             tags=m.tags,
             owner_client_id=m.owner_client_id,
             score=score,
+            semantic_score=semantic_score,
+            keyword_score=keyword_score,
+            recency_score=recency_score,
             created_at=m.created_at,
             updated_at=m.updated_at,
+            recall_count=m.recall_count,
+            last_accessed_at=m.last_accessed_at,
         )

@@ -18,6 +18,7 @@ Tools:
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -28,18 +29,33 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
 from fastmcp.server.dependencies import get_http_request
+from fastmcp.tools.tool import ToolResult
 from pydantic import AnyHttpUrl
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
 from hive.auth.tokens import ISSUER, _origin_verify_secret, validate_bearer_token
+from hive.hybrid_search import (
+    DEFAULT_W_KEYWORD,
+    DEFAULT_W_RECENCY,
+    DEFAULT_W_SEMANTIC,
+    blend_score,
+    keyword_score,
+    recency_score,
+    tokenize,
+)
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
-from hive.quota import QuotaExceeded, check_memory_quota
-from hive.rate_limiter import RateLimitExceeded, check_rate_limit
-from hive.storage import HiveStorage
+from hive.quota import QuotaExceeded, check_memory_quota, get_memory_limit
+from hive.rate_limiter import (
+    DEFAULT_RATE_LIMIT_RPD,
+    DEFAULT_RATE_LIMIT_RPM,
+    RateLimitExceeded,
+    check_rate_limit,
+)
+from hive.storage import HiveStorage, VersionConflict
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
 configure_logging("mcp")
@@ -186,6 +202,160 @@ def _vector_store() -> VectorStore:
     return VectorStore()
 
 
+def _log(storage: HiveStorage, event: ActivityEvent) -> None:
+    """Record the event in both the user-visible activity log and the
+    immutable compliance audit log (#395).
+
+    Memory reads/writes/deletes surface in the Activity Log UI via the
+    LOG# partition; the AUDIT# partition carries the same events but
+    with a distinct retention (``HIVE_AUDIT_RETENTION_DAYS``, default
+    365 days) and survives an activity-log purge.
+    """
+    storage.log_event(event)
+    storage.log_audit_event(event)
+
+
+# ---------------------------------------------------------------------------
+# Response metadata — every tool response carries quota + rate-limit state
+# under ``_meta.hive`` so well-behaved agents can self-throttle.
+# ---------------------------------------------------------------------------
+
+
+def _quota_meta(storage: HiveStorage, client_id: str) -> dict[str, Any]:
+    """Build the ``_meta.hive`` block from the caller's current quota state."""
+    client = storage.get_client(client_id)
+    owner_user_id = client.owner_user_id if client else None
+    memory_limit = get_memory_limit()
+    used = storage.count_memories(owner_user_id=owner_user_id) if owner_user_id else 0
+    return {
+        "hive": {
+            "memory_quota": {
+                "used": used,
+                "limit": memory_limit,
+                "remaining": max(0, memory_limit - used),
+            },
+            "rate_limit": {
+                "per_minute_limit": int(
+                    os.environ.get("HIVE_RATE_LIMIT_RPM", str(DEFAULT_RATE_LIMIT_RPM))
+                ),
+                "per_day_limit": int(
+                    os.environ.get("HIVE_RATE_LIMIT_RPD", str(DEFAULT_RATE_LIMIT_RPD))
+                ),
+            },
+        }
+    }
+
+
+def _conflict_message(
+    key: str,
+    attempted_version: str | None,
+    current_value: str | None,
+    current_version: str | None,
+) -> str:
+    """Serialise an optimistic-lock conflict into a ToolError message (#391).
+
+    ToolError currently has no structured-data slot, so agents parse the
+    JSON block appended to the text message to decide how to reconcile.
+    """
+    payload = {
+        "conflict": True,
+        "key": key,
+        "attempted_version": attempted_version,
+        "current_version": current_version,
+        "current_value": current_value,
+    }
+    return (
+        f"Conflict: memory {key!r} was updated since version "
+        f"{attempted_version!r}. " + json.dumps(payload)
+    )
+
+
+def _tool_result(
+    payload: Any,
+    storage: HiveStorage,
+    client_id: str,
+    *,
+    memory: Memory | None = None,
+) -> ToolResult:
+    """Wrap a tool's return value in an MCP ``ToolResult`` carrying quota +
+    rate-limit metadata in ``_meta.hive``. Strings become text content;
+    dicts become structured content so clients can still use them directly.
+
+    When the tool operated on a specific memory, pass it via ``memory=`` so
+    its optimistic-lock version is surfaced as ``_meta.hive.memory.version``
+    — the agent can thread that back into a subsequent ``remember`` call.
+    """
+    meta = _quota_meta(storage, client_id)
+    if memory is not None:
+        meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
+    if isinstance(payload, dict):
+        return ToolResult(structured_content=payload, meta=meta)
+    return ToolResult(content=payload, meta=meta)
+
+
+_SUMMARY_MAX_TOKENS = 512
+_SUMMARY_SYSTEM_PROMPT = (
+    "You synthesise a set of memories into a concise briefing for the agent "
+    "that will use them. Return only the synthesis — no preamble, no "
+    "disclaimers. Preserve specific names, numbers, and decisions verbatim; "
+    "paraphrase the rest. Target 2-5 short paragraphs."
+)
+
+
+async def _sampled_summary(
+    ctx: Context | None,
+    topic: str,
+    memories: list[Memory],
+    fallback: str,
+) -> str:
+    """Synthesise a set of memories via MCP Sampling (#448).
+
+    Sends a ``sampling/createMessage`` request back to the client and uses
+    its model to produce the summary. If the client doesn't support
+    sampling, the transport rejects it, or ctx is unavailable (e.g. direct
+    invocation in tests), returns ``fallback`` — the deterministic
+    concatenated listing — so the tool never fails just because an agent
+    can't sample.
+    """
+    if ctx is None:
+        return fallback
+
+    body = "\n\n".join(f"- **{m.key}**: {m.value}" for m in memories)
+    prompt = (
+        f"The following memories are tagged '{topic}'. Synthesise them into a briefing.\n\n{body}"
+    )
+    try:
+        result = await ctx.sample(
+            prompt,
+            system_prompt=_SUMMARY_SYSTEM_PROMPT,
+            max_tokens=_SUMMARY_MAX_TOKENS,
+        )
+    except Exception:
+        logger.info("MCP sampling unavailable; falling back to concat summary", exc_info=True)
+        return fallback
+
+    text = getattr(result, "text", None) or fallback
+    return text.strip() or fallback
+
+
+async def _report_progress(
+    ctx: Context | None, progress: float, total: float | None, message: str
+) -> None:
+    """Emit an MCP ``notifications/progress`` event if the client supports it.
+
+    Any exception from the transport (client doesn't support progress, the
+    ctx is stale, etc.) is swallowed — progress is advisory, never fatal.
+    Policy: tools whose expected duration exceeds ~2s call this at sensible
+    milestones so clients can render a progress indicator.
+    """
+    if ctx is None:
+        return
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception:
+        logger.debug("progress notification dropped", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -201,9 +371,9 @@ async def ping(ctx: Context | None = None) -> str:
     Performs no storage reads or writes. A successful call confirms both
     connectivity to the MCP server and that the caller's token is still valid.
     """
-    await _auth(ctx)
+    storage, client_id = await _auth(ctx)
     await emit_metric("ToolInvocations", operation="ping")
-    return "ok"
+    return _tool_result("ok", storage, client_id)
 
 
 @mcp.tool(
@@ -225,6 +395,12 @@ async def remember(
     tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
     ttl_seconds: Annotated[
         int | None, "Seconds until the memory expires. None = never expires."
+    ] = None,
+    version: Annotated[
+        str | None,
+        "Optimistic-lock token from a prior recall/list_memories response. "
+        "If provided, the write is rejected with a conflict error when the "
+        "stored memory's version has moved on since the caller read it.",
     ] = None,
     ctx: Context | None = None,
 ) -> str:
@@ -249,6 +425,10 @@ async def remember(
     existing = storage.get_memory_by_key(key)
 
     if existing:
+        # Optimistic lock: reject early if the caller's version is already stale.
+        if version is not None and existing.version != version:
+            await emit_metric("ToolErrors", operation="remember")
+            raise ToolError(_conflict_message(key, version, existing.value, existing.version))
         # Idempotent: skip write and log if nothing changed
         if (
             existing.value == value
@@ -263,13 +443,20 @@ async def remember(
                     "status": "unchanged",
                 },
             )
-            return f"Memory '{key}' unchanged."
+            return _tool_result(f"Memory '{key}' unchanged.", storage, client_id)
         existing.value = value
         existing.tags = tags
         existing.expires_at = expires_at
         existing.updated_at = datetime.now(timezone.utc)
         try:
-            storage.put_memory(existing)
+            storage.put_memory(existing, expected_version=version)
+        except VersionConflict as exc:
+            await emit_metric("ToolErrors", operation="remember")
+            raise ToolError(
+                _conflict_message(
+                    key, exc.attempted_version, exc.current_value, exc.current_version
+                )
+            ) from exc
         except ValueError as exc:
             await emit_metric("ToolErrors", operation="remember")
             raise ToolError(str(exc)) from exc
@@ -301,12 +488,13 @@ async def remember(
         except Exception:
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=event_type,
             client_id=client_id,
             metadata={"key": key, "tags": tags},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -323,7 +511,7 @@ async def remember(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="remember"
     )
-    return f"{action} memory '{key}'."
+    return _tool_result(f"{action} memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -386,7 +574,7 @@ async def remember_if_absent(
             },
         )
         await emit_metric("ToolInvocations", operation="remember_if_absent")
-        return f"Memory '{key}' already exists — not overwritten."
+        return _tool_result(f"Memory '{key}' already exists — not overwritten.", storage, client_id)
 
     client = storage.get_client(client_id)
     owner_user_id = client.owner_user_id if client else None
@@ -408,12 +596,13 @@ async def remember_if_absent(
     except Exception:
         logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_created,
             client_id=client_id,
             metadata={"key": key, "tags": tags},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -432,7 +621,7 @@ async def remember_if_absent(
         unit="Milliseconds",
         operation="remember_if_absent",
     )
-    return f"Stored memory '{key}'."
+    return _tool_result(f"Stored memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -447,7 +636,9 @@ async def recall(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
-    memory = storage.get_memory_by_key(key)
+    # record_recall atomically bumps recall_count + last_accessed_at and
+    # returns the updated Memory (None if missing/expired).
+    memory = storage.record_recall(key)
     if memory is None:
         logger.warning(
             "Memory not found for key '%s'",
@@ -461,12 +652,30 @@ async def recall(
         await emit_metric("ToolErrors", operation="recall")
         raise ToolError(f"No memory found for key '{key}'.")
 
-    storage.log_event(
+    # A redacted memory tombstone surfaces a safe sentinel — the fact that
+    # the memory once existed is itself the signal (#400).
+    if memory.redacted_at is not None:
+        sentinel = (
+            f"Memory '{key}' was redacted on {memory.redacted_at.isoformat()}. Value removed."
+        )
+        _log(
+            storage,
+            ActivityEvent(
+                event_type=EventType.memory_recalled,
+                client_id=client_id,
+                metadata={"key": key, "redacted": True},
+            ),
+        )
+        await emit_metric("ToolInvocations", operation="recall")
+        return _tool_result(sentinel, storage, client_id, memory=memory)
+
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_recalled,
             client_id=client_id,
             metadata={"key": key},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -482,7 +691,7 @@ async def recall(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="recall"
     )
-    return memory.value
+    return _tool_result(memory.value, storage, client_id, memory=memory)
 
 
 @mcp.tool(
@@ -521,12 +730,13 @@ async def forget(
         _vector_store().delete_memory(existing.memory_id, client_id)
     except Exception:
         logger.warning("Vector delete failed (non-fatal)", exc_info=True)
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_deleted,
             client_id=client_id,
             metadata={"key": key},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -542,7 +752,7 @@ async def forget(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="forget"
     )
-    return f"Deleted memory '{key}'."
+    return _tool_result(f"Deleted memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -563,12 +773,13 @@ async def forget_all(
     storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     deleted = storage.delete_memories_by_tag(tag)
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_deleted,
             client_id=client_id,
             metadata={"tag": tag, "count": deleted},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -588,7 +799,96 @@ async def forget_all(
         unit="Milliseconds",
         operation="forget_all",
     )
-    return f"Deleted {deleted} memories with tag '{tag}'."
+    return _tool_result(f"Deleted {deleted} memories with tag '{tag}'.", storage, client_id)
+
+
+_REDACTION_SENTINEL = "__redacted__"
+
+
+@mcp.tool(
+    title="Redact memory",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def redact_memory(
+    key: Annotated[str, "Key of the memory to redact"],
+    reason: Annotated[
+        str | None,
+        "Optional reason written to the audit trail (PII, secret leak, etc.)",
+    ] = None,
+    ctx: Context | None = None,
+) -> str:
+    """Tombstone a memory: replace its value with a sentinel and record
+    ``redacted_at``, preserving the audit trail (#400).
+
+    Use this when the value contains content that must be removed (PII,
+    secret accidentally captured, etc.) but the fact that the memory
+    existed is itself meaningful. For full deletion, use ``forget``.
+    """
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
+
+    existing = storage.get_memory_by_key(key)
+    if existing is None:
+        await emit_metric("ToolErrors", operation="redact_memory")
+        raise ToolError(f"No memory found for key '{key}'.")
+    if existing.is_redacted:
+        return _tool_result(f"Memory '{key}' is already redacted.", storage, client_id)
+
+    # Record the pre-redaction value in the audit log BEFORE we overwrite
+    # it — the tombstone path is the only thing that preserves what was
+    # there when a reviewer needs to understand a redaction after-the-fact.
+    storage.log_audit_event(
+        ActivityEvent(
+            event_type=EventType.memory_redacted,
+            client_id=client_id,
+            metadata={
+                "key": key,
+                "memory_id": existing.memory_id,
+                "reason": reason,
+                "previous_value": existing.value,
+                "previous_tags": existing.tags,
+            },
+        )
+    )
+
+    existing.value = _REDACTION_SENTINEL
+    existing.redacted_at = datetime.now(timezone.utc)
+    existing.updated_at = existing.redacted_at
+    storage.put_memory(existing)
+    try:
+        _vector_store().delete_memory(existing.memory_id, client_id)
+    except Exception:
+        logger.warning("Vector delete on redaction failed (non-fatal)", exc_info=True)
+
+    # The user-visible activity log gets a sanitised entry so the Activity Log
+    # UI surfaces the redaction without leaking the pre-redaction value.
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_redacted,
+            client_id=client_id,
+            metadata={"key": key, "reason": reason},
+        )
+    )
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Redacted memory '%s'",
+        key,
+        extra={"tool": "redact_memory", "duration_ms": duration_ms, "status": "success"},
+    )
+    await emit_metric("ToolInvocations", operation="redact_memory")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="redact_memory",
+    )
+    return _tool_result(f"Redacted memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -598,7 +898,7 @@ async def forget_all(
 async def memory_history(
     key: Annotated[str, "Key of the memory to retrieve history for"],
     ctx: Context | None = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Return the version history of a memory (previous values before each overwrite)."""
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope="memories:read")
@@ -615,7 +915,7 @@ async def memory_history(
         unit="Milliseconds",
         operation="memory_history",
     )
-    return [
+    items = [
         {
             "version_timestamp": v.version_timestamp,
             "value": v.value,
@@ -624,6 +924,7 @@ async def memory_history(
         }
         for v in versions
     ]
+    return _tool_result({"versions": items, "count": len(items)}, storage, client_id)
 
 
 @mcp.tool(
@@ -655,12 +956,13 @@ async def restore_memory(
     memory.tags = version.tags
     memory.updated_at = datetime.now(timezone.utc)
     storage.put_memory(memory)
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_updated,
             client_id=client_id,
             metadata={"key": key, "version_timestamp": version_timestamp},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     await emit_metric("ToolInvocations", operation="restore_memory")
@@ -670,7 +972,9 @@ async def restore_memory(
         unit="Milliseconds",
         operation="restore_memory",
     )
-    return f"Restored memory '{key}' to version '{version_timestamp}'."
+    return _tool_result(
+        f"Restored memory '{key}' to version '{version_timestamp}'.", storage, client_id
+    )
 
 
 @mcp.tool(
@@ -681,6 +985,10 @@ async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
     cursor: Annotated[str | None, "Pagination cursor from a previous call"] = None,
+    include_redacted: Annotated[
+        bool,
+        "Include tombstoned (redacted) memories in the result. False by default.",
+    ] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
@@ -689,12 +997,15 @@ async def list_memories(
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
-    storage.log_event(
+    if not include_redacted:
+        memories = [m for m in memories if not m.is_redacted]
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_listed,
             client_id=client_id,
             metadata={"tag": tag, "count": len(memories)},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -718,6 +1029,11 @@ async def list_memories(
                 "value": m.value,
                 "tags": m.tags,
                 "owner_client_id": m.owner_client_id,
+                "recall_count": m.recall_count,
+                "last_accessed_at": (
+                    m.last_accessed_at.isoformat() if m.last_accessed_at else None
+                ),
+                "version": m.version,
             }
             for m in memories
         ],
@@ -726,7 +1042,7 @@ async def list_memories(
     }
     if next_cursor:
         result["next_cursor"] = next_cursor
-    return result
+    return _tool_result(result, storage, client_id)
 
 
 @mcp.tool(
@@ -756,7 +1072,7 @@ async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="list_tags"
     )
-    return {"tags": tags, "count": len(tags)}
+    return _tool_result({"tags": tags, "count": len(tags)}, storage, client_id)
 
 
 @mcp.tool(
@@ -776,7 +1092,11 @@ async def summarize_context(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
+    await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
+    await _report_progress(
+        ctx, 1, 2, f"Retrieved {len(memories)} memories; synthesising summary..."
+    )
 
     if not memories:
         logger.info(
@@ -789,23 +1109,27 @@ async def summarize_context(
             },
         )
         await emit_metric("ToolInvocations", operation="summarize_context")
-        return f"No memories found for topic '{topic}'."
+        return _tool_result(f"No memories found for topic '{topic}'.", storage, client_id)
 
     lines = [f"## Memories tagged '{topic}'\n"]
     for m in memories:
         lines.append(f"**{m.key}**: {m.value}")
 
-    lines.append(
-        f"\n---\n*Summary: {len(memories)} memory/memories found for topic '{topic}'. "
-        "Review the entries above for relevant context.*"
-    )
+    lines.append(f"\n---\n*{len(memories)} memory/memories found for topic '{topic}'.*")
+    concat_summary = "\n".join(lines)
 
-    storage.log_event(
+    # Try MCP Sampling first (#448). If the client supports it, we get a real
+    # LLM synthesis without any server-side Bedrock cost; otherwise the
+    # sampler raises and we fall back to the concatenated listing above.
+    summary = await _sampled_summary(ctx, topic, memories, concat_summary)
+
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.context_summarized,
             client_id=client_id,
             metadata={"topic": topic, "memory_count": len(memories)},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -825,7 +1149,7 @@ async def summarize_context(
         unit="Milliseconds",
         operation="summarize_context",
     )
-    return "\n".join(lines)
+    return _tool_result(summary, storage, client_id)
 
 
 @mcp.tool(
@@ -837,7 +1161,7 @@ async def search_memories(
     top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 10,
     min_score: Annotated[
         float | None,
-        "Minimum similarity score (0.0–1.0). Results below this threshold are "
+        "Minimum blended score (0.0–1.0). Results below this threshold are "
         "excluded. None disables filtering.",
     ] = None,
     filter_tags: Annotated[
@@ -845,12 +1169,28 @@ async def search_memories(
         "Optional list of tags. Only memories carrying ALL of the given tags "
         "are returned. None disables filtering.",
     ] = None,
+    w_semantic: Annotated[
+        float, "Weight for semantic/vector similarity (default 0.6)"
+    ] = DEFAULT_W_SEMANTIC,
+    w_keyword: Annotated[
+        float, "Weight for keyword (term-frequency) match (default 0.3)"
+    ] = DEFAULT_W_KEYWORD,
+    w_recency: Annotated[
+        float, "Weight for recency decay against last_accessed_at/updated_at (default 0.1)"
+    ] = DEFAULT_W_RECENCY,
+    include_redacted: Annotated[
+        bool,
+        "Include tombstoned (redacted) memories in the result. False by default.",
+    ] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Search memories by semantic similarity to a natural language query.
+    """Search memories using hybrid retrieval: semantic + keyword + recency.
 
-    Returns memories ranked by relevance.  ``score`` ranges from 0.0 to 1.0
-    where higher means more semantically similar to the query.
+    Final score is a weighted sum of (a) cosine similarity from the vector
+    store, (b) a term-frequency keyword match, and (c) an exponential
+    recency decay. Weights are re-normalised to sum to 1.0; pass any
+    relative weighting. Per-signal sub-scores are returned on each item
+    for debugging.
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
@@ -858,40 +1198,70 @@ async def search_memories(
     threshold = max(0.0, min(1.0, min_score)) if min_score is not None else None
     required_tags = set(filter_tags) if filter_tags else None
 
-    # When post-filtering by tags, request the full cap from the vector store
-    # so we have headroom to still return up to top_k matches after filtering.
-    search_top_k = 50 if required_tags else top_k
+    # Always request a wider candidate pool than top_k so keyword + recency
+    # blending has headroom to re-rank, and (if tag filtering is on) so the
+    # post-filter still leaves up to top_k survivors.
+    search_top_k = 50 if required_tags else min(max(top_k * 3, 10), 50)
 
+    await _report_progress(ctx, 0, 3, f"Running vector search for '{query}'...")
     try:
         pairs = _vector_store().search(query, client_id, top_k=search_top_k)
     except VectorIndexNotFoundError:
-        return {"items": [], "count": 0, "query": query}
+        return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
     except Exception:
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
-        return {"items": [], "count": 0, "query": query}
+        return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
+
+    await _report_progress(
+        ctx, 1, 3, f"Vector search returned {len(pairs)} candidates; hydrating..."
+    )
+    hydrated = storage.hydrate_memory_ids(pairs)
+
+    # Score each hydrated memory. sem_map lets us pair each Memory with its
+    # original cosine similarity; absent memories (hydrate dropped expired
+    # ones) are simply skipped.
+    query_tokens = tokenize(query)
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[Memory, float, float, float, float]] = []
+    for m, sem in hydrated:
+        kw = keyword_score(query_tokens, m.value)
+        rec = recency_score(m, now=now)
+        blended = blend_score(
+            semantic=sem,
+            keyword=kw,
+            recency=rec,
+            w_semantic=w_semantic,
+            w_keyword=w_keyword,
+            w_recency=w_recency,
+        )
+        scored.append((m, blended, sem, kw, rec))
+
+    if not include_redacted:
+        scored = [row for row in scored if not row[0].is_redacted]
 
     if threshold is not None:
-        pairs = [(mid, score) for mid, score in pairs if score >= threshold]
-
-    results = storage.hydrate_memory_ids(pairs)
+        scored = [row for row in scored if row[1] >= threshold]
 
     if required_tags:
-        results = [(m, s) for m, s in results if required_tags.issubset(m.tags)]
+        scored = [row for row in scored if required_tags.issubset(row[0].tags)]
 
-    results = results[:top_k]
+    scored.sort(key=lambda row: row[1], reverse=True)
+    scored = scored[:top_k]
+    await _report_progress(ctx, 2, 3, f"Ranked {len(scored)} result(s); returning.")
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_searched,
             client_id=client_id,
-            metadata={"query": query, "result_count": len(results)},
-        )
+            metadata={"query": query, "result_count": len(scored)},
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Searched memories for '%s', %d result(s)",
         query,
-        len(results),
+        len(scored),
         extra={
             "tool": "search_memories",
             "duration_ms": duration_ms,
@@ -905,13 +1275,24 @@ async def search_memories(
         unit="Milliseconds",
         operation="search_memories",
     )
-    return {
-        "items": [
-            MemorySearchResult.from_memory_and_score(m, score).model_dump() for m, score in results
-        ],
-        "count": len(results),
-        "query": query,
-    }
+    return _tool_result(
+        {
+            "items": [
+                MemorySearchResult.from_memory_and_score(
+                    m,
+                    blended,
+                    semantic_score=sem,
+                    keyword_score=kw,
+                    recency_score=rec,
+                ).model_dump()
+                for m, blended, sem, kw, rec in scored
+            ],
+            "count": len(scored),
+            "query": query,
+        },
+        storage,
+        client_id,
+    )
 
 
 @mcp.tool(
@@ -941,20 +1322,21 @@ async def relate_memories(
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
         pairs = _vector_store().search(memory.value, client_id, top_k=top_k + 1)
     except VectorIndexNotFoundError:
-        return {"items": [], "count": 0, "key": key}
+        return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
-        return {"items": [], "count": 0, "key": key}
+        return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
 
     pairs = [(mid, score) for mid, score in pairs if mid != memory.memory_id][:top_k]
     results = storage.hydrate_memory_ids(pairs)
 
-    storage.log_event(
+    _log(
+        storage,
         ActivityEvent(
             event_type=EventType.memory_searched,
             client_id=client_id,
             metadata={"key": key, "result_count": len(results), "related_to": memory.memory_id},
-        )
+        ),
     )
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -974,13 +1356,18 @@ async def relate_memories(
         unit="Milliseconds",
         operation="relate_memories",
     )
-    return {
-        "items": [
-            MemorySearchResult.from_memory_and_score(m, score).model_dump() for m, score in results
-        ],
-        "count": len(results),
-        "key": key,
-    }
+    return _tool_result(
+        {
+            "items": [
+                MemorySearchResult.from_memory_and_score(m, score).model_dump()
+                for m, score in results
+            ],
+            "count": len(results),
+            "key": key,
+        },
+        storage,
+        client_id,
+    )
 
 
 # ---------------------------------------------------------------------------

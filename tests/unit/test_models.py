@@ -53,6 +53,49 @@ class TestMemory:
         m = Memory(key="k", value="v", owner_client_id="c1")
         assert m.to_dynamo_tag_items() == []
 
+    def test_default_recall_fields(self):
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        assert m.recall_count == 0
+        assert m.last_accessed_at is None
+
+    def test_recall_fields_persist_and_roundtrip(self):
+        from datetime import datetime, timezone
+
+        accessed = datetime(2026, 4, 18, 12, 0, 0, tzinfo=timezone.utc)
+        m = Memory(
+            key="k",
+            value="v",
+            owner_client_id="c1",
+            recall_count=7,
+            last_accessed_at=accessed,
+        )
+        item = m.to_dynamo_meta()
+        assert item["recall_count"] == 7
+        assert item["last_accessed_at"] == accessed.isoformat()
+        m2 = Memory.from_dynamo(item)
+        assert m2.recall_count == 7
+        assert m2.last_accessed_at == accessed
+
+    def test_from_dynamo_tolerates_missing_recall_fields(self):
+        # Items written before this field existed won't have recall_count or
+        # last_accessed_at; Memory.from_dynamo must default them cleanly.
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        item = m.to_dynamo_meta()
+        item.pop("recall_count", None)
+        item.pop("last_accessed_at", None)
+        m2 = Memory.from_dynamo(item)
+        assert m2.recall_count == 0
+        assert m2.last_accessed_at is None
+
+    def test_version_reflects_updated_at(self):
+        """Memory.version is the updated_at isoformat — advances on every write."""
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        assert m.version == m.updated_at.isoformat()
+        old = m.version
+        m.updated_at = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        assert m.version != old
+        assert m.version == m.updated_at.isoformat()
+
 
 class TestOAuthClient:
     def test_defaults(self):

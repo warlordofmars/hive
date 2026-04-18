@@ -21,7 +21,7 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from hive.models import (
@@ -56,6 +56,26 @@ REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
 AUTH_CODE_TTL_SECONDS = 300  # 5 minutes
 PENDING_AUTH_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
 MGMT_PENDING_STATE_TTL_SECONDS = 600  # 10 minutes (enough for Google login flow)
+
+
+class VersionConflict(Exception):
+    """Raised by put_memory when an optimistic-lock version check fails (#391).
+
+    Carries the state the caller needs to compare-and-retry without an
+    extra round-trip: the attempted version, the actual current value,
+    and the actual current version.
+    """
+
+    def __init__(
+        self,
+        attempted_version: str,
+        current_value: str | None,
+        current_version: str | None,
+    ) -> None:
+        self.attempted_version = attempted_version
+        self.current_value = current_value
+        self.current_version = current_version
+        super().__init__(f"Memory was updated since version {attempted_version!r}")
 
 
 def _now() -> datetime:
@@ -93,27 +113,68 @@ class HiveStorage:
     # Memory CRUD
     # ------------------------------------------------------------------
 
-    def put_memory(self, memory: Memory) -> None:
+    def put_memory(self, memory: Memory, *, expected_version: str | None = None) -> None:
         """Write (create or replace) a memory and all its tag items.
 
         When replacing an existing memory, the previous state is snapshotted
         as a VERSION item so it can be retrieved via list_memory_versions.
+
+        If ``expected_version`` is provided, the META item is written with a
+        conditional expression requiring the stored ``updated_at`` to match
+        — supporting optimistic locking (#391). Raises ``VersionConflict``
+        if the stored version has moved on since the caller read it.
         """
-        # First delete old tag items if the memory already exists
         existing_raw = self._get_memory_meta(memory.memory_id)
+        if expected_version is not None:
+            if existing_raw is None:
+                raise VersionConflict(
+                    attempted_version=expected_version,
+                    current_value=None,
+                    current_version=None,
+                )
+            current = Memory.from_dynamo(existing_raw)
+            if current.version != expected_version:
+                raise VersionConflict(
+                    attempted_version=expected_version,
+                    current_value=current.value,
+                    current_version=current.version,
+                )
+
         if existing_raw:
             old = Memory.from_dynamo(existing_raw)
             self._delete_tag_items(old)
             self.save_memory_version(old)
 
+        meta_item = memory.to_dynamo_meta()
         try:
-            with self.table.batch_writer() as batch:
-                batch.put_item(Item=memory.to_dynamo_meta())
-                for tag_item in memory.to_dynamo_tag_items():
-                    batch.put_item(Item=tag_item)
+            if expected_version is not None:
+                # Conditional put on the META item to close the TOCTOU window
+                # between the read above and the write below. Tag items get
+                # rewritten unconditionally — they carry no value state and
+                # are rebuilt from the memory's tag list on every put.
+                self.table.put_item(
+                    Item=meta_item,
+                    ConditionExpression=Attr("updated_at").eq(expected_version),
+                )
+                with self.table.batch_writer() as batch:
+                    for tag_item in memory.to_dynamo_tag_items():
+                        batch.put_item(Item=tag_item)
+            else:
+                with self.table.batch_writer() as batch:
+                    batch.put_item(Item=meta_item)
+                    for tag_item in memory.to_dynamo_tag_items():
+                        batch.put_item(Item=tag_item)
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
             msg = exc.response["Error"]["Message"]
+            if code == "ConditionalCheckFailedException":
+                latest = self._get_memory_meta(memory.memory_id)
+                latest_mem = Memory.from_dynamo(latest) if latest else None
+                raise VersionConflict(
+                    attempted_version=expected_version or "",
+                    current_value=latest_mem.value if latest_mem else None,
+                    current_version=latest_mem.version if latest_mem else None,
+                ) from exc
             if code == "ValidationException" and "size" in msg.lower():
                 raise ValueError(
                     "Memory value is too large to store (DynamoDB 400 KB item limit exceeded)."
@@ -142,6 +203,37 @@ class HiveStorage:
         # GSI items don't carry value; fetch the META item
         memory_id = items[0]["memory_id"]
         return self.get_memory_by_id(memory_id)
+
+    def record_recall(self, key: str) -> Memory | None:
+        """Atomically increment ``recall_count`` and refresh ``last_accessed_at``
+        on the memory with the given key, returning the updated Memory.
+
+        Returns ``None`` if the key doesn't exist or the memory is expired.
+        Does the work in a single DynamoDB ``update_item`` (with ``ALL_NEW``
+        return values) so we don't pay two round-trips per recall.
+        """
+        resp = self.table.query(
+            IndexName="KeyIndex",
+            KeyConditionExpression=Key("GSI1PK").eq(f"KEY#{key}"),
+            Limit=1,
+        )
+        items = resp.get("Items", [])
+        if not items:
+            return None
+        memory_id = items[0]["memory_id"]
+        now_iso = _now().isoformat()
+        updated = self.table.update_item(
+            Key={"PK": f"MEMORY#{memory_id}", "SK": "META"},
+            UpdateExpression=("SET last_accessed_at = :now ADD recall_count :one"),
+            ExpressionAttributeValues={":now": now_iso, ":one": Decimal("1")},
+            ReturnValues="ALL_NEW",
+        )
+        # ALL_NEW always populates Attributes once the KeyIndex lookup above
+        # has confirmed the item exists, so there's no "None" path to guard.
+        memory = Memory.from_dynamo(updated["Attributes"])
+        if memory.is_expired:
+            return None
+        return memory
 
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory and all its tag items. Returns True if found."""
@@ -811,13 +903,52 @@ class HiveStorage:
         """Write an audit event to the immutable audit log (AUDIT# PK prefix).
 
         Audit events use a separate PK prefix from activity log events (LOG#)
-        and are never deleted, even when a user's activity log is purged.
+        so they survive a user-requested activity-log purge. A DynamoDB TTL
+        provides a hard retention horizon (``HIVE_AUDIT_RETENTION_DAYS``,
+        default 365) so items age out automatically and we stay compliant
+        with data-minimisation expectations.
         """
         item = event.to_dynamo()
-        # Override the PK prefix so audit events are stored separately
         date_hour_str = event.timestamp.strftime("%Y-%m-%d#%H")
         item["PK"] = f"AUDIT#{date_hour_str}"
+        retention_days = int(os.environ.get("HIVE_AUDIT_RETENTION_DAYS", "365"))
+        item["ttl"] = int(event.timestamp.timestamp()) + retention_days * 86400
         self.table.put_item(Item=item)
+
+    def get_audit_events_for_dates(
+        self,
+        dates: list[str],
+        *,
+        client_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[ActivityEvent]:
+        """Fetch audit events across multiple dates, newest-first, capped at limit.
+
+        Optional post-query filters on ``client_id`` and ``event_type`` keep
+        the admin audit-log endpoint simple; the partition scan itself reads
+        every hour-shard in parallel.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _query(pk: str) -> list[ActivityEvent]:
+            resp = self.table.query(KeyConditionExpression=Key("PK").eq(pk))
+            return [ActivityEvent.from_dynamo(i) for i in resp.get("Items", [])]
+
+        pks = [f"AUDIT#{d}#{hour:02d}" for d in dates for hour in range(24)]
+        events: list[ActivityEvent] = []
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(_query, pk): pk for pk in pks}
+            for future in as_completed(futures):
+                events.extend(future.result())
+
+        if client_id is not None:
+            events = [e for e in events if e.client_id == client_id]
+        if event_type is not None:
+            events = [e for e in events if e.event_type.value == event_type]
+
+        events.sort(key=lambda e: e.timestamp, reverse=True)
+        return events[:limit]
 
     # ------------------------------------------------------------------
     # Account deletion

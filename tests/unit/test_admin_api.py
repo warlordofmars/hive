@@ -447,3 +447,101 @@ class TestAdminAlarms:
                 resp = admin_tc.get("/api/admin/alarms")
 
             assert resp.json()["alarms"][0]["state"] == state
+
+
+class TestAdminAuditLog:
+    """GET /api/admin/audit-log — admin-only compliance audit trail (#395)."""
+
+    @pytest.fixture()
+    def audit_storage(self):
+        from hive.api import admin as admin_mod
+        from hive.api.main import app
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-admin", region="us-east-1")
+        app.dependency_overrides[admin_mod._storage] = lambda: storage
+        yield storage
+        app.dependency_overrides.pop(admin_mod._storage, None)
+
+    def test_returns_events_newest_first(self, admin_tc, audit_storage):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import ActivityEvent, EventType
+
+        base = datetime.now(timezone.utc).replace(microsecond=0)
+        for i, etype in enumerate(
+            [EventType.memory_created, EventType.memory_recalled, EventType.memory_deleted]
+        ):
+            audit_storage.log_audit_event(
+                ActivityEvent(
+                    event_type=etype,
+                    client_id="c1",
+                    metadata={"i": i},
+                    timestamp=base - timedelta(seconds=i),
+                )
+            )
+
+        resp = admin_tc.get("/api/admin/audit-log?days=1&limit=10")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 3
+        # Newest-first ordering
+        assert body["items"][0]["event_type"] == "memory_created"
+        assert body["items"][-1]["event_type"] == "memory_deleted"
+
+    def test_filter_by_client_id(self, admin_tc, audit_storage):
+        from hive.models import ActivityEvent, EventType
+
+        for cid in ["c1", "c2", "c1"]:
+            audit_storage.log_audit_event(
+                ActivityEvent(event_type=EventType.memory_created, client_id=cid)
+            )
+
+        resp = admin_tc.get("/api/admin/audit-log?days=1&client_id=c1")
+        items = resp.json()["items"]
+        assert {it["client_id"] for it in items} == {"c1"}
+
+    def test_filter_by_event_type(self, admin_tc, audit_storage):
+        from hive.models import ActivityEvent, EventType
+
+        audit_storage.log_audit_event(
+            ActivityEvent(event_type=EventType.memory_created, client_id="c")
+        )
+        audit_storage.log_audit_event(
+            ActivityEvent(event_type=EventType.memory_deleted, client_id="c")
+        )
+
+        resp = admin_tc.get("/api/admin/audit-log?days=1&event_type=memory_deleted")
+        items = resp.json()["items"]
+        assert {it["event_type"] for it in items} == {"memory_deleted"}
+
+    def test_has_more_flag(self, admin_tc, audit_storage):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import ActivityEvent, EventType
+
+        base = datetime.now(timezone.utc)
+        for i in range(5):
+            audit_storage.log_audit_event(
+                ActivityEvent(
+                    event_type=EventType.memory_created,
+                    client_id="c",
+                    timestamp=base - timedelta(seconds=i),
+                )
+            )
+
+        resp = admin_tc.get("/api/admin/audit-log?days=1&limit=3")
+        body = resp.json()
+        assert body["count"] == 3
+        assert body["has_more"] is True
+
+    def test_non_admin_forbidden(self, user_tc):
+        resp = user_tc.get("/api/admin/audit-log?days=1")
+        assert resp.status_code == 403
+
+    def test_storage_factory_returns_storage(self):
+        """_storage() dep factory returns a HiveStorage so the endpoint can run in prod."""
+        from hive.api.admin import _storage
+        from hive.storage import HiveStorage
+
+        assert isinstance(_storage(), HiveStorage)

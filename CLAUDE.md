@@ -135,6 +135,9 @@ hive/
 - Token items: `PK=TOKEN#{jti}`, `SK=META` (TTL enabled)
 - Activity log items: `PK=LOG#{date}#{hour}`, `SK={timestamp}#{event_id}`
   (hour-sharded to avoid hot partitions)
+- Audit log items: `PK=AUDIT#{date}#{hour}`, `SK={timestamp}#{event_id}`
+  (immutable compliance trail, TTL via `HIVE_AUDIT_RETENTION_DAYS`,
+  default 365 days; survives user-initiated activity-log purges)
 - User items: `PK=USER#{user_id}`, `SK=META`
 - Mgmt state items: `PK=MGMT_STATE#{state}`, `SK=META`
   (TTL enabled, used for OAuth state parameter)
@@ -224,6 +227,32 @@ first).
 - Pin third-party GitHub Actions to full commit SHAs, not mutable version tags
   (e.g. `uses: actions/checkout@<sha> # v4`); use
   `gh api repos/{owner}/{repo}/git/ref/tags/{tag}` to resolve SHAs
+
+## Product decisions
+
+Durable architectural choices that constrain future designs. Don't
+re-derive these during design review — cite them.
+
+- **Workspaces are the tenancy root** (#482) — any multi-tenancy feature
+  consumes the workspace model. Don't invent a second tenancy axis
+  (per-user, per-client-group, etc.) without explicit design review.
+- **Billing deferred** — ship features free. Do not design tier
+  abstractions, per-seat accounting, or billing gates until billing is
+  an active constraint. Keep the concept out of data models for as long
+  as possible.
+- **Client-side LLM preferred** — features needing an LLM (extraction,
+  classification, synthesis) use MCP Sampling (#448). Don't add
+  Bedrock / OpenAI dependencies when the MCP client can provide the model.
+- **Shared-infra features ship full scope** — when two capabilities share
+  ~80% of the infrastructure (e.g. text-large + binary memory in #451,
+  webhook + SSE + MCP notification in #392), ship them together in one
+  release. Splitting a shared-infra pair doubles release cost for
+  marginal benefit.
+- **Agents swap tokens to switch context** — don't design tool APIs that
+  take a `workspace_id` / `namespace` param on every call. Scope comes
+  from the token claim (`workspace_id`, `conversation_id` where
+  applicable); agents register a new DCR client per context and swap
+  tokens to switch.
 
 ## UI conventions
 
@@ -327,8 +356,11 @@ gh pr merge --auto --merge
    ```
 
 2. **Update `CHANGELOG.md`** — move items from `[Unreleased]` to a new
-   versioned section, e.g. `## [X.Y.Z] - 2026-04-11`.
-   Commit the change:
+   versioned section, e.g. `## [X.Y.Z] - 2026-04-11`. The **draft release
+   auto-maintained by Release Drafter** (see
+   https://github.com/warlordofmars/hive/releases) is the source of
+   truth — copy its body into the new section rather than re-deriving
+   from PR history. Commit the change:
 
    ```bash
    git add CHANGELOG.md
@@ -450,6 +482,103 @@ If infra files changed, also run: `uv run inv synth`
 
 ---
 
+## Design-review workflow
+
+Governs how to process `status:design-needed` issues. Distinct from the
+autonomous issue workflow below — design review is **interactive**
+(requires user decisions), not unattended.
+
+### Pre-flight triage
+
+Before starting a design review, apply scope triage:
+
+1. **Redundant?** If another open issue or recently-landed feature
+   already covers the same use case with a broader surface, close as
+   redundant (see §Closing as redundant) rather than reviewing.
+2. **`priority:p3` + `size:xl`?** Park — keep the `status:design-needed`
+   label, skip the review. These rarely pay off soon and design effort
+   decays.
+3. **Everything else** — proceed to the 3-phase review.
+
+### Phase 1 — decisions comment
+
+Post a structured comment on the issue with this skeleton:
+
+```markdown
+## Design decisions
+
+### Resolved
+
+1. **<question>** — <answer> — <one-line rationale>
+2. ...
+
+### Derived decisions
+
+- <consequence that follows from the resolved answers>
+- ...
+
+### Breakdown (only if size:xl)
+
+This issue is `size:xl` and will be delivered via the sub-issues linked
+below. This issue stays open as the epic tracker.
+```
+
+Every open design question from the issue body must be addressed —
+either **resolved** (a decision is made and recorded) or **flagged**
+(marked as needing user input, which pauses the review).
+
+### Phase 2 — label flip
+
+Apply the correct status label based on the outcome:
+
+| Outcome | Label |
+|---|---|
+| Fully specified, no external blockers | `status:ready` |
+| Depends on another open issue in this repo | `status:blocked` (body must include `Blocked by #N`) |
+| Waiting on off-platform info (billing, account, external service) | `status:needs-info` |
+
+For `size:xl` issues that have been design-approved, also add the `epic`
+label so the autonomous loop never picks up the tracker itself.
+
+### Phase 3 — sub-issue breakdown (only if size:xl)
+
+For epics:
+
+1. Create one sub-issue per deliverable unit (typically 5–8 sub-issues)
+2. Each sub-issue body starts with `Part of #<epic>` and lists any
+   `Blocked by #N` cross-sub-issue dependencies
+3. Link each sub-issue to the epic via `mcp__github__sub_issue_write`
+   (GitHub's first-class sub-issue API), not just via the text reference
+4. Sub-issues get normal labels: `status:ready` or `status:blocked`,
+   plus priority / size / area. Never `epic`.
+
+### Closing as redundant
+
+When closing an issue rather than design-reviewing it:
+
+- **`state_reason: not_planned`** — for redundant issues (a broader
+  feature subsumes the narrower one). Post an explanatory comment
+  referencing the broader issue and explaining why the narrower one no
+  longer adds capability.
+- **`state_reason: duplicate`** + `duplicate_of: <#N>` — for true
+  duplicates (same underlying mechanism, different framing).
+
+Never close an issue as redundant without an explanatory comment — the
+audit trail matters.
+
+### Asking for user input
+
+Use the `AskUserQuestion` tool for binding decisions. Rules:
+
+- Only include options when you genuinely don't know the right call
+- Lead with the recommended option labelled `(Recommended)`
+- Describe the trade-off in each option's `description` field, not the
+  question body
+- Batch 2–4 logically related questions in one call — don't ask one at
+  a time when they're all on the table
+
+---
+
 ## Autonomous issue workflow
 
 This section governs how Claude Code operates when given a batch of issues
@@ -497,19 +626,39 @@ Pick the next issue using this deterministic queue:
 2. **Sort** by priority descending: `p0` > `p1` > `p2` > `p3`.
    Missing priority label → treat as `p3`.
 
-3. **Break priority ties** by size ascending (smallest first):
+3. **Break priority ties by milestone preference**: within the same
+   priority, prefer the current release milestone first (the lowest
+   open `vX.Y`), then a themed hardening bucket (`MVP-hardening` or
+   similar), then `Backlog`, then unmilestoned. This keeps the agent
+   focused on the active release commitment without ignoring
+   higher-priority work elsewhere — a `priority:p1` in `Backlog`
+   still out-ranks a `priority:p2` in the current release.
+
+4. **Break remaining ties** by size ascending (smallest first):
    `xs` > `s` > `m` > `l` > `xl`. Missing size label → treat as `m`.
 
-4. **Break remaining ties** by issue number ascending (oldest first).
+5. **Break final ties** by issue number ascending (oldest first).
 
-Saved GitHub query for the top of the queue:
+Saved GitHub queries (run in order — exhaust the first before moving to
+the next):
 
 ```
-is:issue is:open no:assignee label:status:ready -label:epic
+# Current release — drain this first at each priority level
+is:issue is:open no:assignee label:status:ready -label:epic milestone:"v0.22"
+
+# Hardening bucket — drain after current release
+is:issue is:open no:assignee label:status:ready -label:epic milestone:"MVP-hardening"
+
+# Backlog — drain last
+is:issue is:open no:assignee label:status:ready -label:epic milestone:"Backlog"
 ```
 
-Sort the result by label priority manually (GitHub search doesn't sort by
-label precedence).
+Substitute the actual current release milestone name (e.g. `v0.22`,
+`v0.23`) when running these.
+
+Sort each result set by label priority manually (GitHub search doesn't
+sort by label precedence), then by size ascending, then by issue
+number ascending.
 
 **Never pick** issues labelled `status:design-needed` or `status:needs-info`.
 If you believe one of those issues is actually ready, state the case in a
@@ -795,12 +944,14 @@ queue trustworthy.
 
 ### Status (one, required)
 
-- `status:ready` — fully scoped, queue-eligible
-- `status:blocked` — depends on another issue; body must name the blocker
-  with `Blocked by #N`. Not queue-eligible
-- `status:design-needed` — needs a decision before implementation. Not
-  queue-eligible
-- `status:needs-info` — waiting on reporter/user. Not queue-eligible
+- `status:ready` — fully scoped, no blockers, queue-eligible
+- `status:blocked` — depends on another **open issue in this repo**;
+  body must name the blocker with `Blocked by #N`. Not queue-eligible.
+- `status:needs-info` — waiting on **off-platform info** (billing,
+  account state, external service verification, legal review). Distinct
+  from `blocked` — the resolution isn't in this repo. Not queue-eligible.
+- `status:design-needed` — not yet reviewed; needs a design pass per
+  §Design-review workflow. Not queue-eligible.
 
 ### Priority (one, required)
 
