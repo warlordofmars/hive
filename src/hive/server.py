@@ -654,7 +654,7 @@ async def recall(
 
     # A redacted memory tombstone surfaces a safe sentinel — the fact that
     # the memory once existed is itself the signal (#400).
-    if memory.is_redacted:
+    if memory.redacted_at is not None:
         sentinel = (
             f"Memory '{key}' was redacted on {memory.redacted_at.isoformat()}. Value removed."
         )
