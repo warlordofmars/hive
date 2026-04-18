@@ -386,7 +386,9 @@ async def remember(
         except VersionConflict as exc:
             await emit_metric("ToolErrors", operation="remember")
             raise ToolError(
-                _conflict_message(key, exc.attempted_version, exc.current_value, exc.current_version)
+                _conflict_message(
+                    key, exc.attempted_version, exc.current_value, exc.current_version
+                )
             ) from exc
         except ValueError as exc:
             await emit_metric("ToolErrors", operation="remember")

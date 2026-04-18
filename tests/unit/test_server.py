@@ -1543,7 +1543,7 @@ class TestRememberOptimisticLocking:
         msg = str(exc_info.value)
         assert "Conflict" in msg
         # Tail of the message is a JSON payload with the conflict state.
-        payload = _json.loads(msg[msg.index("{"):])
+        payload = _json.loads(msg[msg.index("{") :])
         assert payload["conflict"] is True
         assert payload["attempted_version"] == m.version
         assert payload["current_value"] == "concurrent"
