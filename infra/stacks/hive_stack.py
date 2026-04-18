@@ -498,12 +498,71 @@ class HiveStack(cdk.Stack):
             custom_headers=origin_verify_header,
         )
 
+        # ----------------------------------------------------------------
+        # CloudFront response headers — security hardening
+        #
+        # CSP ships in Report-Only mode first; browser console surfaces
+        # violations without breaking the site. Flip to enforcing in a
+        # follow-up once logs are clean for ~1 week.
+        # ----------------------------------------------------------------
+        csp_report_only = (
+            "default-src 'self'; "
+            "script-src 'self' https://www.googletagmanager.com; "
+            "connect-src 'self' https://www.google-analytics.com "
+            "https://hive.warlordofmars.net; "
+            "img-src 'self' data: https://www.google-analytics.com; "
+            "style-src 'self' 'unsafe-inline'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self';"
+        )
+        security_headers_policy = cloudfront.ResponseHeadersPolicy(
+            self,
+            "HiveSecurityHeadersPolicy",
+            response_headers_policy_name=f"hive-security-headers-{env_name}",
+            comment="Hive security response headers (HSTS, CSP-RO, frame/referrer/permissions)",
+            security_headers_behavior=cloudfront.ResponseSecurityHeadersBehavior(
+                strict_transport_security=cloudfront.ResponseHeadersStrictTransportSecurity(
+                    access_control_max_age=cdk.Duration.seconds(31536000),
+                    include_subdomains=True,
+                    preload=True,
+                    override=True,
+                ),
+                content_type_options=cloudfront.ResponseHeadersContentTypeOptions(
+                    override=True,
+                ),
+                frame_options=cloudfront.ResponseHeadersFrameOptions(
+                    frame_option=cloudfront.HeadersFrameOption.DENY,
+                    override=True,
+                ),
+                referrer_policy=cloudfront.ResponseHeadersReferrerPolicy(
+                    referrer_policy=cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+                    override=True,
+                ),
+            ),
+            custom_headers_behavior=cloudfront.ResponseCustomHeadersBehavior(
+                custom_headers=[
+                    cloudfront.ResponseCustomHeader(
+                        header="Permissions-Policy",
+                        value="camera=(), microphone=(), geolocation=(), payment=()",
+                        override=True,
+                    ),
+                    cloudfront.ResponseCustomHeader(
+                        header="Content-Security-Policy-Report-Only",
+                        value=csp_report_only,
+                        override=True,
+                    ),
+                ],
+            ),
+        )
+
         api_behavior = cloudfront.BehaviorOptions(
             origin=api_cf_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            response_headers_policy=security_headers_policy,
         )
         mcp_behavior = cloudfront.BehaviorOptions(
             origin=mcp_cf_origin,
@@ -511,6 +570,7 @@ class HiveStack(cdk.Stack):
             cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+            response_headers_policy=security_headers_policy,
         )
 
         # ----------------------------------------------------------------
@@ -714,6 +774,7 @@ function handler(event) {
             origin=ui_s3_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+            response_headers_policy=security_headers_policy,
             function_associations=[
                 cloudfront.FunctionAssociation(
                     function=docs_rewrite_fn,
@@ -729,6 +790,7 @@ function handler(event) {
                 origin=ui_s3_origin,
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                response_headers_policy=security_headers_policy,
             ),
             additional_behaviors={
                 "/api/*": api_behavior,
@@ -739,12 +801,14 @@ function handler(event) {
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                    response_headers_policy=security_headers_policy,
                 ),
                 "/health": cloudfront.BehaviorOptions(
                     origin=api_cf_origin,
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                    response_headers_policy=security_headers_policy,
                 ),
                 "/mcp*": mcp_behavior,
                 "/docs*": docs_behavior,
