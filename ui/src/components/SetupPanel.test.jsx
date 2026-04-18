@@ -102,6 +102,35 @@ describe("SetupPanel", () => {
     vi.useRealTimers();
   });
 
+  it("Cursor tab Copy uses the Cursor http config", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Cursor"));
+    fireEvent.click(screen.getByText("Copy"));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining('"type": "http"'),
+    );
+  });
+
+  it("Claude Desktop legacy JSON Copy uses the mcp-remote config", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Claude Desktop"));
+    fireEvent.click(screen.getByText(/Prefer JSON/));
+    fireEvent.click(screen.getByText("Copy"));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("mcp-remote"),
+    );
+  });
+
+  it("Back link from legacy JSON form returns to the URL flow", async () => {
+    await act(async () => render(<SetupPanel />));
+    fireEvent.click(screen.getByText("Claude Desktop"));
+    fireEvent.click(screen.getByText(/Prefer JSON/));
+    expect(document.body.textContent).toContain('"command": "npx"');
+    fireEvent.click(screen.getByText(/Back to the Custom Connector/));
+    expect(document.body.textContent).toContain("Add custom connector");
+    expect(document.body.textContent).not.toContain('"command": "npx"');
+  });
+
   it("shows Copy button initially", async () => {
     await act(async () => render(<SetupPanel />));
     expect(screen.getByText("Copy")).toBeTruthy();
