@@ -623,19 +623,39 @@ Pick the next issue using this deterministic queue:
 2. **Sort** by priority descending: `p0` > `p1` > `p2` > `p3`.
    Missing priority label → treat as `p3`.
 
-3. **Break priority ties** by size ascending (smallest first):
+3. **Break priority ties by milestone preference**: within the same
+   priority, prefer the current release milestone first (the lowest
+   open `vX.Y`), then a themed hardening bucket (`MVP-hardening` or
+   similar), then `Backlog`, then unmilestoned. This keeps the agent
+   focused on the active release commitment without ignoring
+   higher-priority work elsewhere — a `priority:p1` in `Backlog`
+   still out-ranks a `priority:p2` in the current release.
+
+4. **Break remaining ties** by size ascending (smallest first):
    `xs` > `s` > `m` > `l` > `xl`. Missing size label → treat as `m`.
 
-4. **Break remaining ties** by issue number ascending (oldest first).
+5. **Break final ties** by issue number ascending (oldest first).
 
-Saved GitHub query for the top of the queue:
+Saved GitHub queries (run in order — exhaust the first before moving to
+the next):
 
 ```
-is:issue is:open no:assignee label:status:ready -label:epic
+# Current release — drain this first at each priority level
+is:issue is:open no:assignee label:status:ready -label:epic milestone:"v0.22"
+
+# Hardening bucket — drain after current release
+is:issue is:open no:assignee label:status:ready -label:epic milestone:"MVP-hardening"
+
+# Backlog — drain last
+is:issue is:open no:assignee label:status:ready -label:epic milestone:"Backlog"
 ```
 
-Sort the result by label priority manually (GitHub search doesn't sort by
-label precedence).
+Substitute the actual current release milestone name (e.g. `v0.22`,
+`v0.23`) when running these.
+
+Sort each result set by label priority manually (GitHub search doesn't
+sort by label precedence), then by size ascending, then by issue
+number ascending.
 
 **Never pick** issues labelled `status:design-needed` or `status:needs-info`.
 If you believe one of those issues is actually ready, state the case in a
