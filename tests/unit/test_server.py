@@ -137,6 +137,26 @@ class TestPing:
         with pytest.raises(ToolError, match="Unauthorized"):
             await ping(ctx=ctx)
 
+    async def test_auth_rejection_emits_token_validation_failure_metric(self, server_env):
+        """The AuthFailures CloudWatch alarm watches TokenValidationFailures —
+        make sure the MCP auth path actually emits it on rejection."""
+        from unittest.mock import AsyncMock, patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import ping
+
+        ctx = MagicMock()
+        ctx.request_context.meta = {"Authorization": "Bearer totally-bogus"}
+        mock_emit = AsyncMock()
+        with (
+            patch("hive.server.emit_metric", mock_emit),
+            pytest.raises(ToolError, match="Unauthorized"),
+        ):
+            await ping(ctx=ctx)
+        names_emitted = [call.args[0] for call in mock_emit.call_args_list]
+        assert "TokenValidationFailures" in names_emitted
+
 
 # ---------------------------------------------------------------------------
 # remember
