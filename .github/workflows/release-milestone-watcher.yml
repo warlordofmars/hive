@@ -27,11 +27,16 @@ jobs:
       - name: Check if any vX.Y milestone is drained
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+          # gh reads GH_REPO to scope repo-aware commands (gh issue list,
+          # gh issue create). Without it, gh tries to detect the repo via
+          # git, but this workflow doesn't run actions/checkout — so those
+          # commands fail with `fatal: not a git repository`. Setting
+          # GH_REPO avoids the checkout without needing git context.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          MILESTONES=$(gh api "repos/$REPO/milestones?state=open" \
+          MILESTONES=$(gh api "repos/$GH_REPO/milestones?state=open" \
             --jq '.[] | select(.title | test("^v[0-9]+\\.[0-9]+$")) | .title')
 
           if [ -z "$MILESTONES" ]; then
