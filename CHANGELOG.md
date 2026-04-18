@@ -6,7 +6,56 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.20.0. Will be rolled into v0.21.0._
+_Changes accumulated on `development` since v0.21.0. Will be rolled into the next release._
+
+## v0.21.0 — 2026-04-18
+
+### Added
+
+#### MCP surface
+
+- New `ping` tool for connectivity and auth health checks (#411)
+- New `list_tags` tool for tag-space discovery (#415)
+- New `relate_memories(key, top_k)` tool — semantic traversal from a memory to its nearest neighbours (#465)
+- New `remember_if_absent(key, value, tags?, ttl_seconds?)` — conditional write only when the key doesn't already exist (#466)
+- `search_memories` gained `min_score` (score threshold) and `filter_tags` (tag-intersection filter) parameters (#412, #444)
+- `remember` enforces a UTF-8 byte-size cap on `value` (default 10 KB, configurable via `HIVE_MAX_VALUE_BYTES`) (#403)
+- Every tool now advertises title + `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` so capable clients can auto-approve read-only calls and confirm destructive ones (#469)
+- `list_memories` and `search_memories` responses now include `owner_client_id`; the memory browser renders a "by {client name}" attribution badge on every card (#463)
+
+#### Compliance & privacy
+
+- GDPR Article 20 / CCPA §1798.100 data export: `GET /api/account/export` streams a JSON bundle with the user's profile, memories, OAuth clients, and the last 90 days of activity; rate-limited to one export per 5 min (#468)
+- Opt-in GA4 cookie consent banner — no tracking script loads until the visitor clicks Accept; choice persisted in `localStorage`, revocable via a footer "Cookie preferences" link (#467)
+- New `/subprocessors` page listing AWS, Google OAuth, and Google Analytics with purpose, data categories, and location; cross-linked from Privacy §4 and the FAQ (#470)
+
+#### Infrastructure, security, & observability
+
+- CloudFront response-headers policy: HSTS, `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and a `Content-Security-Policy-Report-Only` draft; enforcing CSP tracked separately (#473)
+- New CloudWatch alarms: Lambda throttles (MCP + API), DynamoDB user errors, and Bearer-token auth failures; every prod alarm now pages both on firing and on recovery (OK actions); first-deploy runbook documents the SNS subscription flow (#474)
+- Backup / restore runbook for prod DynamoDB PITR recovery — when-to, pre-flight, restore, swap, validation, cleanup, post-mortem template, and annual drill guidance (#478)
+- SEO: `robots.txt` + `sitemap.xml` for marketing SPA + VitePress-generated docs sitemap (#443)
+- Open Graph + Twitter Card metadata across marketing and docs pages so shared links render proper preview cards (#455)
+
+#### Dev experience & CI
+
+- Key-naming conventions docs page with the recommended `{domain}:{entity-type}/{entity-id}:{attribute}` pattern and examples (#408)
+- `main`-branch guard: PRs to `main` from anything other than `development` or `release/*` fail a required status check, preventing another v0.20.0-style release-bypass (#477)
+- Dependabot now runs daily for pip and npm (github-actions stays weekly) and passing Dependabot PRs auto-merge (#432, #445)
+- ChatGPT joins the supported-clients list everywhere; Claude Desktop setup now leads with the Custom Connector URL flow (mcp-remote JSON kept as a legacy fallback) (#485)
+
+### Fixed
+
+- Pricing page claimed "unlimited memories" while the free-tier quota is 500 (#404)
+- Privacy Policy / Terms referenced `privacy@hive.so` and `hello@hive.so` on a domain we don't own; switched to `@warlordofmars.net` (#431)
+- Marketing home page's "3-step setup" described a flow that doesn't exist ("register a client", "one-line snippet"); rewritten to match `SetupPanel` and the docs, including the browser-OAuth step (#471)
+
+### Meta
+
+- CLAUDE.md: deterministic selection algorithm for the autonomous issue queue (#461)
+- CLAUDE.md: label taxonomy (status / priority / size / area) and milestone policy; enforced at PR merge via `label-check.yml` (#462, #464)
+- CLAUDE.md: autonomous agent halts and surfaces `HUMAN_INPUT_REQUIRED` when the active release milestone drains (#483)
+- CHANGELOG: retroactive v0.20.0 entry documenting what actually shipped there (#476)
 
 ## v0.20.0 — 2026-04-17
 
