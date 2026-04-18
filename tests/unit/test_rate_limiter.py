@@ -175,7 +175,7 @@ class TestCheckRateLimit:
 class TestMcpRateLimitIntegration:
     """Verify _auth() in server.py raises ToolError on rate limit exceeded."""
 
-    def test_mcp_auth_raises_tool_error_on_rate_limit(self):
+    async def test_mcp_auth_raises_tool_error_on_rate_limit(self):
         from fastmcp.exceptions import ToolError
 
         from hive.rate_limiter import RateLimitExceeded
@@ -195,7 +195,7 @@ class TestMcpRateLimitIntegration:
             from hive.server import _auth
 
             with pytest.raises(ToolError) as exc_info:
-                _auth(None, required_scope="memories:read")
+                await _auth(None, required_scope="memories:read")
             assert "Rate limit exceeded" in str(exc_info.value)
             assert "45" in str(exc_info.value)
 

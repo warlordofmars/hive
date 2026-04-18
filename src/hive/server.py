@@ -124,7 +124,7 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveStorage, str]:
+async def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveStorage, str]:
     """Validate Bearer token; return (storage, client_id).
 
     Reads the Authorization header from the HTTP request when running under
@@ -133,6 +133,8 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
     context (request_id, client_id).
 
     If required_scope is given, raises ToolError if the token lacks that scope.
+    Emits the ``TokenValidationFailures`` metric on auth rejection so the
+    CloudWatch AuthFailures alarm has something to fire on.
     """
     storage = HiveStorage()
     auth_header: str | None = None
@@ -165,6 +167,7 @@ def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveS
     try:
         token = validate_bearer_token(auth_header, storage)
     except ValueError as exc:
+        await emit_metric("TokenValidationFailures")
         raise ToolError(f"Unauthorized: {exc}") from exc
 
     if required_scope and required_scope not in set(token.scope.split()):
@@ -198,7 +201,7 @@ async def ping(ctx: Context | None = None) -> str:
     Performs no storage reads or writes. A successful call confirms both
     connectivity to the MCP server and that the caller's token is still valid.
     """
-    _auth(ctx)
+    await _auth(ctx)
     await emit_metric("ToolInvocations", operation="ping")
     return "ok"
 
@@ -227,7 +230,7 @@ async def remember(
 ) -> str:
     """Store or update a memory with optional tags and optional TTL."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     limit = _max_value_bytes()
     actual = len(value.encode("utf-8"))
@@ -355,7 +358,7 @@ async def remember_if_absent(
     strict DynamoDB-level atomicity is tracked in #391.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     limit = _max_value_bytes()
     actual = len(value.encode("utf-8"))
@@ -442,7 +445,7 @@ async def recall(
 ) -> str:
     """Retrieve a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -497,7 +500,7 @@ async def forget(
 ) -> str:
     """Delete a memory by its key."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     existing = storage.get_memory_by_key(key)
     if existing is None:
@@ -557,7 +560,7 @@ async def forget_all(
 ) -> str:
     """Delete all memories that have the given tag."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     deleted = storage.delete_memories_by_tag(tag)
     storage.log_event(
@@ -598,7 +601,7 @@ async def memory_history(
 ) -> list[dict[str, Any]]:
     """Return the version history of a memory (previous values before each overwrite)."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:read")
+    storage, client_id = await _auth(ctx, required_scope="memories:read")
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -639,7 +642,7 @@ async def restore_memory(
 ) -> str:
     """Restore a memory to a previous version."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope="memories:write")
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
 
     memory = storage.get_memory_by_key(key)
     if memory is None:
@@ -682,7 +685,7 @@ async def list_memories(
 ) -> dict[str, Any]:
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
@@ -737,7 +740,7 @@ async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
     namespace of an existing memory corpus before calling `list_memories`.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     tags = storage.list_distinct_tags(client_id)
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -771,7 +774,7 @@ async def summarize_context(
     memory and then provides a combined overview paragraph.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
     memories, _ = storage.list_memories_by_tag(topic, limit=500)
 
@@ -850,7 +853,7 @@ async def search_memories(
     where higher means more semantically similar to the query.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     top_k = max(1, min(top_k, 50))
     threshold = max(0.0, min(1.0, min_score)) if min_score is not None else None
     required_tags = set(filter_tags) if filter_tags else None
@@ -927,7 +930,7 @@ async def relate_memories(
     from 0.0 to 1.0 where higher means more semantically similar.
     """
     t0 = time.monotonic()
-    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     top_k = max(1, min(top_k, 50))
 
     memory = storage.get_memory_by_key(key)
