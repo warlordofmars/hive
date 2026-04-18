@@ -134,6 +134,40 @@ describe("PageLayout", () => {
     expect(within(footer).getByText("Cookie preferences")).toBeTruthy();
   });
 
+  it("renders a mobile hamburger button with correct aria-label", async () => {
+    await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
+    const btn = screen.getByLabelText("Open menu");
+    expect(btn).toBeTruthy();
+    expect(btn.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("hamburger toggles the mobile drawer and flips its aria label", async () => {
+    await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
+    const btn = screen.getByLabelText("Open menu");
+    await act(async () => fireEvent.click(btn));
+    // After opening, the button's aria-label flips to "Close menu".
+    const closeBtn = screen.getByLabelText("Close menu");
+    expect(closeBtn.getAttribute("aria-expanded")).toBe("true");
+    // The drawer itself renders a <nav>; assert it's in the DOM now.
+    const nav = closeBtn.closest("header").querySelector("nav");
+    expect(nav).toBeTruthy();
+    // Toggle closed again.
+    await act(async () => fireEvent.click(closeBtn));
+    expect(screen.getByLabelText("Open menu").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("mobile drawer lists every nav link + a Sign in button", async () => {
+    await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
+    await act(async () => fireEvent.click(screen.getByLabelText("Open menu")));
+    const { container } = { container: document };
+    const drawer = container.querySelector("header nav");
+    expect(drawer).toBeTruthy();
+    for (const label of ["Use cases", "Clients", "Pricing", "FAQ", "Docs"]) {
+      expect(within(drawer).getByText(label)).toBeTruthy();
+    }
+    expect(within(drawer).getByRole("button", { name: "Sign in" })).toBeTruthy();
+  });
+
   it("Cookie preferences click clears stored consent and re-shows the banner", async () => {
     localStorage.setItem("hive_ga_consent", "reject");
     const { container } = await act(async () =>
