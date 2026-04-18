@@ -1018,6 +1018,124 @@ class TestSearchMemories:
 
 
 # ---------------------------------------------------------------------------
+# relate_memories
+# ---------------------------------------------------------------------------
+
+
+class TestRelateMemories:
+    async def test_returns_related_with_source_excluded(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("source", "about cats and dogs", ["t"], ctx=ctx)
+        await remember("a", "cats are great pets", ["t"], ctx=ctx)
+        await remember("b", "dogs are great pets", ["t"], ctx=ctx)
+        src = storage.get_memory_by_key("source")
+        a = storage.get_memory_by_key("a")
+        b = storage.get_memory_by_key("b")
+        # Vector store also ranks the source highly; relate_memories must drop it.
+        mock_vs = _make_mock_vector_store(
+            [(src.memory_id, 0.99), (a.memory_id, 0.9), (b.memory_id, 0.8)]
+        )
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories("source", top_k=2, ctx=ctx)
+
+        keys = [item["key"] for item in result["items"]]
+        assert keys == ["a", "b"]
+        assert result["count"] == 2
+        assert result["key"] == "source"
+
+    async def test_uses_source_value_as_query(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("source", "unique search phrase", [], ctx=ctx)
+        mock_vs = _make_mock_vector_store([])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("source", ctx=ctx)
+
+        assert mock_vs.search.call_args.args[0] == "unique search phrase"
+        # top_k+1 requested so the source-memory drop still leaves headroom.
+        assert mock_vs.search.call_args.kwargs["top_k"] == 6
+
+    async def test_missing_key_raises_tool_error(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import relate_memories
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="No memory found"):
+            await relate_memories("nonexistent", ctx=_make_ctx(jwt))
+
+    async def test_returns_empty_when_no_index(self, server_env):
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import relate_memories, remember
+        from hive.vector_store import VectorIndexNotFoundError
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("src", "v", [], ctx=ctx)
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = VectorIndexNotFoundError("no index")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories("src", ctx=ctx)
+
+        assert result == {"items": [], "count": 0, "key": "src"}
+
+    async def test_returns_empty_on_vector_error(self, server_env):
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import relate_memories, remember
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("src", "v", [], ctx=ctx)
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = RuntimeError("bedrock down")
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories("src", ctx=ctx)
+
+        assert result == {"items": [], "count": 0, "key": "src"}
+
+    async def test_top_k_clamped(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("src", "v", [], ctx=ctx)
+        mock_vs = _make_mock_vector_store([])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("src", top_k=999, ctx=ctx)
+
+        # 50 cap + 1 headroom
+        assert mock_vs.search.call_args.kwargs["top_k"] == 51
+
+    async def test_requires_read_scope(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import relate_memories
+
+        storage, _, _ = server_env
+        write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
+        with pytest.raises(ToolError, match="Insufficient scope"):
+            await relate_memories("any", ctx=_make_ctx(write_only_jwt))
+
+
+# ---------------------------------------------------------------------------
 # forget_all
 # ---------------------------------------------------------------------------
 

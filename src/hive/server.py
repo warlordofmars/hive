@@ -749,6 +749,72 @@ async def search_memories(
     }
 
 
+@mcp.tool()
+async def relate_memories(
+    key: Annotated[str, "Key of the memory to find relations for"],
+    top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 5,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Return memories most semantically similar to the one at ``key``.
+
+    The source memory's value is used as the vector search query and the
+    source memory itself is excluded from the results.  ``score`` ranges
+    from 0.0 to 1.0 where higher means more semantically similar.
+    """
+    t0 = time.monotonic()
+    storage, client_id = _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    top_k = max(1, min(top_k, 50))
+
+    memory = storage.get_memory_by_key(key)
+    if memory is None:
+        raise ToolError(f"No memory found for key '{key}'.")
+
+    try:
+        # Fetch top_k+1 so that dropping the source still leaves up to top_k.
+        pairs = _vector_store().search(memory.value, client_id, top_k=top_k + 1)
+    except VectorIndexNotFoundError:
+        return {"items": [], "count": 0, "key": key}
+    except Exception:
+        logger.warning("Vector search failed (non-fatal)", exc_info=True)
+        return {"items": [], "count": 0, "key": key}
+
+    pairs = [(mid, score) for mid, score in pairs if mid != memory.memory_id][:top_k]
+    results = storage.hydrate_memory_ids(pairs)
+
+    storage.log_event(
+        ActivityEvent(
+            event_type=EventType.memory_searched,
+            client_id=client_id,
+            metadata={"key": key, "result_count": len(results), "related_to": memory.memory_id},
+        )
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "Related memories for '%s', %d result(s)",
+        key,
+        len(results),
+        extra={
+            "tool": "relate_memories",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="relate_memories")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="relate_memories",
+    )
+    return {
+        "items": [
+            MemorySearchResult.from_memory_and_score(m, score).model_dump() for m, score in results
+        ],
+        "count": len(results),
+        "key": key,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
