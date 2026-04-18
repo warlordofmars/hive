@@ -26,6 +26,16 @@ def _make_context(token_str: str):
     return ctx
 
 
+def _text(r) -> str:
+    """Extract text payload from a ToolResult."""
+    return r.content[0].text
+
+
+def _body(r) -> dict:
+    """Extract structured content from a ToolResult."""
+    return r.structured_content
+
+
 @pytest.fixture(scope="module")
 def setup():
     """Set up DynamoDB Local table + a valid token for MCP tool calls."""
@@ -118,10 +128,10 @@ class TestMCPTools:
         jwt = setup
         ctx = _make_context(jwt)
         result = await remember(key="greeting", value="Hello, Hive!", tags=["test"], ctx=ctx)
-        assert "greeting" in result
+        assert "greeting" in _text(result)
 
         recalled = await recall(key="greeting", ctx=ctx)
-        assert recalled == "Hello, Hive!"
+        assert _text(recalled) == "Hello, Hive!"
 
     async def test_forget(self, setup):
         from fastmcp.exceptions import ToolError
@@ -132,7 +142,7 @@ class TestMCPTools:
         ctx = _make_context(jwt)
         await remember(key="temp", value="ephemeral", ctx=ctx)
         result = await forget(key="temp", ctx=ctx)
-        assert "temp" in result
+        assert "temp" in _text(result)
 
         with pytest.raises(ToolError):
             await recall(key="temp", ctx=ctx)
@@ -146,7 +156,7 @@ class TestMCPTools:
         await remember(key="list-b", value="B", tags=["listtest"], ctx=ctx)
 
         result = await list_memories(tag="listtest", ctx=ctx)
-        keys = [m["key"] for m in result["items"]]
+        keys = [m["key"] for m in _body(result)["items"]]
         assert "list-a" in keys
         assert "list-b" in keys
 
@@ -159,5 +169,6 @@ class TestMCPTools:
         await remember(key="s2", value="Summary value 2", tags=["summary"], ctx=ctx)
 
         result = await summarize_context(topic="summary", ctx=ctx)
-        assert "summary" in result.lower()
-        assert "s1" in result or "s2" in result
+        text = _text(result)
+        assert "summary" in text.lower()
+        assert "s1" in text or "s2" in text
