@@ -73,6 +73,7 @@ export default function PageLayout({ children }) {
               <a href="/status" className="no-underline hover:text-[var(--text)] transition-colors">Status</a>
               <a href="/terms" className="no-underline hover:text-[var(--text)] transition-colors">Terms</a>
               <a href="/privacy" className="no-underline hover:text-[var(--text)] transition-colors">Privacy</a>
+              <a href="/subprocessors" className="no-underline hover:text-[var(--text)] transition-colors">Subprocessors</a>
               <a
                 href="#cookie-preferences"
                 onClick={handleReopenConsent}

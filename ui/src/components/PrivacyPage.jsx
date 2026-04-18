@@ -90,8 +90,13 @@ export default function PrivacyPage() {
               same region. No data is replicated to other cloud providers or regions.
             </p>
             <p>
-              AWS is our sole infrastructure provider. Their data-processing terms apply to
-              data at rest and in transit within AWS services.
+              AWS is our primary infrastructure provider. A full list of the third parties
+              that process data on our behalf (including AWS, Google OAuth, and Google
+              Analytics) is maintained on the{" "}
+              <a href="/subprocessors" className="text-brand no-underline hover:underline">
+                Subprocessors
+              </a>{" "}
+              page.
             </p>
           </Section>
 
