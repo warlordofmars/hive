@@ -1376,6 +1376,42 @@ class TestRestoreMemory:
 # ---------------------------------------------------------------------------
 
 
+class TestMcpToolAnnotations:
+    """Every exposed MCP tool should carry a user-friendly title and
+    annotations that let consent-aware clients (Claude Desktop, Claude Code)
+    render destructive operations differently from read-only ones.
+    """
+
+    @pytest.mark.parametrize(
+        "tool_name,title,read_only,destructive",
+        [
+            ("ping", "Ping", True, None),
+            ("remember", "Remember", False, False),
+            ("remember_if_absent", "Remember if absent", False, False),
+            ("recall", "Recall", True, None),
+            ("forget", "Forget", False, True),
+            ("forget_all", "Forget all (by tag)", False, True),
+            ("memory_history", "Memory history", True, None),
+            ("restore_memory", "Restore memory", False, False),
+            ("list_memories", "List memories", True, None),
+            ("list_tags", "List tags", True, None),
+            ("summarize_context", "Summarise context", True, None),
+            ("search_memories", "Search memories", True, None),
+            ("relate_memories", "Relate memories", True, None),
+        ],
+    )
+    async def test_title_and_hints(self, tool_name, title, read_only, destructive):
+        from hive.server import mcp
+
+        tool = await mcp.get_tool(tool_name)
+        assert tool.title == title
+        assert tool.annotations.readOnlyHint is read_only
+        # destructiveHint is only set when meaningful.
+        assert tool.annotations.destructiveHint is destructive
+        # Every Hive tool is closed-world (our DynamoDB only).
+        assert tool.annotations.openWorldHint is False
+
+
 class TestHiveTokenVerifier:
     async def test_valid_token_returns_access_token(self, server_env):
         from hive.server import HiveTokenVerifier

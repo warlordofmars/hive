@@ -188,7 +188,10 @@ def _vector_store() -> VectorStore:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Ping",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def ping(ctx: Context | None = None) -> str:
     """Lightweight health check — returns 'ok' when the Bearer token is valid.
 
@@ -200,7 +203,15 @@ async def ping(ctx: Context | None = None) -> str:
     return "ok"
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Remember",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def remember(
     key: Annotated[str, "Unique key to store the memory under"],
     value: Annotated[
@@ -312,7 +323,15 @@ async def remember(
     return f"{action} memory '{key}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Remember if absent",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def remember_if_absent(
     key: Annotated[str, "Unique key to store the memory under"],
     value: Annotated[
@@ -413,7 +432,10 @@ async def remember_if_absent(
     return f"Stored memory '{key}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Recall",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def recall(
     key: Annotated[str, "Key of the memory to retrieve"],
     ctx: Context | None = None,
@@ -460,7 +482,15 @@ async def recall(
     return memory.value
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Forget",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
 async def forget(
     key: Annotated[str, "Key of the memory to delete"],
     ctx: Context | None = None,
@@ -512,7 +542,15 @@ async def forget(
     return f"Deleted memory '{key}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Forget all (by tag)",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
 async def forget_all(
     tag: Annotated[str, "Tag of the memories to delete"],
     ctx: Context | None = None,
@@ -550,7 +588,10 @@ async def forget_all(
     return f"Deleted {deleted} memories with tag '{tag}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Memory history",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def memory_history(
     key: Annotated[str, "Key of the memory to retrieve history for"],
     ctx: Context | None = None,
@@ -582,7 +623,15 @@ async def memory_history(
     ]
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Restore memory",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
 async def restore_memory(
     key: Annotated[str, "Key of the memory to restore"],
     version_timestamp: Annotated[str, "Version timestamp to restore (from memory_history)"],
@@ -621,7 +670,10 @@ async def restore_memory(
     return f"Restored memory '{key}' to version '{version_timestamp}'."
 
 
-@mcp.tool()
+@mcp.tool(
+    title="List memories",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def list_memories(
     tag: Annotated[str, "Tag to filter memories by"],
     limit: Annotated[int, "Maximum number of memories to return (1–500)"] = 100,
@@ -674,7 +726,10 @@ async def list_memories(
     return result
 
 
-@mcp.tool()
+@mcp.tool(
+    title="List tags",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
     """List all distinct tags currently in use across the caller's memories.
 
@@ -701,7 +756,10 @@ async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
     return {"tags": tags, "count": len(tags)}
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Summarise context",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def summarize_context(
     topic: Annotated[str, "Topic or tag to summarise memories about"],
     ctx: Context | None = None,
@@ -767,7 +825,10 @@ async def summarize_context(
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Search memories",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def search_memories(
     query: Annotated[str, "Natural language search query"],
     top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 10,
@@ -850,7 +911,10 @@ async def search_memories(
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Relate memories",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
 async def relate_memories(
     key: Annotated[str, "Key of the memory to find relations for"],
     top_k: Annotated[int, "Maximum number of results to return (1–50)"] = 5,
