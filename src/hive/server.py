@@ -447,7 +447,9 @@ async def recall(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
-    memory = storage.get_memory_by_key(key)
+    # record_recall atomically bumps recall_count + last_accessed_at and
+    # returns the updated Memory (None if missing/expired).
+    memory = storage.record_recall(key)
     if memory is None:
         logger.warning(
             "Memory not found for key '%s'",
@@ -718,6 +720,10 @@ async def list_memories(
                 "value": m.value,
                 "tags": m.tags,
                 "owner_client_id": m.owner_client_id,
+                "recall_count": m.recall_count,
+                "last_accessed_at": (
+                    m.last_accessed_at.isoformat() if m.last_accessed_at else None
+                ),
             }
             for m in memories
         ],
