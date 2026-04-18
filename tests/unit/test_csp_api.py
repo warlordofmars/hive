@@ -296,3 +296,10 @@ class TestHelpers:
         req.headers = {}
         req.client = None
         assert _client_ip(req) == "unknown"
+
+    def test_storage_factory_returns_storage(self):
+        """The module-level _storage() dependency factory returns a HiveStorage."""
+        from hive.api.csp import _storage
+        from hive.storage import HiveStorage
+
+        assert isinstance(_storage(), HiveStorage)

@@ -125,11 +125,8 @@ def _blocked_domain(blocked_uri: str) -> str:
         return "none"
     if blocked_uri in {"inline", "eval", "self", "data"}:
         return blocked_uri
-    try:
-        parsed = urlparse(blocked_uri)
-        return parsed.hostname or blocked_uri[:_FIELD_MAX_LEN]
-    except ValueError:
-        return "unparseable"
+    parsed = urlparse(blocked_uri)
+    return parsed.hostname or blocked_uri[:_FIELD_MAX_LEN]
 
 
 async def _record_violation(violation: dict[str, Any]) -> None:
