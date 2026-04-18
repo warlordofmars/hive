@@ -14,7 +14,7 @@ Memories are never shared between accounts, and Hive does not use your data to t
 
 ### Where is my data stored?
 
-Data is stored on AWS infrastructure (DynamoDB, S3 Vectors) in the US East region. Data is encrypted at rest and in transit.
+Data is stored on AWS infrastructure (DynamoDB, S3 Vectors) in the US East region. Data is encrypted at rest and in transit. A full list of third parties that process data on our behalf — AWS, Google OAuth, and Google Analytics — is maintained on the [Subprocessors page](https://hive.warlordofmars.net/subprocessors).
 
 ### Can Anthropic or other AI providers see my memories?
 
