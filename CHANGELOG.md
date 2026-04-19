@@ -6,7 +6,41 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.22.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.23.0. Will be rolled into the next release._
+
+## v0.23.0 — 2026-04-19
+
+### Changed
+
+- fix(ui): restack log rows on mobile so they don't look always-expanded (#566)
+- fix(ui): let log-row summary wrap on mobile so messages stay readable (#564)
+- fix(e2e): raise httpx timeout to 30s to absorb Lambda cold starts (#565)
+- fix(ui): stop Activity Log page overflowing viewport on mobile (#563)
+- fix(ui): stop Dashboard page overflowing viewport on mobile (#562)
+- fix(docs): actually match intro padding with descendant selector (#561)
+- fix(docs): pad API-reference intro so it doesn't sit flush against viewport edge (#560)
+- fix(docs): keep Swagger base CSS loaded under the dark overlay (#559)
+- feat(docs): swap API reference from Redoc to Swagger UI (#558)
+- fix(docs): light-mode Redoc palette — drop jarring dark right panel (#557)
+- fix(docs): widen API reference + readable dark response-status blocks (#556)
+- fix(docs): tone down Redoc's light pill controls in dark mode (#555)
+- feat(docs): Redoc follows the docs-site dark mode (#554)
+- feat: collapse OK alarms on Dashboard into a summary badge (#553)
+- fix: render API reference with Redoc instead of Scalar (#552)
+- feat(docs): publish OpenAPI spec + Scalar-rendered API reference (#551)
+- fix(ui): app drawer active tab uses orange left-border (parity with marketing/docs) (#550)
+- fix(docs): drawer parity — inline flow, left-flush items, orange active indicator (#549)
+- fix(docs): left-align drawer items + force hamburger to rightmost control (#547)
+- test(e2e): double tag-filter retry window for GSI propagation (#546)
+- fix(docs): align mobile drawer items + top-bar order with marketing/app (#545)
+- feat(ui): unify navbar + hamburger across marketing, docs, app (#544)
+- feat: cross-surface mobile polish — marketing, docs, management app (#543)
+- feat(marketing): mobile UX — hamburger nav + code-block overflow safety (#541)
+- feat(docs): mobile UX fixes — hide desktop nav group, contain wide tables (#533)
+- chore(ci): remove release-milestone-watcher workflow (#532)
+- chore: merge main back to development (#530)
+
+**Full Changelog:** https://github.com/warlordofmars/hive/compare/v0.22.0...v0.23.0
 
 ## v0.22.0 — 2026-04-18
 
