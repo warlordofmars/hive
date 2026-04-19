@@ -15,7 +15,7 @@ export default function PrivacyPage() {
   return (
     <PageLayout>
       {/* Header */}
-      <section className="py-20 px-8 text-center bg-[var(--surface)]">
+      <section className="py-20 px-4 md:px-8 text-center bg-[var(--surface)]">
         <div className="max-w-[1100px] mx-auto">
           <h1 className="text-[2.5rem] font-extrabold mb-4">Privacy Policy</h1>
           <p className="text-[var(--text-muted)] text-lg max-w-[520px] mx-auto leading-relaxed">
@@ -25,7 +25,7 @@ export default function PrivacyPage() {
       </section>
 
       {/* Body */}
-      <section className="py-16 px-8">
+      <section className="py-16 px-4 md:px-8">
         <div className="max-w-[720px] mx-auto">
 
           <Section title="1. Who We Are">
@@ -211,7 +211,7 @@ export default function PrivacyPage() {
       </section>
 
       {/* Footer CTA */}
-      <section className="py-12 px-8 text-center border-t border-[var(--border)]">
+      <section className="py-12 px-4 md:px-8 text-center border-t border-[var(--border)]">
         <p className="text-[var(--text-muted)] text-sm">
           See also our{" "}
           <a href="/terms" className="text-brand no-underline hover:underline">

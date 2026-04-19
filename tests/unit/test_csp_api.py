@@ -182,10 +182,28 @@ class TestCspReport:
         mock_emit.assert_not_awaited()
 
     def test_rate_limit_per_ip(self, client):
-        """After 60 reports/min from the same IP, subsequent reports get 429."""
+        """After 60 reports/min from the same IP, subsequent reports get 429.
+
+        The rate-limit bucket keys on the current minute (``strftime("%Y-%m-%dT%H:%M")``),
+        so the 61st request can slip into a fresh bucket if the loop crosses a
+        minute boundary. Freeze ``datetime.now`` inside the rate-limit check so
+        every request lands in the same bucket.
+        """
+        from datetime import datetime, timezone
+
         tc, _ = client
         mock_emit = AsyncMock()
-        with patch("hive.api.csp.emit_metric", mock_emit):
+        frozen = datetime(2026, 4, 18, 12, 34, 0, tzinfo=timezone.utc)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        with (
+            patch("hive.api.csp.emit_metric", mock_emit),
+            patch("hive.api.csp.datetime", _FrozenDatetime),
+        ):
             headers = {"x-forwarded-for": "203.0.113.42"}
             for _ in range(60):
                 resp = tc.post("/api/csp-report", json=_LEGACY_REPORT, headers=headers)

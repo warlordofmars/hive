@@ -42,7 +42,7 @@ function Section({ title, children }) {
 export default function SubprocessorsPage() {
   return (
     <PageLayout>
-      <section className="py-20 px-8 text-center bg-[var(--surface)]">
+      <section className="py-20 px-4 md:px-8 text-center bg-[var(--surface)]">
         <div className="max-w-[1100px] mx-auto">
           <h1 className="text-[2.5rem] font-extrabold mb-4">Subprocessors</h1>
           <p className="text-[var(--text-muted)] text-lg max-w-[520px] mx-auto leading-relaxed">
@@ -52,7 +52,7 @@ export default function SubprocessorsPage() {
         </div>
       </section>
 
-      <section className="py-16 px-8">
+      <section className="py-16 px-4 md:px-8">
         <div className="max-w-[960px] mx-auto">
           <Section title="Current subprocessors">
             <p>

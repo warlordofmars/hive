@@ -15,6 +15,7 @@ Instead we rate-limit per source IP so an attacker can't amplify log volume.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Annotated, Any
 from urllib.parse import urlparse
 
@@ -58,8 +59,6 @@ def _client_ip(request: Request) -> str:
 
 def _check_ip_rate_limit(ip: str, storage: HiveStorage) -> None:
     """Per-IP per-minute rate limit for unauthenticated CSP reports."""
-    from datetime import datetime, timezone
-
     minute = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
     bucket = f"csp#{ip}#{minute}"
     # Share the rate-limit counter table with the authenticated path; we use

@@ -62,7 +62,7 @@ export default function StatusPage() {
   return (
     <PageLayout>
       {/* Header */}
-      <section className="py-20 px-8 text-center bg-[var(--surface)]">
+      <section className="py-20 px-4 md:px-8 text-center bg-[var(--surface)]">
         <div className="max-w-[1100px] mx-auto">
           <h1 className="text-[2.5rem] font-extrabold mb-4">Service status</h1>
           <p className="text-[var(--text-muted)] text-lg max-w-[480px] mx-auto leading-relaxed">
@@ -72,7 +72,7 @@ export default function StatusPage() {
       </section>
 
       {/* Status card */}
-      <section className="py-16 px-8">
+      <section className="py-16 px-4 md:px-8">
         <div className="max-w-[480px] mx-auto">
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-8">
             <div className="flex items-center gap-4 mb-6">
