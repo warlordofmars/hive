@@ -20,10 +20,17 @@ export function openMemory(memory) {
   const data = memory?.payload ?? memory;
   if (!data || typeof data.key !== "string" || data.key.length === 0) return;
   if (typeof globalThis.dispatchEvent !== "function") return;
-  globalThis.dispatchEvent(
-    new CustomEvent("hive:memory-browser", { detail: { search: data.key } }),
-  );
+  // Dispatch order matters: the tab-switch fires first so MemoryBrowser
+  // actually mounts (it's conditionally rendered in App.jsx) and its
+  // `hive:memory-browser` listener is attached before the deep-link
+  // event fires. Defer the listener-targeted event by one tick to let
+  // React commit the mount.
   globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" }));
+  globalThis.setTimeout(() => {
+    globalThis.dispatchEvent(
+      new CustomEvent("hive:memory-browser", { detail: { search: data.key } }),
+    );
+  }, 0);
 }
 
 export default function TopRecalled({ data }) {

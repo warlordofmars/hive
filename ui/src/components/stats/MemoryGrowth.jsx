@@ -13,8 +13,11 @@ import {
 } from "recharts";
 
 // #537 — cumulative memory count over the selected window, with a
-// dotted linear projection for the next ~30 days based on the trailing
-// growth rate. Projection only renders when there's enough history to
+// dotted linear projection for the next ~30 days. The projection uses
+// the window-average daily growth rate (delta between first and last
+// points divided by span), so 90/365-day windows produce a smoother
+// long-horizon trend rather than extrapolating from just the most
+// recent days. Projection only renders when there's enough history to
 // compute a meaningful rate (≥14 days of data spanning a non-zero
 // growth delta).
 

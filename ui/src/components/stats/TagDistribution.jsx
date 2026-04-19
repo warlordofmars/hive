@@ -35,10 +35,16 @@ export function buildSlices(data) {
 
 export function filterByTag(tag) {
   if (typeof globalThis.dispatchEvent !== "function") return;
-  globalThis.dispatchEvent(
-    new CustomEvent("hive:memory-browser", { detail: { tag } }),
-  );
+  // Tab-switch first so MemoryBrowser mounts and attaches its
+  // `hive:memory-browser` listener before we fire the deep-link event —
+  // otherwise the event is dispatched before the listener exists and is
+  // silently dropped. Same reasoning as TopRecalled.openMemory.
   globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" }));
+  globalThis.setTimeout(() => {
+    globalThis.dispatchEvent(
+      new CustomEvent("hive:memory-browser", { detail: { tag } }),
+    );
+  }, 0);
 }
 
 export function formatTagTooltip(value, name) {

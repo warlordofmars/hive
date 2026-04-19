@@ -89,13 +89,17 @@ describe("filterByTag", () => {
     globalThis.dispatchEvent = originalDispatch;
   });
 
-  it("dispatches memory-browser with tag + switch-tab", () => {
+  it("dispatches switch-tab first, then memory-browser on next tick", () => {
+    vi.useFakeTimers();
     filterByTag("work");
+    // Pre-flush: only the tab-switch has fired so MemoryBrowser can mount.
+    expect(calls.map((e) => e.type)).toEqual(["hive:switch-tab"]);
+    vi.runAllTimers();
     const types = calls.map((e) => e.type);
-    expect(types).toContain("hive:memory-browser");
-    expect(types).toContain("hive:switch-tab");
+    expect(types).toEqual(["hive:switch-tab", "hive:memory-browser"]);
     const browserEvent = calls.find((e) => e.type === "hive:memory-browser");
     expect(browserEvent.detail).toEqual({ tag: "work" });
+    vi.useRealTimers();
   });
 
   it("is a no-op without a dispatchEvent global", () => {
@@ -128,16 +132,22 @@ describe("handlePieSliceClick", () => {
   });
 
   it("dispatches for a real slice", () => {
+    vi.useFakeTimers();
     handlePieSliceClick({ tag: "work", count: 5 });
+    vi.runAllTimers();
     const types = calls.map((e) => e.type);
     expect(types).toContain("hive:memory-browser");
     expect(types).toContain("hive:switch-tab");
+    vi.useRealTimers();
   });
 
   it("unwraps a Recharts-style payload wrapper", () => {
+    vi.useFakeTimers();
     handlePieSliceClick({ payload: { tag: "home", count: 3 } });
+    vi.runAllTimers();
     const browserEvent = calls.find((e) => e.type === "hive:memory-browser");
     expect(browserEvent.detail).toEqual({ tag: "home" });
+    vi.useRealTimers();
   });
 
   it("ignores the Other bucket", () => {

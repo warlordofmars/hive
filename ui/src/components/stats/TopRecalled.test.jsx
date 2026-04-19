@@ -48,15 +48,20 @@ describe("TopRecalled", () => {
     expect(container.querySelector(".recharts-responsive-container")).toBeTruthy();
   });
 
-  it("openMemory dispatches memory-browser then switch-tab", () => {
+  it("openMemory dispatches switch-tab first, then memory-browser on next tick", () => {
+    vi.useFakeTimers();
     openMemory({ memory_id: "m1", key: "top-key", recall_count: 10 });
+    // Before the timer flushes, only the tab-switch has dispatched — so
+    // MemoryBrowser has a chance to mount + attach its listener.
+    expect(calls.map((e) => e.type)).toEqual(["hive:switch-tab"]);
+    vi.runAllTimers();
     const types = calls.map((e) => e.type);
-    expect(types).toContain("hive:memory-browser");
-    expect(types).toContain("hive:switch-tab");
+    expect(types).toEqual(["hive:switch-tab", "hive:memory-browser"]);
     const browserEvent = calls.find((e) => e.type === "hive:memory-browser");
     expect(browserEvent.detail).toEqual({ search: "top-key" });
     const switchEvent = calls.find((e) => e.type === "hive:switch-tab");
     expect(switchEvent.detail).toBe("memories");
+    vi.useRealTimers();
   });
 
   it("openMemory is a no-op without a dispatchEvent global", () => {
@@ -81,8 +86,11 @@ describe("TopRecalled", () => {
   });
 
   it("openMemory unwraps a Recharts-style payload wrapper", () => {
+    vi.useFakeTimers();
     openMemory({ payload: { memory_id: "m2", key: "wrapped-key", recall_count: 3 } });
+    vi.runAllTimers();
     const browserEvent = calls.find((e) => e.type === "hive:memory-browser");
     expect(browserEvent.detail).toEqual({ search: "wrapped-key" });
+    vi.useRealTimers();
   });
 });
