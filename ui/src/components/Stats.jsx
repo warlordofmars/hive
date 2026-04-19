@@ -4,15 +4,19 @@ import PropTypes from "prop-types";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
 import ActivityHeatmap from "./stats/ActivityHeatmap.jsx";
+import MemoryGrowth from "./stats/MemoryGrowth.jsx";
+import QuotaGauge from "./stats/QuotaGauge.jsx";
+import TagDistribution from "./stats/TagDistribution.jsx";
+import TopRecalled from "./stats/TopRecalled.jsx";
 import { Card } from "./ui/card.jsx";
 
 // #535 — Stats tab scaffolding.
 //
-// This component renders eight placeholder graph cards backed by the
-// /api/account/stats response. The placeholder bodies deliberately dump
-// a small JSON preview so it's obvious each signal is reaching the UI —
-// follow-up sub-issues replace each `<GraphCard>` body with a proper
-// chart implementation (heatmap, bar, stacked area, force graph, …).
+// Renders a grid of GraphCards backed by /api/account/stats. Five cards
+// are fully implemented (ActivityHeatmap, TopRecalled, TagDistribution,
+// MemoryGrowth, QuotaGauge); the remaining three (Freshness,
+// ClientContribution, TagCooccurrence) still show a JSON preview via
+// RawPreview until their dedicated sub-issues (#538 / #539 / #540) land.
 
 const WINDOWS = [
   { value: "30", label: "Last 30 days" },
@@ -161,20 +165,20 @@ export default function Stats() {
 
         <GraphCard
           title="Top recalled"
-          description="Your most-hit memories."
+          description="Your most-hit memories — click to open."
           data={data.top_recalled}
           empty="No memory has been recalled yet."
         >
-          <RawPreview value={data.top_recalled} />
+          <TopRecalled data={data.top_recalled} />
         </GraphCard>
 
         <GraphCard
           title="Tag distribution"
-          description="Memories per tag."
+          description="Memories per tag — click a slice to filter."
           data={data.tag_distribution}
           empty="No tags assigned yet."
         >
-          <RawPreview value={data.tag_distribution} />
+          <TagDistribution data={data.tag_distribution} />
         </GraphCard>
 
         <GraphCard
@@ -182,23 +186,19 @@ export default function Stats() {
           description="Cumulative memory count over the window."
           data={data.memory_growth}
         >
-          <RawPreview value={data.memory_growth} />
+          <MemoryGrowth data={data.memory_growth} />
         </GraphCard>
 
         <GraphCard
           title="Quota"
           description="Current memory count against your plan limit."
-          data={data.quota}
+          // Treat a malformed `quota` (memory_count not numeric) as no
+          // data so GraphCard renders its empty copy instead of a silent
+          // blank card — QuotaGauge itself returns null on that input.
+          data={typeof data.quota?.memory_count === "number" ? data.quota : null}
+          empty="Quota data unavailable."
         >
-          <div className="text-sm">
-            <span className="font-semibold">{data.quota.memory_count}</span>
-            {data.quota.memory_limit !== null && (
-              <>
-                {" / "}
-                <span className="text-[var(--text-muted)]">{data.quota.memory_limit}</span>
-              </>
-            )}
-          </div>
+          <QuotaGauge quota={data.quota} />
         </GraphCard>
 
         <GraphCard
