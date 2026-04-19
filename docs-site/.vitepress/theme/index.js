@@ -30,7 +30,10 @@ export default {
           ),
           h("a", { href: "/app", class: "docs-signin-btn docs-signin-btn--always" }, "Sign in"),
         ]),
-      // Mobile expanded menu — nav links only (Sign in is always in navbar)
+      // Mobile expanded menu — nav links only (Sign in is always in navbar).
+      // The Docs link carries --active on this site so it gets an orange
+      // left-border indicator matching the marketing site's current-page
+      // affordance (instead of VitePress's default gray background fill).
       "nav-screen-content-after": () =>
         h("div", { class: "docs-screen-group" }, [
           h("a", { href: "/use-cases", class: "docs-screen-nav-link" }, "Use cases"),
@@ -39,7 +42,10 @@ export default {
           h("a", { href: "/faq", class: "docs-screen-nav-link" }, "FAQ"),
           h(
             "a",
-            { href: "/docs/getting-started/what-is-hive", class: "docs-screen-nav-link" },
+            {
+              href: "/docs/getting-started/what-is-hive",
+              class: "docs-screen-nav-link docs-screen-nav-link--active",
+            },
             "Docs",
           ),
         ]),
