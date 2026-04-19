@@ -493,6 +493,13 @@ export default function Dashboard() {
           name: "CSP Violations",
           value: (metrics.metrics?.csp_violations?.values ?? []).reduce((s, v) => s + v, 0),
         },
+        {
+          name: "Rate Limited Requests",
+          value: (metrics.metrics?.rate_limited_requests?.values ?? []).reduce(
+            (s, v) => s + v,
+            0,
+          ),
+        },
       ]
     : [];
 
