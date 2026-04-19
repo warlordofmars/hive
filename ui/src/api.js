@@ -71,6 +71,8 @@ export const api = {
   getStats: () => request("GET", "/api/stats"),
   getActivity: (days = 7, { limit = 100 } = {}) =>
     request("GET", `/api/activity?days=${days}&limit=${limit}`),
+  getAccountStats: (windowDays = 90) =>
+    request("GET", `/api/account/stats?window=${windowDays}`),
 
   // Admin
   getMetrics: (period = "24h") => request("GET", `/api/admin/metrics?period=${period}`),
