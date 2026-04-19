@@ -1,9 +1,10 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Menu, X } from "lucide-react";
+import { Menu, Moon, Sun, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import ConsentBanner from "@/components/ConsentBanner";
+import { useTheme } from "@/hooks/useTheme";
 import { CONSENT_RESET_EVENT, clearConsent } from "@/lib/consent";
 
 const NAV_LINK_BASE = "text-sm no-underline hover:text-white transition-colors";
@@ -25,6 +26,7 @@ function handleReopenConsent(e) {
 export default function PageLayout({ children }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const { theme, toggle } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Close the mobile menu whenever the route changes so a link click doesn't
@@ -43,9 +45,11 @@ export default function PageLayout({ children }) {
 
   return (
     <div className="font-[system-ui,sans-serif] text-[var(--text)] flex flex-col min-h-screen">
-      {/* Nav */}
+      {/* Nav — mirrors the management app's navbar (#543 follow-up):
+          logo · spacer · Sign in · theme toggle · hamburger (mobile only).
+          Desktop adds the inline nav links before Sign in. */}
       <header className="bg-navy text-white">
-        <div className="max-w-[1100px] mx-auto px-4 md:px-8 h-14 flex items-center justify-between">
+        <div className="max-w-[1100px] mx-auto px-4 md:px-8 h-14 flex items-center gap-3">
           <button
             className="flex items-center gap-2 cursor-pointer bg-transparent border-none p-0 text-inherit"
             onClick={() => navigate("/")}
@@ -54,36 +58,62 @@ export default function PageLayout({ children }) {
             <span className="font-bold text-xl tracking-[1px]">Hive</span>
           </button>
 
-          {/* Desktop nav (>=768px) */}
-          <div className="hidden md:flex items-center gap-6">
+          {/* Desktop inline nav links — hidden below md */}
+          <nav className="hidden md:flex items-center gap-6 flex-1 ml-4">
             {NAV_LINKS.map(({ href, label }) => (
               <a
                 key={href}
                 href={href}
                 className={`text-white/75 ${NAV_LINK_BASE}`}
-                style={label === "Docs" ? { borderBottom: "2px solid transparent", paddingBottom: 2 } : navLinkStyle(href)}
+                style={
+                  label === "Docs"
+                    ? { borderBottom: "2px solid transparent", paddingBottom: 2 }
+                    : navLinkStyle(href)
+                }
               >
                 {label}
               </a>
             ))}
-            <Button variant="nav" size="sm" className="marketing-signin-btn" onClick={() => navigate("/app")}>
-              Sign in
-            </Button>
-          </div>
+          </nav>
 
-          {/* Mobile hamburger (<768px) */}
-          <button
-            type="button"
-            className="md:hidden inline-flex items-center justify-center w-11 h-11 text-white/85 bg-transparent cursor-pointer"
+          {/* Spacer keeps right-side controls right-aligned on mobile */}
+          <div className="flex-1 md:hidden" />
+
+          {/* Always-visible right-side controls: Sign in + theme toggle */}
+          <Button
+            variant="nav"
+            size="sm"
+            className="marketing-signin-btn"
+            onClick={() => navigate("/app")}
+          >
+            Sign in
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggle}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+          </Button>
+
+          {/* Hamburger — mobile only; drawer holds nav links only */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="md:hidden text-white hover:bg-white/10"
+            onClick={() => setMenuOpen((v) => !v)}
             aria-label={menuOpen ? "Close menu" : "Open menu"}
             aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((v) => !v)}
           >
-            {menuOpen ? <X size={24} /> : <Menu size={24} />}
-          </button>
+            {menuOpen ? <X size={20} /> : <Menu size={20} />}
+          </Button>
         </div>
 
-        {/* Mobile drawer (<768px) */}
+        {/* Mobile drawer (<768px): nav links only. Sign in and theme toggle
+            live in the navbar on every breakpoint for visual parity with the
+            management app. */}
         {menuOpen && (
           <div className="md:hidden bg-navy border-t border-white/10">
             <nav className="px-4 py-4 flex flex-col gap-1">
@@ -100,14 +130,6 @@ export default function PageLayout({ children }) {
                   </a>
                 );
               })}
-              <Button
-                variant="nav"
-                size="sm"
-                className="marketing-signin-btn mt-2 min-h-11"
-                onClick={() => navigate("/app")}
-              >
-                Sign in
-              </Button>
             </nav>
           </div>
         )}

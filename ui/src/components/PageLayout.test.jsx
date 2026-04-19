@@ -1,6 +1,6 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import PageLayout from "./PageLayout.jsx";
 
@@ -8,6 +8,20 @@ const mockNavigate = vi.fn();
 vi.mock("react-router-dom", async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, useNavigate: () => mockNavigate };
+});
+
+beforeEach(() => {
+  // useTheme reads prefers-color-scheme on first render; jsdom doesn't
+  // implement matchMedia so we stub a minimal response.
+  vi.stubGlobal("matchMedia", (q) => ({
+    matches: false,
+    media: q,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }));
 });
 
 function renderInRouter(ui, path = "/") {
@@ -145,42 +159,48 @@ describe("PageLayout", () => {
     await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
     const btn = screen.getByLabelText("Open menu");
     await act(async () => fireEvent.click(btn));
-    // After opening, the button's aria-label flips to "Close menu".
     const closeBtn = screen.getByLabelText("Close menu");
     expect(closeBtn.getAttribute("aria-expanded")).toBe("true");
-    // The drawer itself renders a <nav>; assert it's in the DOM now.
-    const nav = closeBtn.closest("header").querySelector("nav");
-    expect(nav).toBeTruthy();
-    // Toggle closed again.
+    // Drawer renders its own <nav> inside a div with md:hidden wrapper.
+    const drawer = closeBtn.closest("header").querySelector(".md\\:hidden nav");
+    expect(drawer).toBeTruthy();
     await act(async () => fireEvent.click(closeBtn));
     expect(screen.getByLabelText("Open menu").getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("mobile drawer lists every nav link + a Sign in button", async () => {
+  it("mobile drawer lists every nav link; Sign in + theme toggle live in the navbar", async () => {
     await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
     await act(async () => fireEvent.click(screen.getByLabelText("Open menu")));
-    const { container } = { container: document };
-    const drawer = container.querySelector("header nav");
+    const drawer = document.querySelector("header .md\\:hidden nav");
     expect(drawer).toBeTruthy();
     for (const label of ["Use cases", "Clients", "Pricing", "FAQ", "Docs"]) {
       expect(within(drawer).getByText(label)).toBeTruthy();
     }
-    expect(within(drawer).getByRole("button", { name: "Sign in" })).toBeTruthy();
+    // Sign in lives in the navbar (visible at every breakpoint), not in the drawer.
+    expect(within(drawer).queryByRole("button", { name: "Sign in" })).toBeNull();
   });
 
-  it("mobile drawer Sign in navigates to /app", async () => {
+  it("navbar Sign in navigates to /app at every breakpoint", async () => {
     await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
-    await act(async () => fireEvent.click(screen.getByLabelText("Open menu")));
-    const drawer = document.querySelector("header nav");
-    const signIn = within(drawer).getByRole("button", { name: "Sign in" });
-    await act(async () => fireEvent.click(signIn));
+    // Sign in is rendered in the navbar row itself (not the drawer).
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Sign in" })));
     expect(mockNavigate).toHaveBeenCalledWith("/app");
+  });
+
+  it("navbar theme toggle flips the theme and updates its aria-label", async () => {
+    localStorage.removeItem("hive_theme");
+    await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
+    const btn = screen.getByLabelText(/Switch to (dark|light) mode/);
+    const before = btn.getAttribute("aria-label");
+    await act(async () => fireEvent.click(btn));
+    const after = screen.getByLabelText(/Switch to (dark|light) mode/).getAttribute("aria-label");
+    expect(after).not.toBe(before);
   });
 
   it("mobile drawer marks the current page with an orange left border", async () => {
     await act(async () => renderInRouter(<PageLayout><span /></PageLayout>, "/faq"));
     await act(async () => fireEvent.click(screen.getByLabelText("Open menu")));
-    const drawer = document.querySelector("header nav");
+    const drawer = document.querySelector("header .md\\:hidden nav");
     const faqLink = within(drawer).getByText("FAQ");
     expect(faqLink.style.borderLeftColor).toBe("rgb(232, 160, 32)");
     const pricingLink = within(drawer).getByText("Pricing");
