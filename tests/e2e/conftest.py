@@ -18,6 +18,13 @@ import pytest
 API_URL = os.environ.get("HIVE_API_URL", "")
 ADMIN_EMAIL = os.environ.get("HIVE_ADMIN_EMAIL", "")
 
+# The deployed API runs on AWS Lambda, and the first request after a quiet
+# period pays a cold-start cost that can run 5–10s on a fresh container. The
+# httpx default 5s read timeout occasionally flakes the very first DCR call
+# in a test run; bumping to 30s comfortably absorbs that without masking real
+# backend slowness.
+_E2E_TIMEOUT = 30.0
+
 
 def _pkce_pair() -> tuple[str, str]:
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
@@ -38,7 +45,7 @@ async def _issue_token(client_name: str) -> str:
 
     verifier, challenge = _pkce_pair()
 
-    async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False) as http:
+    async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False, timeout=_E2E_TIMEOUT) as http:
         reg = await http.post(
             "/oauth/register",
             json={"client_name": client_name, "redirect_uris": ["http://localhost/cb"]},
@@ -101,7 +108,7 @@ def issue_token_sync() -> str:
 
     verifier, challenge = _pkce_pair()
 
-    with httpx.Client(base_url=API_URL, follow_redirects=False) as http:
+    with httpx.Client(base_url=API_URL, follow_redirects=False, timeout=_E2E_TIMEOUT) as http:
         reg = http.post(
             "/oauth/register",
             json={"client_name": "E2E UI Client", "redirect_uris": ["http://localhost/cb"]},
@@ -151,7 +158,7 @@ async def live_admin_token() -> str:
     if not ADMIN_EMAIL:
         pytest.skip("HIVE_ADMIN_EMAIL not set")
 
-    async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False) as http:
+    async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False, timeout=_E2E_TIMEOUT) as http:
         resp = await http.get("/auth/login", params={"test_email": ADMIN_EMAIL})
         if resp.status_code in (301, 302, 307, 308):
             pytest.skip("Google OAuth redirect — HIVE_BYPASS_GOOGLE_AUTH not enabled")
