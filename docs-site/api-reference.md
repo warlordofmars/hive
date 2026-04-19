@@ -1,6 +1,7 @@
 ---
 title: API reference
-outline: deep
+layout: page
+pageClass: api-reference-page
 ---
 
 <script setup>
@@ -23,8 +24,14 @@ const LIGHT_THEME = {
 const DARK_THEME = {
   colors: {
     primary: { main: "#f5a623" },
-    text: { primary: "#e0e0e0", secondary: "#a8a8b3" },
-    border: { dark: "#2f2f36", light: "#2f2f36" },
+    text: {
+      primary: "rgba(255, 255, 255, 0.92)",
+      secondary: "rgba(255, 255, 255, 0.62)",
+    },
+    border: {
+      dark: "rgba(255, 255, 255, 0.14)",
+      light: "rgba(255, 255, 255, 0.08)",
+    },
     http: {
       get: "#60a5fa",
       post: "#4ade80",
@@ -32,18 +39,18 @@ const DARK_THEME = {
       delete: "#f87171",
       options: "#c084fc",
       patch: "#fb923c",
-      basic: "#a8a8b3",
+      basic: "rgba(255, 255, 255, 0.62)",
       link: "#60a5fa",
-      head: "#a8a8b3",
+      head: "rgba(255, 255, 255, 0.62)",
     },
   },
   sidebar: {
-    backgroundColor: "#202127",
-    textColor: "#e0e0e0",
+    backgroundColor: "#1a1a23",
+    textColor: "rgba(255, 255, 255, 0.92)",
   },
   rightPanel: {
-    backgroundColor: "#0f0f17",
-    textColor: "#e0e0e0",
+    backgroundColor: "#2a2a33",
+    textColor: "rgba(255, 255, 255, 0.92)",
   },
   typography: {
     fontFamily: "system-ui, -apple-system, sans-serif",
