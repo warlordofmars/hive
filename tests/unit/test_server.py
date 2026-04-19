@@ -190,6 +190,35 @@ class TestPing:
         names_emitted = [call.args[0] for call in mock_emit.call_args_list]
         assert "TokenValidationFailures" in names_emitted
 
+    async def test_rate_limit_emits_rate_limited_requests_metric(self, server_env):
+        """#367 — the admin Dashboard reads the RateLimitedRequests metric to
+        surface 429 pressure; the MCP auth path must actually emit it on
+        RateLimitExceeded."""
+        from unittest.mock import AsyncMock, patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.rate_limiter import RateLimitExceeded
+        from hive.server import ping
+
+        _, _, jwt = server_env
+        ctx = MagicMock()
+        ctx.request_context.meta = {"Authorization": f"Bearer {jwt}"}
+        mock_emit = AsyncMock()
+        with (
+            patch("hive.server.emit_metric", mock_emit),
+            patch("hive.server.check_rate_limit", side_effect=RateLimitExceeded(retry_after=42)),
+            pytest.raises(ToolError, match="Rate limit exceeded"),
+        ):
+            await ping(ctx=ctx)
+        calls = [(c.args, c.kwargs) for c in mock_emit.call_args_list]
+        # Aggregate emit + drill-down with endpoint/reason dimensions.
+        assert (("RateLimitedRequests",), {}) in calls
+        assert (
+            ("RateLimitedRequests",),
+            {"endpoint": "mcp", "reason": "rate_limit"},
+        ) in calls
+
 
 # ---------------------------------------------------------------------------
 # remember

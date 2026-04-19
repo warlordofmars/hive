@@ -205,16 +205,18 @@ class TestApiRateLimitIntegration:
 
     def test_require_token_returns_429_on_rate_limit(self):
         import asyncio
+        from unittest.mock import AsyncMock
 
         from fastapi import HTTPException
         from fastapi.security import HTTPAuthorizationCredentials
 
         from hive.rate_limiter import RateLimitExceeded
 
+        mock_emit = AsyncMock()
         with (
             patch("hive.api._auth.validate_bearer_token") as mock_validate,
             patch("hive.api._auth.check_rate_limit") as mock_rl,
-            patch("hive.api._auth.emit_metric") as _,
+            patch("hive.api._auth.emit_metric", mock_emit),
         ):
             mock_token = MagicMock()
             mock_token.client_id = "test-client"
@@ -231,3 +233,10 @@ class TestApiRateLimitIntegration:
                 asyncio.get_event_loop().run_until_complete(require_token(creds, storage))
             assert exc_info.value.status_code == 429
             assert exc_info.value.headers["Retry-After"] == "30"
+            # #367 — RateLimitedRequests emitted twice: aggregate + drill-down.
+            calls = [(c.args, c.kwargs) for c in mock_emit.call_args_list]
+            assert (("RateLimitedRequests",), {}) in calls
+            assert (
+                ("RateLimitedRequests",),
+                {"endpoint": "/api", "reason": "rate_limit"},
+            ) in calls

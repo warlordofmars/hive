@@ -178,6 +178,8 @@ class TestAdminMetrics:
             "p99_summarizecontext",
             "tokens_issued",
             "token_failures",
+            "csp_violations",
+            "rate_limited_requests",
         ]
         cw_resp = _make_cw_response(metric_ids)
         with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
@@ -193,6 +195,9 @@ class TestAdminMetrics:
         assert "metrics" in body
         assert "inv_remember" in body["metrics"]
         assert body["metrics"]["inv_remember"]["values"] == [1.0]
+        # #367 — Rate-limited requests surface as a Dashboard stat card, so
+        # the admin metrics endpoint must include the aggregate query.
+        assert "rate_limited_requests" in body["metrics"]
 
     def test_returns_metrics_for_1h(self, admin_tc):
         with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:

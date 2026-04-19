@@ -55,6 +55,7 @@ const METRICS = {
     tokens_issued: { timestamps: ["2026-04-01T12:00:00Z"], values: [7] },
     token_failures: { timestamps: ["2026-04-01T12:00:00Z"], values: [2] },
     csp_violations: { timestamps: ["2026-04-01T12:00:00Z"], values: [17] },
+    rate_limited_requests: { timestamps: ["2026-04-01T12:00:00Z"], values: [23] },
   },
 };
 
@@ -300,6 +301,28 @@ describe("Dashboard", () => {
   it("renders CSP violations stat card from metric data", async () => {
     await act(async () => render(<Dashboard />));
     await waitFor(() => expect(screen.getByText("CSP Violations")).toBeTruthy());
+  });
+
+  it("renders Rate Limited Requests stat card (#367)", async () => {
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Rate Limited Requests")).toBeTruthy());
+    // Aggregate value = sum of metric series; mock returns a single [23].
+    expect(screen.getByText("23")).toBeTruthy();
+  });
+
+  it("Rate Limited Requests defaults to 0 when metric series missing", async () => {
+    api.getMetrics.mockResolvedValueOnce({
+      period: "24h",
+      environment: "test",
+      metrics: {}, // no rate_limited_requests key at all
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Rate Limited Requests")).toBeTruthy());
+    // Fallback (… .values ?? []).reduce(sum, 0) → 0 when the series is absent.
+    // The StatCard renders two divs; label's parent is the card, whose
+    // textContent concatenates value + label.
+    const cardLabel = screen.getByText("Rate Limited Requests");
+    expect(cardLabel.parentElement.textContent).toBe("0Rate Limited Requests");
   });
 
   it("renders cost note", async () => {

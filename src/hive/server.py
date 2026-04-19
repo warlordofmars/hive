@@ -192,6 +192,11 @@ async def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple
     try:
         check_rate_limit(token.client_id, storage)
     except RateLimitExceeded as exc:
+        # #367 — track 429-equivalent events so admins can see pressure in the
+        # dashboard. Emit twice: aggregate (Environment only) + drill-down
+        # dimensions (endpoint + reason).
+        await emit_metric("RateLimitedRequests")
+        await emit_metric("RateLimitedRequests", endpoint="mcp", reason="rate_limit")
         raise ToolError(f"Rate limit exceeded. Retry after {exc.retry_after}s.") from exc
 
     set_request_context(request_id, token.client_id)
