@@ -110,6 +110,40 @@ onBeforeUnmount(() => {
 });
 </script>
 
+<style>
+/*
+  Dark-mode overrides for Redoc controls that the public theme API doesn't
+  expose — response-code tabs (200 / 400 / 401 …), request-sample language
+  tabs, and the content-type dropdown. Redoc's built-in styles render these
+  with a near-white background that punches through the dark chrome; these
+  rules scope the fix to our container + .dark class so light mode is
+  untouched.
+*/
+.dark #redoc-container [role="tab"],
+.dark #redoc-container [role="tablist"] button,
+.dark #redoc-container select,
+.dark #redoc-container label[role="button"] {
+  background-color: #2a2a33 !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.dark #redoc-container [role="tab"][aria-selected="true"],
+.dark #redoc-container [role="tablist"] button.tab-success,
+.dark #redoc-container [role="tablist"] button.tab-error,
+.dark #redoc-container [role="tablist"] button.tab-redirect {
+  background-color: #3a3a44 !important;
+  border-color: #f5a623 !important;
+}
+
+/* Redoc's status-code pills (Responses list) use hard-coded pastel fills
+   that wash out on dark. Tint the backgrounds down to match the page. */
+.dark #redoc-container [data-section-id^="operation"] h3 ~ div [class*="ResponseTitle"],
+.dark #redoc-container [class*="ResponseTitleWrap"] {
+  background-color: transparent !important;
+}
+</style>
+
 # API reference
 
 Every endpoint the Hive management API exposes, auto-generated from the deployed FastAPI app. Use it alongside the [MCP tools reference](/tools/overview) if you're building SDKs or bots against the REST surface.
