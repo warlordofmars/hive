@@ -1,6 +1,7 @@
 ---
 title: API reference
 outline: deep
+pageClass: api-reference-page
 ---
 
 <script setup>
@@ -23,8 +24,14 @@ const LIGHT_THEME = {
 const DARK_THEME = {
   colors: {
     primary: { main: "#f5a623" },
-    text: { primary: "#e0e0e0", secondary: "#a8a8b3" },
-    border: { dark: "#2f2f36", light: "#2f2f36" },
+    text: {
+      primary: "rgba(255, 255, 255, 0.92)",
+      secondary: "rgba(255, 255, 255, 0.62)",
+    },
+    border: {
+      dark: "rgba(255, 255, 255, 0.14)",
+      light: "rgba(255, 255, 255, 0.08)",
+    },
     http: {
       get: "#60a5fa",
       post: "#4ade80",
@@ -32,18 +39,44 @@ const DARK_THEME = {
       delete: "#f87171",
       options: "#c084fc",
       patch: "#fb923c",
-      basic: "#a8a8b3",
+      basic: "rgba(255, 255, 255, 0.62)",
       link: "#60a5fa",
-      head: "#a8a8b3",
+      head: "rgba(255, 255, 255, 0.62)",
+    },
+    // Status-code blocks on each endpoint. Redoc's defaults are dark saturated
+    // colours on 6–10% tints — readable on white, nearly invisible on dark.
+    // Use brighter Tailwind-300-tier colours so the text pops off the low-alpha
+    // fill in dark mode.
+    responses: {
+      success: {
+        color: "#4ade80",
+        backgroundColor: "rgba(74, 222, 128, 0.12)",
+        tabTextColor: "#4ade80",
+      },
+      error: {
+        color: "#f87171",
+        backgroundColor: "rgba(248, 113, 113, 0.12)",
+        tabTextColor: "#f87171",
+      },
+      redirect: {
+        color: "#fbbf24",
+        backgroundColor: "rgba(251, 191, 36, 0.12)",
+        tabTextColor: "#fbbf24",
+      },
+      info: {
+        color: "#60a5fa",
+        backgroundColor: "rgba(96, 165, 250, 0.12)",
+        tabTextColor: "#60a5fa",
+      },
     },
   },
   sidebar: {
-    backgroundColor: "#202127",
-    textColor: "#e0e0e0",
+    backgroundColor: "#1a1a23",
+    textColor: "rgba(255, 255, 255, 0.92)",
   },
   rightPanel: {
-    backgroundColor: "#0f0f17",
-    textColor: "#e0e0e0",
+    backgroundColor: "#2a2a33",
+    textColor: "rgba(255, 255, 255, 0.92)",
   },
   typography: {
     fontFamily: "system-ui, -apple-system, sans-serif",
@@ -136,11 +169,52 @@ onBeforeUnmount(() => {
   border-color: #f5a623 !important;
 }
 
-/* Redoc's status-code pills (Responses list) use hard-coded pastel fills
-   that wash out on dark. Tint the backgrounds down to match the page. */
-.dark #redoc-container [data-section-id^="operation"] h3 ~ div [class*="ResponseTitle"],
-.dark #redoc-container [class*="ResponseTitleWrap"] {
-  background-color: transparent !important;
+/*
+  Layout: VitePress's default doc layout caps .VPDoc .container at 1152px
+  and reserves part of that for an outline aside. Redoc's three-pane layout
+  needs the full remaining width (after the left sidebar) — otherwise
+  "Content application/json" wraps mid-phrase and the right-panel code
+  samples become an unreadable sliver. Scope the overrides to the
+  api-reference page only so every other doc keeps its standard width.
+*/
+.api-reference-page .VPDoc {
+  padding: 0 !important;
+}
+
+.api-reference-page .VPDoc .container,
+.api-reference-page .VPDoc .content,
+.api-reference-page .VPDoc .content-container {
+  max-width: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* Hide the right-side table-of-contents aside — Redoc has its own sidebar
+   navigation, so the VP outline is both redundant and steals width. */
+.api-reference-page .VPDocAside,
+.api-reference-page .VPDoc.has-aside .content-container {
+  display: block !important;
+}
+
+.api-reference-page .VPDocAsideOutline,
+.api-reference-page .aside {
+  display: none !important;
+}
+
+/* Give the intro H1 + paragraph some breathing room, then let Redoc span
+   the full width beneath. */
+.api-reference-page main > h1,
+.api-reference-page main > p {
+  padding: 24px 24px 0;
+  margin: 0;
+}
+
+.api-reference-page main > p {
+  padding-bottom: 16px;
+}
+
+.api-reference-page #redoc-container {
+  width: 100%;
 }
 </style>
 
