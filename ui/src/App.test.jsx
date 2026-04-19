@@ -424,4 +424,19 @@ describe("AppShell", () => {
     expect(screen.queryByTestId("mobile-nav")).toBeNull();
     expect(screen.getByTestId("client-manager")).toBeTruthy();
   });
+
+  it("mobile nav active tab has an orange left-border indicator (not a gray fill)", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /toggle navigation/i }));
+    const mobileNav = screen.getByTestId("mobile-nav");
+    const buttons = mobileNav.querySelectorAll("button[type='button']");
+    // Memories is the default active tab; OAuth Clients is inactive.
+    expect(buttons[0].className).toContain("border-l-brand");
+    // `hover:bg-white/5` stays on all rows; the active state no longer
+    // has a bare `bg-white/5` fill — so the class list splits by space
+    // must not contain that utility as its own token.
+    expect(buttons[0].className.split(/\s+/)).not.toContain("bg-white/5");
+    expect(buttons[1].className).toContain("border-l-transparent");
+  });
 });

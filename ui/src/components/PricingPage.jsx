@@ -22,7 +22,7 @@ export default function PricingPage() {
   return (
     <PageLayout>
       {/* Header */}
-      <section className="py-20 px-8 text-center bg-[var(--surface)]">
+      <section className="py-20 px-4 md:px-8 text-center bg-[var(--surface)]">
         <div className="max-w-[1100px] mx-auto">
           <h1 className="text-[2.5rem] font-extrabold mb-4">Simple, honest pricing</h1>
           <p className="text-[var(--text-muted)] text-lg max-w-[480px] mx-auto leading-relaxed">
@@ -32,7 +32,7 @@ export default function PricingPage() {
       </section>
 
       {/* Pricing card */}
-      <section className="py-20 px-8">
+      <section className="py-20 px-4 md:px-8">
         <div className="max-w-[420px] mx-auto">
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 shadow-sm">
             <div className="mb-6">
@@ -65,7 +65,7 @@ export default function PricingPage() {
       </section>
 
       {/* FAQ nudge */}
-      <section className="py-12 px-8 text-center border-t border-[var(--border)]">
+      <section className="py-12 px-4 md:px-8 text-center border-t border-[var(--border)]">
         <p className="text-[var(--text-muted)] text-sm">
           Questions about limits or data?{" "}
           <a href="/faq" className="text-brand no-underline hover:underline">

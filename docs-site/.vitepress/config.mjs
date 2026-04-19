@@ -105,10 +105,17 @@ export default defineConfig({
         text: "FAQ",
         link: "/faq",
       },
+      {
+        text: "API reference",
+        link: "/api-reference",
+      },
     ],
 
     socialLinks: [],
-    appearance: false,
+    // Enable dark-mode toggle so the docs site matches the dark management
+    // app + marketing surfaces — and so the Redoc API reference can flip
+    // into its dark palette. Default to user's OS preference.
+    appearance: true,
 
     footer: {
       message: "Hive — shared persistent memory for AI agents",

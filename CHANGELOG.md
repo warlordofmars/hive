@@ -6,7 +6,36 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.22.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.23.0. Will be rolled into the next release._
+
+## v0.23.0 — 2026-04-19
+
+### Added
+
+#### Documentation
+
+- Auto-generated REST API reference at `/docs/api-reference`, rendered from the deployed FastAPI app's OpenAPI spec. Starts in light mode, follows the docs-site appearance toggle into dark mode, and is kept in sync with a CI drift check against a committed `openapi.json` snapshot. After landing on Scalar and then Redoc (neither of which survived light-mode scrutiny on our navy chrome), settled on Swagger UI with a community dark stylesheet overlay. (#421, #551, #552, #554, #558)
+
+#### Admin dashboard
+
+- Alarm row now scales with signal instead of drowning the view in green pills. During normal operation a single `✓ N alarms OK` summary badge replaces the per-alarm row; as soon as anything is firing, the `ALARM` / `INSUFFICIENT_DATA` badges appear individually with a muted `+N OK` pill trailing them. (#369, #553)
+
+### Changed
+
+#### Cross-surface mobile UX
+
+- Swept the marketing site, docs site, and management app for mobile parity. Unified navbar across all three: always-visible Sign in/out, always-visible theme toggle, hamburger drawer identical in layout. Drawer items left-aligned with an orange left-border active indicator (replacing the gray-fill highlight). Dashboard, Activity Log, and Logs viewer no longer overflow horizontally on narrow viewports — header / stat-card / filter rows now wrap, and individual log rows restack into three lines on mobile (header / log-group / 2-line-clamped summary with tap-to-expand). (#533, #541, #543, #544, #545, #547, #549, #550, #562, #563, #564, #566)
+
+### Fixed
+
+#### CI reliability
+
+- Raised the httpx timeout on all e2e HTTP clients from the default 5s to 30s, absorbing Lambda cold-start on the first DCR call in a test run. (#565)
+- Doubled the tag-filter GSI-propagation retry window in `test_create_and_see_memory` from 60s to 120s while #568 investigates the underlying propagation lag. The raised budget keeps the dev pipeline green; the lag itself is treated as a product bug, not a test flake. (#546)
+
+### Meta
+
+- Removed the `release-milestone-watcher` workflow — the CLAUDE.md autonomous loop already detects milestone drain in-session, making the separate workflow redundant. (#531, #532)
 
 ## v0.22.0 — 2026-04-18
 

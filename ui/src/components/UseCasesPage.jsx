@@ -50,7 +50,7 @@ export default function UseCasesPage() {
   return (
     <PageLayout>
       {/* Header */}
-      <section className="py-20 px-8 text-center bg-[var(--surface)]">
+      <section className="py-20 px-4 md:px-8 text-center bg-[var(--surface)]">
         <div className="max-w-[1100px] mx-auto">
           <h1 className="text-[2.5rem] font-extrabold mb-4">What can you do with Hive?</h1>
           <p className="text-[var(--text-muted)] text-lg max-w-[560px] mx-auto leading-relaxed">
@@ -60,7 +60,7 @@ export default function UseCasesPage() {
       </section>
 
       {/* Use cases */}
-      <section className="py-20 px-8">
+      <section className="py-20 px-4 md:px-8">
         <div className="max-w-[1100px] mx-auto flex flex-col gap-16">
           {USE_CASES.map((uc) => (
             <div key={uc.title} className="grid grid-cols-1 gap-8 md:grid-cols-2 md:gap-16 items-start">
@@ -78,7 +78,7 @@ export default function UseCasesPage() {
       </section>
 
       {/* CTA */}
-      <section className="py-16 px-8 text-center border-t border-[var(--border)]">
+      <section className="py-16 px-4 md:px-8 text-center border-t border-[var(--border)]">
         <div className="max-w-[480px] mx-auto">
           <h2 className="text-2xl font-bold mb-4">Ready to give your agents a memory?</h2>
           <p className="text-[var(--text-muted)] text-sm mb-8 leading-relaxed">

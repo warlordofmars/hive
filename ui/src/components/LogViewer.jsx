@@ -68,8 +68,9 @@ function LogRow({ event }) {
           border: "none",
           textAlign: "left",
         }}
+        className="log-row"
       >
-        <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>
+        <span className="log-row-ts" style={{ color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>
           {formatTs(event.timestamp)}
         </span>
         <span
@@ -84,13 +85,13 @@ function LogRow({ event }) {
         >
           {level}
         </span>
-        <span style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: 10 }}>
+        <span className="log-row-group" style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: 10 }}>
           {event.log_group.split("/").pop()}
         </span>
-        <span style={{ flex: 1, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span className="log-row-msg" style={{ flex: 1, minWidth: 0, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {summary}
         </span>
-        <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>
+        <span className="log-row-chev" style={{ color: "var(--text-muted)", flexShrink: 0 }}>
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
       </button>
@@ -188,6 +189,38 @@ export default function LogViewer() {
 
   return (
     <div>
+      <style>{`
+        /* On narrow viewports, restack the log row onto three lines:
+             Row 1: timestamp + level pill + chevron (pushed right)
+             Row 2: Lambda log-group (small, muted, truncated)
+             Row 3: summary (line-clamped to 2 lines with ellipsis)
+           Line-clamp keeps the collapsed row compact so long JSON messages
+           don't look like the row is permanently expanded. Tap still
+           expands to the full pretty-printed JSON in the <pre> below.
+           Desktop layout is unchanged. */
+        @media (max-width: 640px) {
+          .log-row { flex-wrap: wrap !important; }
+          .log-row-chev { margin-left: auto !important; }
+          .log-row-group {
+            flex-basis: 100% !important;
+            order: 10 !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+          }
+          .log-row-msg {
+            flex-basis: 100% !important;
+            order: 20 !important;
+            display: -webkit-box !important;
+            -webkit-line-clamp: 2 !important;
+            -webkit-box-orient: vertical !important;
+            overflow: hidden !important;
+            white-space: normal !important;
+            word-break: break-word !important;
+          }
+        }
+      `}</style>
+
       {/* Toolbar */}
       <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
         <h2 style={{ fontSize: 18, marginRight: 4 }}>Logs</h2>

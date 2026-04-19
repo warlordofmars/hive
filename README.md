@@ -134,7 +134,8 @@ MCP client (Claude Code, Cursor, …)
 |---|---|
 | [docs/mcp-setup.md](docs/mcp-setup.md) | Connecting MCP clients (Claude Code, Claude Desktop, Cursor, and more) to Hive |
 | [docs/admin-ui.md](docs/admin-ui.md) | Using the management UI |
-| [docs/api-reference.md](docs/api-reference.md) | REST API reference |
+| [Hive management API reference](https://hive.warlordofmars.net/docs/api-reference) | Auto-generated OpenAPI reference (Scalar) for every REST endpoint |
+| [docs/api-reference.md](docs/api-reference.md) | REST API reference (handwritten, older) |
 | [docs/oauth.md](docs/oauth.md) | OAuth 2.1 implementation details |
 
 ## Contributing

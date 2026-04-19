@@ -98,7 +98,7 @@ export default function McpClientsPage() {
   return (
     <PageLayout>
       {/* Header */}
-      <section className="py-20 px-8 text-center bg-[var(--surface)]">
+      <section className="py-20 px-4 md:px-8 text-center bg-[var(--surface)]">
         <div className="max-w-[1100px] mx-auto">
           <h1 className="text-[2.5rem] font-extrabold mb-4">MCP client compatibility</h1>
           <p className="text-[var(--text-muted)] text-lg max-w-[560px] mx-auto leading-relaxed">
@@ -109,8 +109,8 @@ export default function McpClientsPage() {
       </section>
 
       {/* Client cards */}
-      <section className="py-20 px-8">
-        <div className="max-w-[1100px] mx-auto grid grid-cols-[repeat(auto-fit,minmax(460px,1fr))] gap-6">
+      <section className="py-20 px-4 md:px-8">
+        <div className="max-w-[1100px] mx-auto grid grid-cols-1 md:grid-cols-[repeat(auto-fit,minmax(460px,1fr))] gap-6">
           {CLIENTS.map((c) => (
             <ClientCard key={c.name} {...c} />
           ))}
@@ -118,7 +118,7 @@ export default function McpClientsPage() {
       </section>
 
       {/* Footer note */}
-      <section className="py-12 px-8 text-center border-t border-[var(--border)]">
+      <section className="py-12 px-4 md:px-8 text-center border-t border-[var(--border)]">
         <p className="text-[var(--text-muted)] text-sm max-w-[560px] mx-auto leading-relaxed">
           Any MCP-compatible client works with Hive — these are the most commonly used ones.
           See the{" "}

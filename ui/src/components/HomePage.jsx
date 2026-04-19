@@ -59,7 +59,7 @@ export default function HomePage() {
     <PageLayout>
       {/* Hero */}
       <section
-        className="text-white py-24 px-8 text-center"
+        className="text-white py-24 px-4 md:px-8 text-center"
         style={{
           background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%)",
         }}
@@ -80,7 +80,7 @@ export default function HomePage() {
       </section>
 
       {/* Features */}
-      <section className="py-20 px-8">
+      <section className="py-20 px-4 md:px-8">
         <div className="max-w-[1100px] mx-auto">
           <h2 className="text-center text-[1.75rem] font-bold mb-14">
             Everything your agents need to remember
@@ -103,7 +103,7 @@ export default function HomePage() {
       </section>
 
       {/* How it works */}
-      <section className="bg-[var(--surface)] py-20 px-8">
+      <section className="bg-[var(--surface)] py-20 px-4 md:px-8">
         <div className="max-w-[1100px] mx-auto">
           <h2 className="text-center text-[1.75rem] font-bold mb-14">
             Up and running in minutes

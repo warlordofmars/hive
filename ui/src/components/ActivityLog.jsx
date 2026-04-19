@@ -56,14 +56,14 @@ export default function ActivityLog() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="flex gap-4 mb-5">
+        <div className="flex flex-wrap gap-4 mb-5">
           {[
             { label: "Total Memories", value: stats.total_memories },
             { label: "Total Clients", value: stats.total_clients },
             { label: "Events Today", value: stats.events_today },
             { label: "Events (7 days)", value: stats.events_last_7_days },
           ].map(({ label, value }) => (
-            <Card key={label} className="flex-1 text-center">
+            <Card key={label} className="flex-1 min-w-[120px] text-center">
               <div className="text-[28px] font-bold">{value}</div>
               <div className="text-xs text-[var(--text-muted)] mt-1">{label}</div>
             </Card>
@@ -73,7 +73,7 @@ export default function ActivityLog() {
 
       {error && <p className="text-[var(--danger)] mb-3">{error}</p>}
 
-      <div className="flex gap-2.5 items-center mb-3">
+      <div className="flex flex-wrap gap-2.5 items-center mb-3">
         <Label htmlFor="activity-days" className="mb-0">Show last</Label>
         <Select
           id="activity-days"
