@@ -37,9 +37,13 @@ function ensureCss(id, href) {
 }
 
 function applyTheme() {
-  const light = ensureCss(CSS_LIGHT_ID, SWAGGER_CSS_LIGHT);
+  // Keep the base (light) stylesheet loaded always — SwaggerDark is a set
+  // of layered overrides, not a complete replacement. Disabling the base
+  // left Swagger UI totally unstyled in dark mode. Ordering matters: the
+  // dark link is appended after the light one, so its rules win in the
+  // cascade whenever it's enabled.
+  ensureCss(CSS_LIGHT_ID, SWAGGER_CSS_LIGHT);
   const dark = ensureCss(CSS_DARK_ID, SWAGGER_CSS_DARK);
-  light.disabled = isDark();
   dark.disabled = !isDark();
 }
 
