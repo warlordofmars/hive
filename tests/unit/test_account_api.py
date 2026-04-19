@@ -558,9 +558,7 @@ class TestAccountStats:
         body = resp.json()
 
         # activity_heatmap should carry a non-zero bucket for today.
-        today_bucket = next(
-            (b for b in body["activity_heatmap"] if b["count"] > 0), None
-        )
+        today_bucket = next((b for b in body["activity_heatmap"] if b["count"] > 0), None)
         assert today_bucket is not None
 
         # client_contribution should surface the owned client's event.
