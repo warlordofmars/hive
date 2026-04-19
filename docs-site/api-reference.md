@@ -120,13 +120,16 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 
-.api-reference-page .vp-doc > h1,
-.api-reference-page .vp-doc > p {
-  padding: 0 32px;
+/* Intro H1 + paragraph: VitePress wraps them in .vp-doc > div > … so a
+   direct-child selector off .vp-doc misses. Descendant selector it is —
+   there's only one H1 and the intro <p> on this page, so no collateral. */
+.api-reference-page .vp-doc h1,
+.api-reference-page .vp-doc div > p {
+  padding: 0 24px;
   margin: 24px 0 0;
 }
 
-.api-reference-page .vp-doc > p {
+.api-reference-page .vp-doc div > p {
   margin-bottom: 24px;
 }
 
