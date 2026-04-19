@@ -271,6 +271,16 @@ describe("MemoryBrowser", () => {
     expect(screen.getByText("+ New")).toBeTruthy();
   });
 
+  it("toolbar row wraps on narrow screens so the New button stays in view", async () => {
+    const { container } = await act(async () => render(<MemoryBrowser />));
+    // The heading + search + tag picker + New button share a flex row that
+    // must `flex-wrap` (below sm) so the rightmost button doesn't clip when
+    // the viewport is 375px.
+    const heading = container.querySelector("h2");
+    const toolbar = heading.parentElement;
+    expect(toolbar.className).toMatch(/flex-wrap/);
+  });
+
   it("renders empty state after load", async () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => expect(screen.getByText("No memories yet")).toBeTruthy());

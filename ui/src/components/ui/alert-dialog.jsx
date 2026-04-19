@@ -33,7 +33,7 @@ function AlertDialog({
         <Dialog.Overlay className="fixed inset-0 bg-black/50 z-50" />
         <Dialog.Content
           className={cn(
-            "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-6 w-full max-w-sm z-50 shadow-lg",
+            "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-6 w-[calc(100vw-2rem)] max-w-sm z-50 shadow-lg",
             className,
           )}
           onOpenAutoFocus={(e) => e.preventDefault()}

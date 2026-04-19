@@ -250,6 +250,23 @@
   box-shadow: none !important;
 }
 
+/* Shrink the magnifier-icon search button on narrow screens so it matches the
+   hamburger icon size instead of floating between them as a larger circle. */
+@media (max-width: 767px) {
+  .VPNavBarSearch .DocSearch-Button {
+    width: 24px !important;
+    height: 24px !important;
+    padding: 0 !important;
+    background-color: transparent !important;
+    border: none !important;
+  }
+
+  .VPNavBarSearch .DocSearch-Button .DocSearch-Search-Icon {
+    width: 20px !important;
+    height: 20px !important;
+  }
+}
+
 /* ============================================================
    Home page hero — gradient matching marketing site
    ============================================================ */

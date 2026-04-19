@@ -423,10 +423,10 @@ export default function MemoryBrowser() {
 
       {/* List */}
       <div className="flex-1">
-        <div className="flex gap-2.5 mb-4 items-center">
-          <h2 className="flex-1 text-lg font-semibold">Memories</h2>
+        <div className="flex flex-wrap gap-2.5 mb-4 items-center">
+          <h2 className="text-lg font-semibold sm:flex-1 w-full sm:w-auto">Memories</h2>
           <Input
-            className="w-44"
+            className="flex-1 min-w-0 sm:flex-none sm:w-44"
             placeholder="Search by meaning…"
             value={searchQuery}
             onChange={handleSearchQueryChange}
