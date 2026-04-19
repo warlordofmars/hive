@@ -29,10 +29,12 @@ export function projectGrowth(history, days = PROJECTION_DAYS) {
   if (delta <= 0) return []; // flat / declining history — don't extrapolate
   const perDay = delta / (history.length - 1);
   const projection = [];
+  // `YYYY-MM-DD` parses as UTC; use setUTCDate to add days without
+  // a local-timezone / DST shift that could produce off-by-one dates.
   const lastDate = new Date(history[history.length - 1].date);
   for (let i = 1; i <= days; i++) {
     const d = new Date(lastDate);
-    d.setDate(d.getDate() + i);
+    d.setUTCDate(d.getUTCDate() + i);
     projection.push({
       date: d.toISOString().slice(0, 10),
       projected: Math.round(last + perDay * i),
@@ -51,12 +53,16 @@ export default function MemoryGrowth({ data }) {
     if (projection.length === 0) {
       return { combined: history, hasProjection: false };
     }
-    // Stitch the projection onto the history, anchoring it to the last
-    // actual point so the area renders continuously.
+    // Copy the `projected` value onto the last actual point so the dashed
+    // line starts visibly from that datapoint without duplicating the
+    // date row in the combined dataset.
     const anchor = history[history.length - 1];
-    const withAnchor = [{ ...anchor, projected: anchor.cumulative }, ...projection];
+    const historyWithAnchor = [
+      ...history.slice(0, -1),
+      { ...anchor, projected: anchor.cumulative },
+    ];
     return {
-      combined: [...history, ...withAnchor.slice(1)],
+      combined: [...historyWithAnchor, ...projection],
       hasProjection: true,
     };
   }, [data]);

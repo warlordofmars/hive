@@ -9,10 +9,19 @@ import EmptyState from "../EmptyState.jsx";
 // set to the memory's key) and a `hive:switch-tab` event to jump to the
 // Memories tab.
 
+export function formatRecallTooltip(value) {
+  return [`${value} recalls`, ""];
+}
+
 export function openMemory(memory) {
+  // Recharts event handlers wrap the original datum in a `.payload`
+  // field; accept either shape defensively so the click-through works
+  // regardless of which recharts version is installed.
+  const data = memory?.payload ?? memory;
+  if (!data || typeof data.key !== "string" || data.key.length === 0) return;
   if (typeof globalThis.dispatchEvent !== "function") return;
   globalThis.dispatchEvent(
-    new CustomEvent("hive:memory-browser", { detail: { search: memory.key } }),
+    new CustomEvent("hive:memory-browser", { detail: { search: data.key } }),
   );
   globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" }));
 }
@@ -51,13 +60,13 @@ export default function TopRecalled({ data }) {
         <Tooltip
           cursor={{ fill: "var(--surface)" }}
           contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", fontSize: 12 }}
-          formatter={(value) => [`${value} recalls`, ""]}
+          formatter={formatRecallTooltip}
         />
         <Bar
           dataKey="recall_count"
           fill="var(--accent)"
           radius={[0, 4, 4, 0]}
-          onClick={(payload) => openMemory(payload)}
+          onClick={openMemory}
           cursor="pointer"
         />
       </BarChart>

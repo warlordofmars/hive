@@ -48,9 +48,15 @@ const MINIMAL_STATS = {
     cumulative: i,
   })),
   quota: { memory_count: 12, memory_limit: 100 },
-  freshness: [
-    { memory_id: "m1", days_since_created: 10, days_since_accessed: 2 },
-  ],
+  // Seven entries so RawPreview's `value.length > take` overflow branch
+  // is exercised (default `take` is 5). The three still-placeholder cards
+  // (Freshness / ClientContribution / TagCooccurrence) render via
+  // RawPreview until their dedicated sub-issues land.
+  freshness: Array.from({ length: 7 }, (_, i) => ({
+    memory_id: `m${i}`,
+    days_since_created: i * 5,
+    days_since_accessed: i,
+  })),
   client_contribution: [{ date: "2026-04-01", client_id: "c1", count: 2 }],
   tag_cooccurrence: [{ source: "a", target: "b", weight: 3 }],
 };

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import TagDistribution, { buildSlices, filterByTag } from "./TagDistribution.jsx";
+import TagDistribution, { buildSlices, filterByTag, formatTagTooltip, handlePieSliceClick } from "./TagDistribution.jsx";
 
 global.ResizeObserver = class {
   observe() {}
@@ -59,32 +59,98 @@ describe("TagDistribution", () => {
     expect(screen.queryByText(/no tags yet/i)).toBeNull();
     expect(container.querySelector(".recharts-responsive-container")).toBeTruthy();
   });
+
+  it("renders the Other slice when input exceeds the top-N cap", () => {
+    const data = Array.from({ length: 10 }, (_, i) => ({
+      tag: `t${i}`,
+      count: 10 - i,
+    }));
+    const { container } = render(<TagDistribution data={data} />);
+    // The Cell `fill` branch for the Other slice is now exercised — the
+    // rendered recharts surface mounts normally without throwing.
+    expect(container.querySelector(".recharts-responsive-container")).toBeTruthy();
+  });
 });
 
 describe("filterByTag", () => {
-  let dispatchSpy;
+  let originalDispatch;
+  let calls;
+
   beforeEach(() => {
-    dispatchSpy = vi.spyOn(globalThis, "dispatchEvent");
+    originalDispatch = globalThis.dispatchEvent;
+    calls = [];
+    globalThis.dispatchEvent = (e) => {
+      calls.push(e);
+      return true;
+    };
   });
+
   afterEach(() => {
-    dispatchSpy.mockRestore();
+    globalThis.dispatchEvent = originalDispatch;
   });
 
   it("dispatches memory-browser with tag + switch-tab", () => {
     filterByTag("work");
-    const types = dispatchSpy.mock.calls.map((c) => c[0].type);
+    const types = calls.map((e) => e.type);
     expect(types).toContain("hive:memory-browser");
     expect(types).toContain("hive:switch-tab");
-    const browserEvent = dispatchSpy.mock.calls.find(
-      (c) => c[0].type === "hive:memory-browser",
-    )[0];
+    const browserEvent = calls.find((e) => e.type === "hive:memory-browser");
     expect(browserEvent.detail).toEqual({ tag: "work" });
   });
 
   it("is a no-op without a dispatchEvent global", () => {
-    const original = globalThis.dispatchEvent;
     globalThis.dispatchEvent = undefined;
     expect(() => filterByTag("x")).not.toThrow();
-    globalThis.dispatchEvent = original;
+  });
+});
+
+describe("formatTagTooltip", () => {
+  it("labels the value with 'memories' and passes the name through", () => {
+    expect(formatTagTooltip(3, "work")).toEqual(["3 memories", "work"]);
+  });
+});
+
+describe("handlePieSliceClick", () => {
+  let originalDispatch;
+  let calls;
+
+  beforeEach(() => {
+    originalDispatch = globalThis.dispatchEvent;
+    calls = [];
+    globalThis.dispatchEvent = (e) => {
+      calls.push(e);
+      return true;
+    };
+  });
+
+  afterEach(() => {
+    globalThis.dispatchEvent = originalDispatch;
+  });
+
+  it("dispatches for a real slice", () => {
+    handlePieSliceClick({ tag: "work", count: 5 });
+    const types = calls.map((e) => e.type);
+    expect(types).toContain("hive:memory-browser");
+    expect(types).toContain("hive:switch-tab");
+  });
+
+  it("unwraps a Recharts-style payload wrapper", () => {
+    handlePieSliceClick({ payload: { tag: "home", count: 3 } });
+    const browserEvent = calls.find((e) => e.type === "hive:memory-browser");
+    expect(browserEvent.detail).toEqual({ tag: "home" });
+  });
+
+  it("ignores the Other bucket", () => {
+    handlePieSliceClick({ tag: "Other", count: 10, isOther: true });
+    expect(calls).toEqual([]);
+  });
+
+  it("ignores missing / malformed input", () => {
+    handlePieSliceClick(undefined);
+    handlePieSliceClick(null);
+    handlePieSliceClick({});
+    handlePieSliceClick({ tag: "" });
+    handlePieSliceClick({ payload: { tag: null } });
+    expect(calls).toEqual([]);
   });
 });

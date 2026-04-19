@@ -25,7 +25,7 @@ export function arcPath(fraction) {
 
 export function fillColor(fraction) {
   if (fraction >= 0.9) return "var(--danger)";
-  if (fraction >= 0.75) return "#f5a623";
+  if (fraction >= 0.75) return "var(--amber)";
   return "var(--accent)";
 }
 

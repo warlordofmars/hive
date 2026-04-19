@@ -33,8 +33,8 @@ describe("fillColor", () => {
     expect(fillColor(0.5)).toBe("var(--accent)");
   });
 
-  it("returns a warning colour in the 75–90% band", () => {
-    expect(fillColor(0.8)).toBe("#f5a623");
+  it("returns the amber theme token in the 75–90% band", () => {
+    expect(fillColor(0.8)).toBe("var(--amber)");
   });
 
   it("returns danger at/above 90%", () => {

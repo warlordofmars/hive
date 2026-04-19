@@ -1091,6 +1091,20 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(api.listMemories).toHaveBeenCalledWith("work"));
   });
 
+  it("hive:memory-browser event without a detail payload is a no-op", async () => {
+    api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    api.listMemories.mockClear();
+    await act(async () => {
+      // Event with no `detail` at all — covers the `?? {}` fallback so
+      // the handler doesn't blow up if dispatched unqualified.
+      globalThis.dispatchEvent(new Event("hive:memory-browser"));
+    });
+    // Neither tag filter nor search ran — no additional list fetches.
+    expect(api.listMemories).not.toHaveBeenCalled();
+  });
+
   it("hive:memory-browser event with search pre-sets the search query", async () => {
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
     api.searchMemories.mockResolvedValue({ items: [], next_cursor: null });

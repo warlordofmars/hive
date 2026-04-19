@@ -12,11 +12,11 @@ import { Card } from "./ui/card.jsx";
 
 // #535 — Stats tab scaffolding.
 //
-// This component renders eight placeholder graph cards backed by the
-// /api/account/stats response. The placeholder bodies deliberately dump
-// a small JSON preview so it's obvious each signal is reaching the UI —
-// follow-up sub-issues replace each `<GraphCard>` body with a proper
-// chart implementation (heatmap, bar, stacked area, force graph, …).
+// Renders a grid of GraphCards backed by /api/account/stats. Five cards
+// are fully implemented (ActivityHeatmap, TopRecalled, TagDistribution,
+// MemoryGrowth, QuotaGauge); the remaining three (Freshness,
+// ClientContribution, TagCooccurrence) still show a JSON preview via
+// RawPreview until their dedicated sub-issues (#538 / #539 / #540) land.
 
 const WINDOWS = [
   { value: "30", label: "Last 30 days" },

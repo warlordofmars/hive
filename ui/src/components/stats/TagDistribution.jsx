@@ -41,6 +41,22 @@ export function filterByTag(tag) {
   globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" }));
 }
 
+export function formatTagTooltip(value, name) {
+  return [`${value} memories`, name];
+}
+
+// Extracted for direct testability — recharts doesn't actually paint the
+// slices in jsdom, so the inline Pie `onClick` would never fire from a
+// render-level test. Accepts both raw slice objects and Recharts-style
+// `{ payload }` wrappers.
+export function handlePieSliceClick(arg) {
+  const slice = arg?.payload ?? arg;
+  if (!slice || slice.isOther || typeof slice.tag !== "string" || !slice.tag) {
+    return;
+  }
+  filterByTag(slice.tag);
+}
+
 export default function TagDistribution({ data }) {
   const slices = useMemo(() => buildSlices(data), [data]);
 
@@ -64,9 +80,7 @@ export default function TagDistribution({ data }) {
           innerRadius={50}
           outerRadius={90}
           paddingAngle={2}
-          onClick={(p) => {
-            if (!p.isOther) filterByTag(p.tag);
-          }}
+          onClick={handlePieSliceClick}
           cursor="pointer"
         >
           {slices.map((s, i) => (
@@ -78,7 +92,7 @@ export default function TagDistribution({ data }) {
         </Pie>
         <Tooltip
           contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", fontSize: 12 }}
-          formatter={(value, name) => [`${value} memories`, name]}
+          formatter={formatTagTooltip}
         />
         <Legend wrapperStyle={{ fontSize: 11, color: "var(--text-muted)" }} />
       </PieChart>

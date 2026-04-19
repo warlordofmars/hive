@@ -260,6 +260,10 @@ export default function MemoryBrowser() {
         setTagFilter(detail.tag);
       } else if (detail.search) {
         setTagFilter("");
+        // Enter search mode explicitly so the list-load effect doesn't
+        // fire an unnecessary listMemories() before the debounced
+        // runSearch() kicks in.
+        setIsSearchMode(true);
         setSearchQuery(detail.search);
       }
     }
