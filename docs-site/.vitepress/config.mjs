@@ -105,6 +105,10 @@ export default defineConfig({
         text: "FAQ",
         link: "/faq",
       },
+      {
+        text: "API reference",
+        link: "/api-reference",
+      },
     ],
 
     socialLinks: [],
