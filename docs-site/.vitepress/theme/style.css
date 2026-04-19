@@ -157,24 +157,52 @@
     font-size: 13px;
   }
 
-  /* Navbar parity with the management app (#544 follow-up): on mobile
-     the row should read `logo · Hive · [search] · Sign in · theme ·
-     hamburger`, matching marketing/app. Two adjustments:
-       (a) Hide the VitePress vertical divider between search and the
-           right-side controls.
-       (b) Re-order so Sign in sits before the Appearance toggle.
-     Search is kept — it's a docs-specific affordance. */
-  .VPNavBar .content-body > .divider,
-  .VPNavBar .content-body .divider-line {
+  /* Navbar parity with the management app (#544 follow-up). The target
+     order at <md is `logo · Hive · [search] · Sign in · theme ·
+     hamburger` — matching marketing/app. Four adjustments:
+       (a) Hide every VitePress vertical divider between groups on the
+           mobile navbar (matches marketing/app, which have none).
+       (b) Re-order so Sign in sits before the Appearance toggle inside
+           .content-body; VPNavBarHamburger lives in a sibling outside
+           .content-body, so also reorder it to land last in .container.
+       (c) Hide the VitePress search button while the mobile drawer is
+           open so the row collapses cleanly to Sign in + theme + X.
+           Search is kept for drawer-closed state (docs-specific).
+       (d) Zero out VitePress's .VPNavScreen container padding + menu
+           margin so our drawer items sit flush to the left like the
+           marketing/app drawers. */
+  .VPNavBar .divider,
+  .VPNavBar .divider-line,
+  .VPNavBar .content-body > .divider {
     display: none !important;
   }
 
+  .VPNavBarSearch {
+    order: 0 !important;
+  }
+  .docs-nav-group {
+    order: 1 !important;
+  }
   .VPNavBarAppearance {
     order: 2 !important;
   }
 
-  .docs-nav-group {
+  .VPNavBar .container {
+    display: flex !important;
+  }
+  .VPNavBar .container > .title {
+    order: 0 !important;
+  }
+  .VPNavBar .container > .content {
     order: 1 !important;
+    flex: 1 1 auto !important;
+  }
+  .VPNavBarHamburger {
+    order: 2 !important;
+  }
+
+  .VPNavBar.screen-open .VPNavBarSearch {
+    display: none !important;
   }
 }
 
@@ -218,21 +246,36 @@
   border-color: #fff;
 }
 
-/* Mobile drawer nav list — matches the management app's drawer exactly:
-   items start at the left edge with 16px inner padding, 16px text,
-   white/85 on hover rather than centered/indented. */
+/* Mobile drawer nav list — matches the management app's drawer exactly.
+   VitePress's .VPNavScreen .container + .VPNavScreenMenu ship their own
+   horizontal padding/max-width that centre-indent the items; zero those
+   out so our 16px inner padding on .docs-screen-group is the only
+   horizontal spacing. */
+.VPNavScreen .container {
+  padding: 0 !important;
+  max-width: none !important;
+}
+
+.VPNavScreen .VPNavScreenMenu,
+.VPNavScreen .VPNavScreenTranslations,
+.VPNavScreen .VPNavScreenSocialLinks {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
 .docs-screen-group {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  margin: 0;
-  padding: 16px;
+  gap: 2px;
+  margin: 0 !important;
+  padding: 16px !important;
 }
 
 .docs-screen-nav-link {
   display: block;
   padding: 12px 16px;
-  font-size: 16px;
+  font-size: 16px !important;
+  line-height: 1.4 !important;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.85);
   text-decoration: none;
