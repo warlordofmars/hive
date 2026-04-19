@@ -184,8 +184,10 @@ function AppShell() {
               <button
                 key={t.id}
                 type="button"
-                className={`w-full text-left px-6 py-3 text-sm text-white bg-transparent border-none cursor-pointer font-[inherit] min-h-[44px] hover:bg-white/10 ${
-                  tab === t.id ? "font-semibold bg-white/5" : ""
+                className={`w-full text-left px-6 py-3 text-sm text-white bg-transparent cursor-pointer font-[inherit] min-h-[44px] hover:bg-white/5 border-l-2 ${
+                  tab === t.id
+                    ? "font-semibold border-l-brand"
+                    : "border-l-transparent"
                 }`}
                 onClick={() => { switchTab(t.id); setMenuOpen(false); }}
               >
