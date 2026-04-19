@@ -68,8 +68,9 @@ function LogRow({ event }) {
           border: "none",
           textAlign: "left",
         }}
+        className="log-row"
       >
-        <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>
+        <span className="log-row-ts" style={{ color: "var(--text-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>
           {formatTs(event.timestamp)}
         </span>
         <span
@@ -84,10 +85,10 @@ function LogRow({ event }) {
         >
           {level}
         </span>
-        <span style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: 10 }}>
+        <span className="log-row-group" style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: 10 }}>
           {event.log_group.split("/").pop()}
         </span>
-        <span style={{ flex: 1, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span className="log-row-msg" style={{ flex: 1, minWidth: 0, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {summary}
         </span>
         <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>
@@ -188,6 +189,24 @@ export default function LogViewer() {
 
   return (
     <div>
+      <style>{`
+        /* On narrow viewports, hide the Lambda log-group name (too long to
+           fit next to the message) and let the summary wrap to its own
+           line so it stays readable and the tap target + chevron remain on
+           screen. Desktop layout is unchanged. */
+        @media (max-width: 640px) {
+          .log-row { flex-wrap: wrap !important; }
+          .log-row-group { display: none !important; }
+          .log-row-msg {
+            flex-basis: 100% !important;
+            white-space: normal !important;
+            word-break: break-word !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+          }
+        }
+      `}</style>
+
       {/* Toolbar */}
       <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
         <h2 style={{ fontSize: 18, marginRight: 4 }}>Logs</h2>
