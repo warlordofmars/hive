@@ -37,8 +37,6 @@ _Changes accumulated on `development` since v0.23.0. Will be rolled into the nex
 
 - Removed the `release-milestone-watcher` workflow — the CLAUDE.md autonomous loop already detects milestone drain in-session, making the separate workflow redundant. (#531, #532)
 
-**Full Changelog:** https://github.com/warlordofmars/hive/compare/v0.22.0...v0.23.0
-
 ## v0.22.0 — 2026-04-18
 
 ### Added

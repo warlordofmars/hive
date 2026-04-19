@@ -371,9 +371,12 @@ gh pr merge --auto --merge
    but the Drafter body is a flat bulleted list of PR titles; do
    **not** paste it verbatim. Group related PRs, write 1–2
    descriptive sentences per bullet explaining *what changed and
-   why*, and cite the PRs in parentheses. Compare the prior versioned
-   section (`v0.22.0`) for the exact tone and subsection structure.
-   Commit the change:
+   why*, and cite the PRs in parentheses. Do **not** add a
+   `**Full Changelog:** https://github.com/…/compare/…` link at the
+   bottom — CHANGELOG.md is a local artefact, not a GitHub release
+   note; the prior sections don't carry compare links either. Compare
+   the prior versioned section (`v0.22.0`) for the exact tone and
+   subsection structure. Commit the change:
 
    ```bash
    git add CHANGELOG.md
