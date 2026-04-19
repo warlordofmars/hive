@@ -841,10 +841,16 @@ gradually instead of flipping every autonomous PR onto it at once.
 
 1. After CI is green, request a Copilot review on the PR via
    `mcp__github__request_copilot_review`.
-2. Poll `mcp__github__pull_request_read` with `method=get_reviews`
-   every ~60s until a review from the `copilot-pull-request-reviewer`
-   actor appears in `SUBMITTED` state (typically 2–5 min).
-3. Fetch the review comments via `get_review_comments` and triage
+2. Wait for the Copilot **`Agent` check-run** to move to
+   `completed` (`get_check_runs`, typically 2–5 min). **Do not rely
+   on `get_reviews` alone** — subsequent Copilot iterations can post
+   line-level comments without creating a new top-level review object,
+   so `get_reviews` will look empty even when new findings exist. The
+   authoritative signal is: Agent check completed + a fresh
+   `get_review_comments` call shows threads from
+   `copilot-pull-request-reviewer` whose `created_at` is after the
+   last fix commit's timestamp.
+3. Call `get_review_comments` and triage
    each unresolved thread. **Every thread gets a reply before it's
    resolved** — never silently close a thread. Use
    `mcp__github__add_reply_to_pull_request_comment`, then
