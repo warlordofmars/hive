@@ -321,7 +321,7 @@ export function AlarmOkCountBadge({ count }) {
 function AlarmStatusRow({ alarms, loading, error }) {
   if (loading && !alarms) {
     return (
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
         {[1, 2, 3, 4].map((i) => <SkeletonBlock key={i} height={36} width={160} />)}
       </div>
     );
@@ -509,7 +509,7 @@ export default function Dashboard() {
     <div>
       <style>{`@keyframes pulse { 0%,100%{opacity:.5} 50%{opacity:.25} }`}</style>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 16, rowGap: 12, marginBottom: 20 }}>
         <h2 style={{ fontSize: 18, margin: 0, color: "var(--text)" }}>Dashboard</h2>
         <div style={{ display: "flex", gap: 4 }}>
           {PERIOD_OPTIONS.map((p) => (
