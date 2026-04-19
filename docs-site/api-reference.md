@@ -19,6 +19,27 @@ const LIGHT_THEME = {
   colors: {
     primary: { main: "#e8a020" },
   },
+  sidebar: {
+    backgroundColor: "#f8f8fa",
+    textColor: "#1f1f23",
+  },
+  // Redoc's default right panel is dark-grey (#263238) even in light mode —
+  // the "classic" three-pane look. That clashes with the rest of the light
+  // docs chrome, so override to a soft light surface. Code blocks inside
+  // keep their own darker background via codeBlock.backgroundColor below.
+  rightPanel: {
+    backgroundColor: "#f0f0f3",
+    textColor: "#1f1f23",
+  },
+  codeBlock: {
+    backgroundColor: "#2a2a33",
+  },
+  typography: {
+    code: {
+      color: "#b8560f",
+      backgroundColor: "rgba(232, 160, 32, 0.1)",
+    },
+  },
 };
 
 const DARK_THEME = {
