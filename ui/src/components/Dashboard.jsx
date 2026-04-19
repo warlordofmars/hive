@@ -279,6 +279,45 @@ export function AlarmBadge({ alarm }) {
   );
 }
 
+export function AlarmSummaryBadge({ count }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        padding: "7px 12px",
+        fontSize: 13,
+      }}
+    >
+      <CheckCircle size={14} style={{ color: "var(--success)", flexShrink: 0 }} />
+      <span>{count} {count === 1 ? "alarm" : "alarms"} OK</span>
+    </div>
+  );
+}
+
+export function AlarmOkCountBadge({ count }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        background: "transparent",
+        border: "1px dashed var(--border)",
+        borderRadius: 8,
+        padding: "7px 12px",
+        fontSize: 13,
+        color: "var(--text-muted)",
+      }}
+    >
+      <span>+{count} OK</span>
+    </div>
+  );
+}
+
 function AlarmStatusRow({ alarms, loading, error }) {
   if (loading && !alarms) {
     return (
@@ -289,9 +328,15 @@ function AlarmStatusRow({ alarms, loading, error }) {
   }
   if (error) return <ErrorBanner msg={error} />;
   if (!alarms?.alarms?.length) return null;
+  const firing = alarms.alarms.filter((a) => a.state !== "OK");
+  const okCount = alarms.alarms.length - firing.length;
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-      {alarms.alarms.map((a) => <AlarmBadge key={a.name} alarm={a} />)}
+      {firing.map((a) => <AlarmBadge key={a.name} alarm={a} />)}
+      {okCount > 0 && (firing.length === 0
+        ? <AlarmSummaryBadge count={okCount} />
+        : <AlarmOkCountBadge count={okCount} />
+      )}
     </div>
   );
 }

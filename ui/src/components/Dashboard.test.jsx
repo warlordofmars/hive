@@ -20,7 +20,7 @@ vi.mock("../api.js", () => ({
 }));
 
 import { api } from "../api.js";
-import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip, CustomDailyCostTooltip, AlarmBadge, ALARM_STATE_STYLE } from "./Dashboard.jsx";
+import { formatCostTick, formatCostTooltip, CustomTooltip, CustomCostTooltip, CustomDailyCostTooltip, AlarmBadge, AlarmSummaryBadge, AlarmOkCountBadge, ALARM_STATE_STYLE } from "./Dashboard.jsx";
 
 const STATS = {
   total_memories: 42,
@@ -119,6 +119,25 @@ describe("AlarmBadge", () => {
   it("strips env prefix from name when description is empty", () => {
     render(<AlarmBadge alarm={{ name: "Hive-dev-McpErrorRate", description: "", state: "OK" }} />);
     expect(screen.getByText("McpErrorRate")).toBeTruthy();
+  });
+});
+
+describe("AlarmSummaryBadge", () => {
+  it("pluralises the alarm count", () => {
+    render(<AlarmSummaryBadge count={12} />);
+    expect(screen.getByText("12 alarms OK")).toBeTruthy();
+  });
+
+  it("uses singular form for one alarm", () => {
+    render(<AlarmSummaryBadge count={1} />);
+    expect(screen.getByText("1 alarm OK")).toBeTruthy();
+  });
+});
+
+describe("AlarmOkCountBadge", () => {
+  it("renders the muted +N OK pill", () => {
+    render(<AlarmOkCountBadge count={10} />);
+    expect(screen.getByText("+10 OK")).toBeTruthy();
   });
 });
 
@@ -463,9 +482,39 @@ describe("Dashboard", () => {
     expect(screen.getByText("Tool Invocations")).toBeTruthy();
   });
 
-  it("shows alarm badge with description after load", async () => {
+  it("collapses all-OK alarms into a single summary badge", async () => {
     await act(async () => render(<Dashboard />));
-    await waitFor(() => expect(screen.getByText("MCP error rate > 5%")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("1 alarm OK")).toBeTruthy());
+    // Individual OK alarm label must not appear — that's the whole point of collapsing.
+    expect(screen.queryByText("MCP error rate > 5%")).toBeNull();
+  });
+
+  it("shows firing alarms individually with a muted OK count when mixed", async () => {
+    api.getAlarms.mockResolvedValue({
+      environment: "test",
+      alarms: [
+        { name: "Hive-test-McpErrorRate", description: "MCP error rate > 5%", state: "OK" },
+        { name: "Hive-test-McpErrorRate", description: "MCP error rate > 5%", state: "OK" },
+        { name: "Hive-test-ToolErrors", description: "Tool errors high", state: "ALARM" },
+      ],
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Tool errors high")).toBeTruthy());
+    expect(screen.getByText("+2 OK")).toBeTruthy();
+    // Firing-state view never shows the summary badge.
+    expect(screen.queryByText("2 alarms OK")).toBeNull();
+  });
+
+  it("renders only firing alarms when none are OK", async () => {
+    api.getAlarms.mockResolvedValue({
+      environment: "test",
+      alarms: [
+        { name: "Hive-test-ToolErrors", description: "Tool errors high", state: "ALARM" },
+      ],
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Tool errors high")).toBeTruthy());
+    expect(screen.queryByText(/OK/)).toBeNull();
   });
 
   it("shows alarm skeleton while loading", async () => {
