@@ -605,6 +605,28 @@ def import_memories(ctx, env=None, input="-"):
 
 
 @task
+def export_openapi(ctx, out="docs-site/public/openapi.json"):
+    """Export the FastAPI management-API OpenAPI spec to a static file (#421).
+
+    The docs site renders the spec via Scalar from ``openapi.json``; the
+    CI ``openapi-spec-check`` job re-runs this task and fails if the
+    committed file has drifted from the live schema. Re-run after
+    changing any ``@router.*`` signature, summary, or response model.
+    """
+    import json
+    from pathlib import Path
+
+    # Import lazily so `inv --help` doesn't need the full app tree on sys.path.
+    from hive.api.main import app
+
+    spec = app.openapi()
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n")
+    print(f"wrote {out_path} ({len(json.dumps(spec))} bytes)")
+
+
+@task
 def synth(ctx, env="prod"):
     """Synthesize CDK template locally (skips Docker bundling). Use --env dev for dev stack."""
     account = _aws_account(ctx)
