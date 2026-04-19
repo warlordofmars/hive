@@ -717,7 +717,7 @@
   "info": {
     "description": "REST API for managing Hive memories, OAuth clients, and viewing activity stats.",
     "title": "Hive Management API",
-    "version": "0.1.dev280+gbf6af210f.d20260417"
+    "version": "dev"
   },
   "openapi": "3.1.0",
   "paths": {

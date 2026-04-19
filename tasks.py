@@ -612,6 +612,11 @@ def export_openapi(ctx, out="docs-site/public/openapi.json"):
     CI ``openapi-spec-check`` job re-runs this task and fails if the
     committed file has drifted from the live schema. Re-run after
     changing any ``@router.*`` signature, summary, or response model.
+
+    ``info.version`` is normalised to ``"dev"`` so the committed spec is
+    stable across environments — the installed hive package version
+    varies by build (``setuptools_scm`` appends the git sha + date) and
+    would otherwise trip the drift check on every commit.
     """
     import json
     from pathlib import Path
@@ -620,6 +625,7 @@ def export_openapi(ctx, out="docs-site/public/openapi.json"):
     from hive.api.main import app
 
     spec = app.openapi()
+    spec.setdefault("info", {})["version"] = "dev"
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n")
