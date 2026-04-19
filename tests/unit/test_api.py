@@ -275,13 +275,23 @@ class TestMemories:
 
     def test_create_returns_429_when_memory_quota_exceeded(self, client):
         import os
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, patch
 
-        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "0"}):
+        mock_emit = AsyncMock()
+        with (
+            patch.dict(os.environ, {"HIVE_QUOTA_MAX_MEMORIES": "0"}),
+            patch("hive.api.memories.emit_metric", mock_emit),
+        ):
             tc, *_ = client
             resp = tc.post("/api/memories", json={"key": "blocked", "value": "v"})
         assert resp.status_code == 429
         assert "quota" in resp.json()["detail"].lower()
+        # #367 — RateLimitedRequests is emitted twice: aggregate + drill-down.
+        assert mock_emit.await_count == 2
+        assert mock_emit.await_args_list[0].args == ("RateLimitedRequests",)
+        drilldown = mock_emit.await_args_list[1]
+        assert drilldown.args == ("RateLimitedRequests",)
+        assert drilldown.kwargs == {"endpoint": "/api/memories", "reason": "quota"}
 
     def test_update_does_not_check_quota(self, client):
         """Updating an existing memory must not be blocked by quota."""

@@ -156,6 +156,24 @@ def _build_metric_queries(period_label: str) -> list[dict[str, Any]]:
             },
         }
     )
+    # RateLimitedRequests (#367) — count of 429-equivalent responses from the
+    # MCP server, the management-API auth path, and /api/memories quota checks.
+    # Same twin-emit pattern as CSP: aggregate here, drill-down by endpoint
+    # available via CloudWatch directly.
+    queries.append(
+        {
+            "Id": "rate_limited_requests",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": NAMESPACE,
+                    "MetricName": "RateLimitedRequests",
+                    "Dimensions": [{"Name": "Environment", "Value": ENVIRONMENT}],
+                },
+                "Period": stat_period,
+                "Stat": "Sum",
+            },
+        }
+    )
 
     return queries
 
