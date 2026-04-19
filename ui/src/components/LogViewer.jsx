@@ -91,7 +91,7 @@ function LogRow({ event }) {
         <span className="log-row-msg" style={{ flex: 1, minWidth: 0, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {summary}
         </span>
-        <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>
+        <span className="log-row-chev" style={{ color: "var(--text-muted)", flexShrink: 0 }}>
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
       </button>
@@ -190,19 +190,33 @@ export default function LogViewer() {
   return (
     <div>
       <style>{`
-        /* On narrow viewports, hide the Lambda log-group name (too long to
-           fit next to the message) and let the summary wrap to its own
-           line so it stays readable and the tap target + chevron remain on
-           screen. Desktop layout is unchanged. */
+        /* On narrow viewports, restack the log row onto three lines:
+             Row 1: timestamp + level pill + chevron (pushed right)
+             Row 2: Lambda log-group (small, muted, truncated)
+             Row 3: summary (line-clamped to 2 lines with ellipsis)
+           Line-clamp keeps the collapsed row compact so long JSON messages
+           don't look like the row is permanently expanded. Tap still
+           expands to the full pretty-printed JSON in the <pre> below.
+           Desktop layout is unchanged. */
         @media (max-width: 640px) {
           .log-row { flex-wrap: wrap !important; }
-          .log-row-group { display: none !important; }
+          .log-row-chev { margin-left: auto !important; }
+          .log-row-group {
+            flex-basis: 100% !important;
+            order: 10 !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+          }
           .log-row-msg {
             flex-basis: 100% !important;
+            order: 20 !important;
+            display: -webkit-box !important;
+            -webkit-line-clamp: 2 !important;
+            -webkit-box-orient: vertical !important;
+            overflow: hidden !important;
             white-space: normal !important;
             word-break: break-word !important;
-            overflow: visible !important;
-            text-overflow: clip !important;
           }
         }
       `}</style>
