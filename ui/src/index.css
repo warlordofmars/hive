@@ -58,4 +58,12 @@ body {
   button {
     border: none;
   }
+
+  /* Marketing + management pages drop verbatim commands and JSON into
+     `<pre>` blocks. `white-space: pre` otherwise forces the parent card
+     to grow to content width, which breaks the 375px viewport (#527).
+     Clamp `<pre>` to its parent so long lines scroll inside the block. */
+  pre {
+    max-width: 100%;
+  }
 }
