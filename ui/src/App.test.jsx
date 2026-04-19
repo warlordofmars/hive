@@ -424,4 +424,16 @@ describe("AppShell", () => {
     expect(screen.queryByTestId("mobile-nav")).toBeNull();
     expect(screen.getByTestId("client-manager")).toBeTruthy();
   });
+
+  it("mobile nav active tab has an orange left-border indicator (not a gray fill)", async () => {
+    await act(async () => render(<App />));
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /toggle navigation/i }));
+    const mobileNav = screen.getByTestId("mobile-nav");
+    const buttons = mobileNav.querySelectorAll("button[type='button']");
+    // Memories is the default active tab; OAuth Clients is inactive.
+    expect(buttons[0].className).toContain("border-l-brand");
+    expect(buttons[0].className).not.toContain("bg-white/5");
+    expect(buttons[1].className).toContain("border-l-transparent");
+  });
 });
