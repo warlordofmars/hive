@@ -519,3 +519,62 @@ class TestAccountStats:
         tc.get("/api/account/stats?window=90")
         # One entry per (user, window).
         assert len(account_mod._STATS_CACHE) == 2
+
+    def test_own_events_populate_heatmap_and_client_contribution(self, client):
+        """Exercises the `for e in own_events` loop bodies — needs both a
+        client owned by the user AND an activity event whose client_id
+        matches. Covers the activity_heatmap and client_contribution
+        aggregation paths."""
+        from hive.models import ActivityEvent, EventType, OAuthClient
+
+        tc, storage = client
+
+        owned_client = OAuthClient(client_name="my-agent", owner_user_id=_USER_ID)
+        storage.put_client(owned_client)
+        storage.log_event(
+            ActivityEvent(
+                event_type=EventType.memory_recalled,
+                client_id=owned_client.client_id,
+                metadata={"key": "test-key"},
+            )
+        )
+
+        resp = tc.get("/api/account/stats")
+        body = resp.json()
+
+        # activity_heatmap should carry a non-zero bucket for today.
+        today_bucket = next(
+            (b for b in body["activity_heatmap"] if b["count"] > 0), None
+        )
+        assert today_bucket is not None
+
+        # client_contribution should surface the owned client's event.
+        contrib_clients = {c["client_id"] for c in body["client_contribution"]}
+        assert owned_client.client_id in contrib_clients
+
+    def test_memory_predating_window_counts_as_baseline(self, client):
+        """Exercises the pre-window baseline bump in memory_growth — needs
+        a memory whose created_at is before the window start."""
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import Memory
+
+        tc, storage = client
+
+        old = Memory(
+            key="ancient",
+            value="v",
+            tags=[],
+            owner_client_id=_USER_ID,
+            owner_user_id=_USER_ID,
+        )
+        # Force created_at well before the default 90-day window.
+        old.created_at = datetime.now(timezone.utc) - timedelta(days=365)
+        storage.put_memory(old)
+
+        resp = tc.get("/api/account/stats?window=30")
+        growth = resp.json()["memory_growth"]
+        # The ancient memory is counted as baseline, so every point in the
+        # 30-day window must already be at least 1 (plus the fixture's
+        # pre-seeded memory).
+        assert growth[0]["cumulative"] >= 1
