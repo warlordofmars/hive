@@ -2,22 +2,24 @@
 import React, { useMemo } from "react";
 import PropTypes from "prop-types";
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-import EmptyState from "../EmptyState.jsx";
 
 // #537 — donut chart of memory counts per tag. Clicking a slice jumps to
 // the Memories tab pre-filtered by that tag.
 
 const TOP_N = 8;
-// Brand-orange + five complementary colours from Dashboard's TOOL_COLORS.
+// Eight-slot palette: brand orange first (so the top tag always reads as
+// "primary"), followed by seven distinguishable accents. First five track
+// Dashboard.jsx's TOOL_COLORS; the last three are distinct non-TOOL hues
+// chosen to stay readable against the donut's inner ring on both themes.
 const SLICE_COLORS = [
-  "#e8a020", // brand orange
-  "#1a73e8", // blue
-  "#00897b", // teal
-  "#9334e8", // purple
-  "#34a853", // green
-  "#fb923c", // orange-500
-  "#d93025", // red
-  "#64748b", // slate
+  "#e8a020", // brand orange (TOOL_COLORS.remember)
+  "#1a73e8", // blue          (TOOL_COLORS.recall)
+  "#00897b", // teal          (TOOL_COLORS.list_memories)
+  "#9334e8", // purple        (TOOL_COLORS.summarize_context)
+  "#34a853", // green         (TOOL_COLORS.search_memories)
+  "#fb923c", // orange-500 (extra)
+  "#d93025", // red        (TOOL_COLORS.forget)
+  "#64748b", // slate      (extra)
 ];
 const OTHER_COLOR = "var(--text-muted)";
 
@@ -65,16 +67,9 @@ export function handlePieSliceClick(arg) {
 
 export default function TagDistribution({ data }) {
   const slices = useMemo(() => buildSlices(data), [data]);
-
-  if (slices.length === 0) {
-    return (
-      <EmptyState
-        variant="memories"
-        title="No tags yet"
-        description="Tag some memories to see how they cluster."
-      />
-    );
-  }
+  // Empty handling lives on the parent <GraphCard> — when `data` is
+  // empty/missing it never renders children, so this component always
+  // has at least one slice to draw.
 
   return (
     <ResponsiveContainer width="100%" height={260}>

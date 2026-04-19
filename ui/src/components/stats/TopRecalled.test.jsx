@@ -32,19 +32,10 @@ describe("TopRecalled", () => {
     globalThis.dispatchEvent = originalDispatch;
   });
 
-  it("renders empty state when data is missing", () => {
-    render(<TopRecalled />);
-    expect(screen.getByText(/no recalls yet/i)).toBeTruthy();
-  });
-
-  it("renders empty state when data is empty array", () => {
-    render(<TopRecalled data={[]} />);
-    expect(screen.getByText(/no recalls yet/i)).toBeTruthy();
-  });
-
   it("renders a chart container when data is present", () => {
     const { container } = render(<TopRecalled data={_data} />);
-    expect(screen.queryByText(/no recalls yet/i)).toBeNull();
+    // Empty handling is the GraphCard parent's job; this component
+    // assumes at least one bar to draw.
     expect(container.querySelector(".recharts-responsive-container")).toBeTruthy();
   });
 

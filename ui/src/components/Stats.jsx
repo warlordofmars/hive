@@ -192,7 +192,11 @@ export default function Stats() {
         <GraphCard
           title="Quota"
           description="Current memory count against your plan limit."
-          data={data.quota}
+          // Treat a malformed `quota` (memory_count not numeric) as no
+          // data so GraphCard renders its empty copy instead of a silent
+          // blank card — QuotaGauge itself returns null on that input.
+          data={typeof data.quota?.memory_count === "number" ? data.quota : null}
+          empty="Quota data unavailable."
         >
           <QuotaGauge quota={data.quota} />
         </GraphCard>

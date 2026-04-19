@@ -2,7 +2,6 @@
 import React from "react";
 import PropTypes from "prop-types";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import EmptyState from "../EmptyState.jsx";
 
 // #537 — horizontal bar chart of the top-N most-recalled memories.
 // Clicking a bar dispatches a `hive:memory-browser` event (search mode
@@ -34,15 +33,9 @@ export function openMemory(memory) {
 }
 
 export default function TopRecalled({ data }) {
-  if (!data?.length) {
-    return (
-      <EmptyState
-        variant="memories"
-        title="No recalls yet"
-        description="Once an agent recalls a memory, the top entries will appear here."
-      />
-    );
-  }
+  // Empty handling lives on the parent <GraphCard> — when `data` is
+  // empty/missing it never renders children, so this component always
+  // has at least one bar to draw.
 
   // Recharts BarChart with `layout='vertical'` draws horizontal bars. Keep
   // bars at a fixed 18px, full-width container, YAxis as the category axis.

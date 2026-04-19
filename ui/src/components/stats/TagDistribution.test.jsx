@@ -47,16 +47,12 @@ describe("buildSlices", () => {
 });
 
 describe("TagDistribution", () => {
-  it("renders empty state when data is empty", () => {
-    render(<TagDistribution data={[]} />);
-    expect(screen.getByText(/no tags yet/i)).toBeTruthy();
-  });
-
   it("renders the pie chart when data is present", () => {
     const { container } = render(
       <TagDistribution data={[{ tag: "work", count: 5 }, { tag: "home", count: 3 }]} />,
     );
-    expect(screen.queryByText(/no tags yet/i)).toBeNull();
+    // Empty handling is the GraphCard parent's job; this component
+    // assumes at least one slice to draw.
     expect(container.querySelector(".recharts-responsive-container")).toBeTruthy();
   });
 

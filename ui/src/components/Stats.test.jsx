@@ -178,6 +178,18 @@ describe("Stats", () => {
     expect(screen.getByTestId("quota-gauge").textContent).toBe("7");
   });
 
+  it("Quota card shows empty copy when memory_count is malformed", async () => {
+    api.getAccountStats.mockResolvedValueOnce({
+      ...MINIMAL_STATS,
+      quota: { memory_count: "oops", memory_limit: 100 },
+    });
+    await act(async () => render(<Stats />));
+    await waitFor(() => expect(screen.getByText("Quota")).toBeTruthy());
+    // GraphCard's empty copy renders instead of a silent blank QuotaGauge.
+    expect(screen.getByText(/Quota data unavailable/)).toBeTruthy();
+    expect(screen.queryByTestId("quota-gauge")).toBeNull();
+  });
+
   it("top-level empty state when user has no memories", async () => {
     api.getAccountStats.mockResolvedValueOnce({
       ...MINIMAL_STATS,
