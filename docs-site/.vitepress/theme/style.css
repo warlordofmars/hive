@@ -246,14 +246,30 @@
   border-color: #fff;
 }
 
-/* Mobile drawer nav list — matches the management app's drawer exactly.
-   VitePress's .VPNavScreen .container + .VPNavScreenMenu ship their own
-   horizontal padding/max-width that centre-indent the items; zero those
-   out so our 16px inner padding on .docs-screen-group is the only
-   horizontal spacing. */
-.VPNavScreen .container {
+/* Mobile drawer — matches the management app/marketing drawer exactly:
+   items flush to the left edge (no centre indent), 16px text weight 500,
+   orange left-border indicator on the active page instead of VitePress's
+   default gray background fill, and the drawer slides into document flow
+   so content below pushes down instead of being covered. */
+.VPNavScreen,
+.VPNavScreen .container,
+.VPNavScreen .VPNavScreenContent {
   padding: 0 !important;
+  margin: 0 !important;
   max-width: none !important;
+}
+
+/* Put the drawer in document flow so open state shifts content down
+   (marketing parity). Closed state keeps VitePress's display toggle. */
+.VPNavScreen {
+  position: static !important;
+  height: auto !important;
+  max-height: none !important;
+  top: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  overflow: visible !important;
+  background-color: #1a1a2e !important;
 }
 
 .VPNavScreen .VPNavScreenMenu,
@@ -280,12 +296,21 @@
   color: rgba(255, 255, 255, 0.85);
   text-decoration: none;
   border-radius: 6px;
+  border-left: 2px solid transparent;
+  background-color: transparent !important;
   transition: color 0.15s, background-color 0.15s;
 }
 
-.docs-screen-nav-link:hover {
+.docs-screen-nav-link:hover,
+.docs-screen-nav-link:focus {
   color: #fff;
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Current-page indicator — matches marketing's 2px orange left border
+   (no background fill). */
+.docs-screen-nav-link--active {
+  border-left-color: #e8a020 !important;
 }
 
 /* Show the VitePress appearance (dark/light) toggle in the navbar at every
