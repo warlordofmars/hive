@@ -433,7 +433,10 @@ describe("AppShell", () => {
     const buttons = mobileNav.querySelectorAll("button[type='button']");
     // Memories is the default active tab; OAuth Clients is inactive.
     expect(buttons[0].className).toContain("border-l-brand");
-    expect(buttons[0].className).not.toContain("bg-white/5");
+    // `hover:bg-white/5` stays on all rows; the active state no longer
+    // has a bare `bg-white/5` fill — so the class list splits by space
+    // must not contain that utility as its own token.
+    expect(buttons[0].className.split(/\s+/)).not.toContain("bg-white/5");
     expect(buttons[1].className).toContain("border-l-transparent");
   });
 });
