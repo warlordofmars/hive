@@ -119,8 +119,10 @@ class TestUIE2E:
         # Apply tag filter and retry to handle DynamoDB GSI eventual consistency.
         # The TagIndex GSI may not immediately reflect a new write; if the filtered
         # list comes back empty, clear the chip and reapply the filter until the
-        # memory appears (or we exhaust retries).
-        for attempt in range(6):
+        # memory appears (or we exhaust retries). 12 × 5s = 60s total — GSI
+        # occasionally takes close to a minute under load.
+        _RETRIES = 12
+        for attempt in range(_RETRIES):
             # If a chip is already showing, clear it first so we can re-type.
             if page.locator("[aria-label='Clear tag filter']").count() > 0:
                 page.locator("[aria-label='Clear tag filter']").click()
@@ -131,7 +133,7 @@ class TestUIE2E:
             page.wait_for_load_state("networkidle")
             if page.locator(f"text={memory_key}").count() > 0:
                 break
-            if attempt < 5:
+            if attempt < _RETRIES - 1:
                 time.sleep(5)  # wait for GSI propagation before retrying
         assert page.locator(f"text={memory_key}").first.is_visible(), (
             f"Memory '{memory_key}' not visible after filtering by tag '{unique_tag}'"
