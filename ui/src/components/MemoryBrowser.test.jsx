@@ -1074,4 +1074,34 @@ describe("MemoryBrowser", () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => screen.getByText("test-key"));
   });
+
+  // #537 — Stats charts dispatch `hive:memory-browser` events to deep-link
+  // into this component. A tag detail pre-sets the tag filter; a search
+  // detail pre-sets the search query (and clears any lingering tag).
+  it("hive:memory-browser event with tag pre-filters the list", async () => {
+    api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    api.listMemories.mockClear();
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("hive:memory-browser", { detail: { tag: "work" } }),
+      );
+    });
+    await waitFor(() => expect(api.listMemories).toHaveBeenCalledWith("work"));
+  });
+
+  it("hive:memory-browser event with search pre-sets the search query", async () => {
+    api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
+    api.searchMemories.mockResolvedValue({ items: [], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("hive:memory-browser", { detail: { search: "my-key" } }),
+      );
+    });
+    const input = await screen.findByPlaceholderText(/search by meaning/i);
+    expect(input.value).toBe("my-key");
+  });
 });

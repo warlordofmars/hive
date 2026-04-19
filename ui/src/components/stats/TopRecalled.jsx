@@ -1,0 +1,76 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
+import React from "react";
+import PropTypes from "prop-types";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import EmptyState from "../EmptyState.jsx";
+
+// #537 — horizontal bar chart of the top-N most-recalled memories.
+// Clicking a bar dispatches a `hive:memory-browser` event (search mode
+// set to the memory's key) and a `hive:switch-tab` event to jump to the
+// Memories tab.
+
+export function openMemory(memory) {
+  if (typeof globalThis.dispatchEvent !== "function") return;
+  globalThis.dispatchEvent(
+    new CustomEvent("hive:memory-browser", { detail: { search: memory.key } }),
+  );
+  globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "memories" }));
+}
+
+export default function TopRecalled({ data }) {
+  if (!data?.length) {
+    return (
+      <EmptyState
+        variant="memories"
+        title="No recalls yet"
+        description="Once an agent recalls a memory, the top entries will appear here."
+      />
+    );
+  }
+
+  // Recharts BarChart with `layout='vertical'` draws horizontal bars. Keep
+  // bars at a fixed 18px, full-width container, YAxis as the category axis.
+  const height = Math.max(120, data.length * 26);
+
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart
+        data={data}
+        layout="vertical"
+        margin={{ top: 5, right: 16, left: 8, bottom: 5 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
+        <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+        <YAxis
+          type="category"
+          dataKey="key"
+          width={140}
+          tick={{ fontSize: 11, fill: "var(--text)" }}
+          interval={0}
+        />
+        <Tooltip
+          cursor={{ fill: "var(--surface)" }}
+          contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", fontSize: 12 }}
+          formatter={(value) => [`${value} recalls`, ""]}
+        />
+        <Bar
+          dataKey="recall_count"
+          fill="var(--accent)"
+          radius={[0, 4, 4, 0]}
+          onClick={(payload) => openMemory(payload)}
+          cursor="pointer"
+        />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+TopRecalled.propTypes = {
+  data: PropTypes.arrayOf(
+    PropTypes.shape({
+      memory_id: PropTypes.string.isRequired,
+      key: PropTypes.string.isRequired,
+      recall_count: PropTypes.number.isRequired,
+    }),
+  ),
+};

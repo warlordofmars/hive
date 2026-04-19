@@ -1,0 +1,77 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import QuotaGauge, { arcPath, fillColor } from "./QuotaGauge.jsx";
+
+describe("arcPath", () => {
+  it("starts at the left edge of the semicircle", () => {
+    // fraction 0 → degenerate arc but should still start at (20, 90).
+    expect(arcPath(0)).toMatch(/^M 20 90 /);
+  });
+
+  it("traces to the right edge at fraction 1", () => {
+    const path = arcPath(1);
+    expect(path).toContain("M 20 90");
+    // End X for a semicircle at fraction 1 should be 160 (CENTER_X + R).
+    expect(path).toMatch(/160\.00 90\.00/);
+  });
+
+  it("clamps inputs outside [0, 1]", () => {
+    expect(arcPath(-0.5)).toBe(arcPath(0));
+    expect(arcPath(1.5)).toBe(arcPath(1));
+  });
+
+  it("switches to the large-arc flag past the halfway mark", () => {
+    // <= 0.5 → large-arc flag 0; > 0.5 → 1.
+    expect(arcPath(0.4)).toMatch(/0 0 1/);
+    expect(arcPath(0.6)).toMatch(/0 1 1/);
+  });
+});
+
+describe("fillColor", () => {
+  it("returns accent for low usage", () => {
+    expect(fillColor(0.5)).toBe("var(--accent)");
+  });
+
+  it("returns a warning colour in the 75–90% band", () => {
+    expect(fillColor(0.8)).toBe("#f5a623");
+  });
+
+  it("returns danger at/above 90%", () => {
+    expect(fillColor(0.9)).toBe("var(--danger)");
+    expect(fillColor(1.0)).toBe("var(--danger)");
+  });
+});
+
+describe("QuotaGauge", () => {
+  it("returns null when quota is missing", () => {
+    const { container } = render(<QuotaGauge />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("returns null when memory_count is not a number", () => {
+    const { container } = render(<QuotaGauge quota={{ memory_count: "oops", memory_limit: 100 }} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders a plain count when memory_limit is null (admin/exempt)", () => {
+    render(<QuotaGauge quota={{ memory_count: 42, memory_limit: null }} />);
+    expect(screen.getByTestId("quota-gauge-unbounded")).toBeTruthy();
+    expect(screen.getByText("42")).toBeTruthy();
+    expect(screen.getByText(/no quota/i)).toBeTruthy();
+  });
+
+  it("renders a gauge + count / limit + remaining when both set", () => {
+    render(<QuotaGauge quota={{ memory_count: 40, memory_limit: 100 }} />);
+    expect(screen.getByText("40")).toBeTruthy();
+    expect(screen.getByText("/ 100")).toBeTruthy();
+    expect(screen.getByText(/60 remaining/)).toBeTruthy();
+  });
+
+  it("handles memory_limit of 0 without dividing by zero", () => {
+    render(<QuotaGauge quota={{ memory_count: 5, memory_limit: 0 }} />);
+    // No NaN rendered; 0 remaining.
+    expect(screen.getByText("5")).toBeTruthy();
+    expect(screen.getByText(/0 remaining/)).toBeTruthy();
+  });
+});

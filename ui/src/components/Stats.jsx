@@ -4,6 +4,10 @@ import PropTypes from "prop-types";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
 import ActivityHeatmap from "./stats/ActivityHeatmap.jsx";
+import MemoryGrowth from "./stats/MemoryGrowth.jsx";
+import QuotaGauge from "./stats/QuotaGauge.jsx";
+import TagDistribution from "./stats/TagDistribution.jsx";
+import TopRecalled from "./stats/TopRecalled.jsx";
 import { Card } from "./ui/card.jsx";
 
 // #535 — Stats tab scaffolding.
@@ -161,20 +165,20 @@ export default function Stats() {
 
         <GraphCard
           title="Top recalled"
-          description="Your most-hit memories."
+          description="Your most-hit memories — click to open."
           data={data.top_recalled}
           empty="No memory has been recalled yet."
         >
-          <RawPreview value={data.top_recalled} />
+          <TopRecalled data={data.top_recalled} />
         </GraphCard>
 
         <GraphCard
           title="Tag distribution"
-          description="Memories per tag."
+          description="Memories per tag — click a slice to filter."
           data={data.tag_distribution}
           empty="No tags assigned yet."
         >
-          <RawPreview value={data.tag_distribution} />
+          <TagDistribution data={data.tag_distribution} />
         </GraphCard>
 
         <GraphCard
@@ -182,7 +186,7 @@ export default function Stats() {
           description="Cumulative memory count over the window."
           data={data.memory_growth}
         >
-          <RawPreview value={data.memory_growth} />
+          <MemoryGrowth data={data.memory_growth} />
         </GraphCard>
 
         <GraphCard
@@ -190,15 +194,7 @@ export default function Stats() {
           description="Current memory count against your plan limit."
           data={data.quota}
         >
-          <div className="text-sm">
-            <span className="font-semibold">{data.quota.memory_count}</span>
-            {data.quota.memory_limit !== null && (
-              <>
-                {" / "}
-                <span className="text-[var(--text-muted)]">{data.quota.memory_limit}</span>
-              </>
-            )}
-          </div>
+          <QuotaGauge quota={data.quota} />
         </GraphCard>
 
         <GraphCard

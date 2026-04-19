@@ -9,6 +9,30 @@ vi.mock("../api.js", () => ({
   },
 }));
 
+// Stub the chart components — each has its own co-located test file.
+// Mocking keeps Stats.test focused on the parent layout + branch logic
+// and avoids booting recharts + SVG measurement in every test.
+vi.mock("./stats/ActivityHeatmap.jsx", () => ({
+  default: () => <div data-testid="activity-heatmap" />,
+}));
+vi.mock("./stats/TopRecalled.jsx", () => ({
+  default: () => <div data-testid="top-recalled" />,
+}));
+vi.mock("./stats/TagDistribution.jsx", () => ({
+  default: () => <div data-testid="tag-distribution" />,
+}));
+vi.mock("./stats/MemoryGrowth.jsx", () => ({
+  default: () => <div data-testid="memory-growth" />,
+}));
+vi.mock("./stats/QuotaGauge.jsx", () => ({
+  default: ({ quota }) => (
+    <div data-testid="quota-gauge">
+      {quota.memory_count}
+      {quota.memory_limit !== null ? `/${quota.memory_limit}` : ""}
+    </div>
+  ),
+}));
+
 import { api } from "../api.js";
 
 const MINIMAL_STATS = {
@@ -129,28 +153,23 @@ describe("Stats", () => {
     }
   });
 
-  it("renders Quota as 'count / limit'", async () => {
+  it("passes the quota prop through to QuotaGauge", async () => {
     await act(async () => render(<Stats />));
-    await waitFor(() => expect(screen.getByText("Quota")).toBeTruthy());
-    expect(screen.getByText("12")).toBeTruthy();
-    expect(screen.getByText("100")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("quota-gauge")).toBeTruthy());
+    // Mock stringifies the quota to {count}/{limit}.
+    expect(screen.getByTestId("quota-gauge").textContent).toBe("12/100");
   });
 
-  it("renders Quota without limit when memory_limit is null (exempt/admin)", async () => {
+  it("QuotaGauge receives null limit when the user is exempt/admin", async () => {
     api.getAccountStats.mockResolvedValueOnce({
       ...MINIMAL_STATS,
       quota: { memory_count: 7, memory_limit: null },
     });
     await act(async () => render(<Stats />));
-    await waitFor(() => expect(screen.getByText("Quota")).toBeTruthy());
-    const count = screen.getByText("7");
-    expect(count).toBeTruthy();
-    // The divider "/" shouldn't appear when there's no limit. React renders
-    // "{count}{' / '}{limit}" as three separate text nodes, so querying for
-    // the combined string always returns null regardless — assert against
-    // the parent element's full textContent instead, which is a genuine
-    // check that no slash exists alongside the count.
-    expect(count.parentElement.textContent).not.toContain("/");
+    await waitFor(() => expect(screen.getByTestId("quota-gauge")).toBeTruthy());
+    // Mock omits the /limit suffix when memory_limit is null, proving the
+    // prop passed through correctly.
+    expect(screen.getByTestId("quota-gauge").textContent).toBe("7");
   });
 
   it("top-level empty state when user has no memories", async () => {
