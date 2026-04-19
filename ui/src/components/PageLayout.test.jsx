@@ -168,6 +168,25 @@ describe("PageLayout", () => {
     expect(within(drawer).getByRole("button", { name: "Sign in" })).toBeTruthy();
   });
 
+  it("mobile drawer Sign in navigates to /app", async () => {
+    await act(async () => renderInRouter(<PageLayout><span /></PageLayout>));
+    await act(async () => fireEvent.click(screen.getByLabelText("Open menu")));
+    const drawer = document.querySelector("header nav");
+    const signIn = within(drawer).getByRole("button", { name: "Sign in" });
+    await act(async () => fireEvent.click(signIn));
+    expect(mockNavigate).toHaveBeenCalledWith("/app");
+  });
+
+  it("mobile drawer marks the current page with an orange left border", async () => {
+    await act(async () => renderInRouter(<PageLayout><span /></PageLayout>, "/faq"));
+    await act(async () => fireEvent.click(screen.getByLabelText("Open menu")));
+    const drawer = document.querySelector("header nav");
+    const faqLink = within(drawer).getByText("FAQ");
+    expect(faqLink.style.borderLeftColor).toBe("rgb(232, 160, 32)");
+    const pricingLink = within(drawer).getByText("Pricing");
+    expect(pricingLink.style.borderLeftColor).toBe("transparent");
+  });
+
   it("Cookie preferences click clears stored consent and re-shows the banner", async () => {
     localStorage.setItem("hive_ga_consent", "reject");
     const { container } = await act(async () =>
