@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import ActivityHeatmap from "./stats/ActivityHeatmap.jsx";
 import { Card } from "./ui/card.jsx";
 
 // #535 — Stats tab scaffolding.
@@ -151,11 +152,11 @@ export default function Stats() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <GraphCard
           title="Activity heatmap"
-          description="Events per day in the selected window."
+          description="Events per day across the past year."
           data={data.activity_heatmap?.filter((d) => d.count > 0)}
           empty="No activity in this window yet."
         >
-          <RawPreview value={data.activity_heatmap} />
+          <ActivityHeatmap data={data.activity_heatmap} />
         </GraphCard>
 
         <GraphCard
