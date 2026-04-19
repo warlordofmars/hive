@@ -860,7 +860,9 @@ gradually instead of flipping every autonomous PR onto it at once.
      safety gate — if it breaks, revert the fix and reply `This would
      introduce a regression; declining.`), push, reply on the thread
      with `Fixed in <SHA> — <one-line summary>`, resolve the thread,
-     then re-request Copilot review.
+     re-enable auto-merge via `mcp__github__enable_pr_auto_merge`
+     (pushing to a PR with a pending `COMMENTED` review often disarms
+     it), then re-request Copilot review.
    - **Pure style nit** (Tailwind class order, const-vs-let, naming
      preference, import sort) — reply with a short canned decline
      citing project conventions, then resolve the thread.
