@@ -24,6 +24,9 @@ vi.mock("./components/UsersPanel.jsx", () => ({
 vi.mock("./components/SetupPanel.jsx", () => ({
   default: () => <div data-testid="setup-panel" />,
 }));
+vi.mock("./components/Stats.jsx", () => ({
+  default: () => <div data-testid="stats-panel" />,
+}));
 vi.mock("./components/HomePage.jsx", () => ({
   default: () => <div data-testid="home-page" />,
 }));
@@ -211,6 +214,13 @@ describe("AppShell", () => {
     await act(async () => render(<App />));
     fireEvent.click(screen.getByText("OAuth Clients"));
     expect(screen.getByTestId("client-manager")).toBeTruthy();
+    expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("switches to Stats when the Stats tab is clicked (#535)", async () => {
+    await act(async () => render(<App />));
+    fireEvent.click(screen.getByText("Stats"));
+    expect(screen.getByTestId("stats-panel")).toBeTruthy();
     expect(screen.queryByTestId("memory-browser")).toBeNull();
   });
 
@@ -418,9 +428,9 @@ describe("AppShell", () => {
     await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: /toggle navigation/i }));
     const mobileNav = screen.getByTestId("mobile-nav");
-    // Click "OAuth Clients" (second tab button in mobile nav)
+    // Click "OAuth Clients" — third tab now that Stats sits at index 1 (#535).
     const mobileButtons = mobileNav.querySelectorAll("button[type='button']");
-    fireEvent.click(mobileButtons[1]);
+    fireEvent.click(mobileButtons[2]);
     expect(screen.queryByTestId("mobile-nav")).toBeNull();
     expect(screen.getByTestId("client-manager")).toBeTruthy();
   });

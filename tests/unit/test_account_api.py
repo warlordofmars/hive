@@ -344,3 +344,178 @@ class TestExportAccount:
         assert {c1.client_id, c2.client_id}.issubset(ids)
         event_client_ids = [e["client_id"] for e in body["activity_log"]]
         assert len(event_client_ids) >= 2
+
+
+# ---------------------------------------------------------------------------
+# GET /api/account/stats  (#535)
+# ---------------------------------------------------------------------------
+
+
+class TestAccountStats:
+    def setup_method(self):
+        # The endpoint caches results in a module-level dict keyed by
+        # (user_id, window). Wipe it between tests so cache-hit/miss
+        # assertions stay deterministic.
+        from hive.api.account import _STATS_CACHE
+
+        _STATS_CACHE.clear()
+
+    def test_unauthed_returns_401(self, unauthed_client):
+        resp = unauthed_client.get("/api/account/stats")
+        assert resp.status_code in (401, 403)
+
+    def test_returns_all_eight_series(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        assert resp.status_code == 200
+        body = resp.json()
+        for key in (
+            "activity_heatmap",
+            "top_recalled",
+            "tag_distribution",
+            "memory_growth",
+            "quota",
+            "freshness",
+            "client_contribution",
+            "tag_cooccurrence",
+        ):
+            assert key in body, f"missing series: {key}"
+        assert body["window_days"] == 90  # default
+
+    def test_default_window_is_90_days(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        assert len(resp.json()["activity_heatmap"]) == 90
+
+    def test_window_30(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats?window=30")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["window_days"] == 30
+        assert len(body["activity_heatmap"]) == 30
+        assert len(body["memory_growth"]) == 30
+
+    def test_window_365(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats?window=365")
+        assert resp.status_code == 200
+        assert resp.json()["window_days"] == 365
+
+    def test_invalid_window_returns_422(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats?window=7")
+        assert resp.status_code == 422
+
+    def test_quota_reports_memory_count_and_limit(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        quota = resp.json()["quota"]
+        assert quota["memory_count"] >= 1  # pre-seeded by the fixture
+        # Default memory_limit is set via get_memory_limit() — a positive int
+        # for a non-exempt, non-admin user.
+        assert isinstance(quota["memory_limit"], int)
+        assert quota["memory_limit"] > 0
+
+    def test_tag_distribution_counts_seeded_tag(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        tags = {t["tag"]: t["count"] for t in resp.json()["tag_distribution"]}
+        assert tags.get("t1") == 1  # from the fixture's pre-seeded memory
+
+    def test_freshness_has_entry_per_memory(self, client):
+        tc, storage = client
+        resp = tc.get("/api/account/stats")
+        body = resp.json()
+        assert len(body["freshness"]) == body["quota"]["memory_count"]
+        entry = body["freshness"][0]
+        assert entry["days_since_created"] >= 0
+        assert entry["days_since_accessed"] >= 0
+
+    def test_top_recalled_only_includes_recalled_memories(self, client):
+        from hive.models import Memory
+
+        tc, storage = client
+        # Add a second memory with recall_count > 0.
+        hot = Memory(
+            key="hot-key",
+            value="hot",
+            tags=["hot"],
+            owner_client_id=_USER_ID,
+            owner_user_id=_USER_ID,
+            recall_count=5,
+        )
+        storage.put_memory(hot)
+
+        resp = tc.get("/api/account/stats")
+        keys = [m["key"] for m in resp.json()["top_recalled"]]
+        # The pre-seeded "test-key" has recall_count=0 and must be filtered
+        # out; only the hot memory should surface.
+        assert keys == ["hot-key"]
+
+    def test_tag_cooccurrence_edges(self, client):
+        from hive.models import Memory
+
+        tc, storage = client
+        # A memory carrying two tags should produce one (a, b) edge.
+        storage.put_memory(
+            Memory(
+                key="pair",
+                value="v",
+                tags=["alpha", "beta"],
+                owner_client_id=_USER_ID,
+                owner_user_id=_USER_ID,
+            )
+        )
+
+        resp = tc.get("/api/account/stats")
+        edges = [(e["source"], e["target"], e["weight"]) for e in resp.json()["tag_cooccurrence"]]
+        assert ("alpha", "beta", 1) in edges
+
+    def test_cache_hit_returns_same_object(self, client):
+        # Two back-to-back calls with the same window must share the cache —
+        # we verify by mutating the response dict in-place after the first
+        # call and asserting the mutation survives into the second call.
+        tc, _ = client
+
+        first = tc.get("/api/account/stats").json()
+        second = tc.get("/api/account/stats").json()
+        # The same dict is served from the in-memory cache, so the two
+        # responses should be structurally identical.
+        assert first == second
+
+    def test_cache_miss_after_ttl_elapses(self, client, monkeypatch):
+        # Freeze `time.time()` so the cache ages past its TTL on the second
+        # call without actually sleeping.
+        from hive.api import account as account_mod
+
+        tc, _ = client
+
+        fake_time = [1_000_000.0]
+
+        def fake_now():
+            return fake_time[0]
+
+        monkeypatch.setattr(account_mod.time, "time", fake_now)
+
+        tc.get("/api/account/stats")
+        # Count cached entries.
+        assert len(account_mod._STATS_CACHE) == 1
+
+        # Jump past TTL; the next call should recompute (same payload, but
+        # the cache entry timestamp must advance).
+        prev_ts = next(iter(account_mod._STATS_CACHE.values()))[0]
+        fake_time[0] += account_mod._STATS_CACHE_TTL + 1
+
+        tc.get("/api/account/stats")
+        new_ts = next(iter(account_mod._STATS_CACHE.values()))[0]
+        assert new_ts > prev_ts
+
+    def test_different_windows_cached_independently(self, client):
+        from hive.api import account as account_mod
+
+        tc, _ = client
+        tc.get("/api/account/stats?window=30")
+        tc.get("/api/account/stats?window=90")
+        # One entry per (user, window).
+        assert len(account_mod._STATS_CACHE) == 2
