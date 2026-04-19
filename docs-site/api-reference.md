@@ -120,18 +120,19 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 
-.api-reference-page main > h1,
-.api-reference-page main > p {
-  padding: 24px 24px 0;
-  margin: 0;
+.api-reference-page .vp-doc > h1,
+.api-reference-page .vp-doc > p {
+  padding: 0 32px;
+  margin: 24px 0 0;
 }
 
-.api-reference-page main > p {
-  padding-bottom: 16px;
+.api-reference-page .vp-doc > p {
+  margin-bottom: 24px;
 }
 
 .api-reference-page #swagger-ui-container {
   width: 100%;
+  margin-top: 24px;
 }
 </style>
 
