@@ -22,7 +22,7 @@ const WINDOWS = [
 function hasData(value) {
   if (Array.isArray(value)) return value.length > 0;
   if (value && typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
+  return false;
 }
 
 export function GraphCard({ title, description, data, empty, children }) {
@@ -55,17 +55,20 @@ GraphCard.propTypes = {
 // Shows a compact JSON preview so we can eyeball the aggregate shape on
 // the deployed page without waiting for all the chart work.
 function RawPreview({ value, take = 5 }) {
-  const sample = Array.isArray(value) ? value.slice(0, take) : value;
+  // Called with arrays only — the <GraphCard> parent suppresses us when
+  // its `data` prop is empty/missing, so non-array cases can't reach
+  // here.
+  const overflow = value.length > take ? `\n…(+${value.length - take} more)` : "";
   return (
     <pre className="text-[11px] leading-snug text-[var(--text-muted)] overflow-x-auto m-0">
-      {JSON.stringify(sample, null, 2)}
-      {Array.isArray(value) && value.length > take ? `\n…(+${value.length - take} more)` : ""}
+      {JSON.stringify(value.slice(0, take), null, 2)}
+      {overflow}
     </pre>
   );
 }
 
 RawPreview.propTypes = {
-  value: PropTypes.oneOfType([PropTypes.array, PropTypes.object]),
+  value: PropTypes.array,
   take: PropTypes.number,
 };
 

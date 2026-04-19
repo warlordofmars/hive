@@ -81,6 +81,15 @@ describe("GraphCard", () => {
     );
     expect(screen.getByText("No data yet.")).toBeTruthy();
   });
+
+  it("treats undefined data as no data (falls through both type checks)", () => {
+    render(
+      <GraphCard title="T">
+        <div>body</div>
+      </GraphCard>,
+    );
+    expect(screen.getByText("No data yet.")).toBeTruthy();
+  });
 });
 
 describe("Stats", () => {

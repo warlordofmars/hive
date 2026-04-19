@@ -243,9 +243,11 @@ def _compute_account_stats(user_id: str, window_days: int, storage: HiveStorage)
     # activity_heatmap — one row per date in the window, count of own events.
     per_date: dict[str, int] = {}
     for e in own_events:
-        d = e.timestamp.date().isoformat()
-        per_date[d] = per_date.get(d, 0) + 1
-    activity_heatmap = [{"date": d, "count": per_date.get(d, 0)} for d in window_dates]
+        iso_day = e.timestamp.date().isoformat()
+        per_date[iso_day] = per_date.get(iso_day, 0) + 1
+    activity_heatmap = [
+        {"date": iso_day, "count": per_date.get(iso_day, 0)} for iso_day in window_dates
+    ]
 
     # top_recalled — N most-hit memories by recall_count.
     top_recalled = [
@@ -261,11 +263,10 @@ def _compute_account_stats(user_id: str, window_days: int, storage: HiveStorage)
     for m in memories:
         for t in m.tags:
             tag_counts[t] = tag_counts.get(t, 0) + 1
-    tag_distribution = sorted(
-        ({"tag": t, "count": c} for t, c in tag_counts.items()),
-        key=lambda x: x["count"],
-        reverse=True,
-    )
+    tag_distribution: list[dict[str, Any]] = [
+        {"tag": t, "count": c}
+        for t, c in sorted(tag_counts.items(), key=lambda kv: kv[1], reverse=True)
+    ]
 
     # memory_growth — cumulative count at end of each day in the window.
     # Baseline = memories created before the window start; then advance one
@@ -277,13 +278,13 @@ def _compute_account_stats(user_id: str, window_days: int, storage: HiveStorage)
     while idx < len(sorted_mems) and sorted_mems[idx].created_at.date() < window_start:
         cumulative += 1
         idx += 1
-    memory_growth = []
+    memory_growth: list[dict[str, Any]] = []
     for i in range(window_days):
-        d = window_start + timedelta(days=i)
-        while idx < len(sorted_mems) and sorted_mems[idx].created_at.date() <= d:
+        day = window_start + timedelta(days=i)
+        while idx < len(sorted_mems) and sorted_mems[idx].created_at.date() <= day:
             cumulative += 1
             idx += 1
-        memory_growth.append({"date": d.isoformat(), "cumulative": cumulative})
+        memory_growth.append({"date": day.isoformat(), "cumulative": cumulative})
 
     is_exempt = user_id in _exempt_users()
     quota = {
@@ -326,11 +327,10 @@ def _compute_account_stats(user_id: str, window_days: int, storage: HiveStorage)
         for i, src in enumerate(tags):
             for tgt in tags[i + 1 :]:
                 cooccur[(src, tgt)] = cooccur.get((src, tgt), 0) + 1
-    tag_cooccurrence = sorted(
-        ({"source": s, "target": t, "weight": w} for (s, t), w in cooccur.items()),
-        key=lambda x: x["weight"],
-        reverse=True,
-    )
+    tag_cooccurrence: list[dict[str, Any]] = [
+        {"source": s, "target": t, "weight": w}
+        for (s, t), w in sorted(cooccur.items(), key=lambda kv: kv[1], reverse=True)
+    ]
 
     return {
         "window_days": window_days,
