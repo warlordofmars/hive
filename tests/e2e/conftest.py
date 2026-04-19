@@ -45,7 +45,9 @@ async def _issue_token(client_name: str) -> str:
 
     verifier, challenge = _pkce_pair()
 
-    async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False, timeout=_E2E_TIMEOUT) as http:
+    async with httpx.AsyncClient(
+        base_url=API_URL, follow_redirects=False, timeout=_E2E_TIMEOUT
+    ) as http:
         reg = await http.post(
             "/oauth/register",
             json={"client_name": client_name, "redirect_uris": ["http://localhost/cb"]},
@@ -158,7 +160,9 @@ async def live_admin_token() -> str:
     if not ADMIN_EMAIL:
         pytest.skip("HIVE_ADMIN_EMAIL not set")
 
-    async with httpx.AsyncClient(base_url=API_URL, follow_redirects=False, timeout=_E2E_TIMEOUT) as http:
+    async with httpx.AsyncClient(
+        base_url=API_URL, follow_redirects=False, timeout=_E2E_TIMEOUT
+    ) as http:
         resp = await http.get("/auth/login", params={"test_email": ADMIN_EMAIL})
         if resp.status_code in (301, 302, 307, 308):
             pytest.skip("Google OAuth redirect — HIVE_BYPASS_GOOGLE_AUTH not enabled")
