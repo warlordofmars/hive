@@ -143,9 +143,14 @@ describe("Stats", () => {
     });
     await act(async () => render(<Stats />));
     await waitFor(() => expect(screen.getByText("Quota")).toBeTruthy());
-    expect(screen.getByText("7")).toBeTruthy();
-    // The divider "/" shouldn't appear when there's no limit.
-    expect(screen.queryByText("/ 100")).toBeNull();
+    const count = screen.getByText("7");
+    expect(count).toBeTruthy();
+    // The divider "/" shouldn't appear when there's no limit. React renders
+    // "{count}{' / '}{limit}" as three separate text nodes, so querying for
+    // the combined string always returns null regardless — assert against
+    // the parent element's full textContent instead, which is a genuine
+    // check that no slash exists alongside the count.
+    expect(count.parentElement.textContent).not.toContain("/");
   });
 
   it("top-level empty state when user has no memories", async () => {

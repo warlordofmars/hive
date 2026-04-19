@@ -472,17 +472,32 @@ class TestAccountStats:
         edges = [(e["source"], e["target"], e["weight"]) for e in resp.json()["tag_cooccurrence"]]
         assert ("alpha", "beta", 1) in edges
 
-    def test_cache_hit_returns_same_object(self, client):
-        # Two back-to-back calls with the same window must share the cache —
-        # we verify by mutating the response dict in-place after the first
-        # call and asserting the mutation survives into the second call.
+    def test_cache_hit_returns_same_object(self, client, monkeypatch):
+        # Two back-to-back calls with the same window must share the cache.
+        # `assert first == second` alone isn't enough — deterministic input
+        # produces identical output with or without caching. Spy on
+        # `_compute_account_stats` and assert it runs exactly once across
+        # both requests.
+        from hive.api import account as account_mod
+
         tc, _ = client
 
-        first = tc.get("/api/account/stats").json()
-        second = tc.get("/api/account/stats").json()
-        # The same dict is served from the in-memory cache, so the two
-        # responses should be structurally identical.
-        assert first == second
+        calls = 0
+        original = account_mod._compute_account_stats
+
+        def counting_compute(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(account_mod, "_compute_account_stats", counting_compute)
+
+        first = tc.get("/api/account/stats")
+        second = tc.get("/api/account/stats")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert calls == 1
 
     def test_cache_miss_after_ttl_elapses(self, client, monkeypatch):
         # Freeze `time.time()` so the cache ages past its TTL on the second

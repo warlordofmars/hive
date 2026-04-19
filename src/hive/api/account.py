@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -224,7 +224,9 @@ async def export_account(
 # ---------------------------------------------------------------------------
 
 
-def _compute_account_stats(user_id: str, window_days: int, storage: HiveStorage) -> dict[str, Any]:
+def _compute_account_stats(
+    user_id: str, window_days: int, storage: HiveStorage, is_admin: bool = False
+) -> dict[str, Any]:
     """Walk storage once and assemble the eight aggregate series.
 
     Each series is small ( ≤ number of memories or ≤ window_days entries ),
@@ -233,12 +235,26 @@ def _compute_account_stats(user_id: str, window_days: int, storage: HiveStorage)
     """
     memories = list(storage.iter_all_memories(owner_user_id=user_id))
     clients, _ = storage.list_clients(owner_user_id=user_id, limit=EXPORT_CLIENTS_LIMIT)
-    client_ids = {c.client_id for c in clients}
 
-    today = date.today()
+    # Activity events can be logged under a variety of actor ids depending
+    # on the code path: management-API memory CRUD writes ``client_id =
+    # claims['sub']`` (the user id), MCP tool calls write the OAuth client
+    # id, and memories may retain an ``owner_client_id`` for a client that
+    # has since been deleted. Broaden the actor set so none of these fall
+    # silently off the heatmap / contribution charts.
+    activity_actor_ids: set[str] = {c.client_id for c in clients}
+    activity_actor_ids.add(user_id)
+    for m in memories:
+        if m.owner_client_id:
+            activity_actor_ids.add(m.owner_client_id)
+
+    # Anchor the window in UTC — the rest of the module uses UTC for day
+    # math, and `date.today()` in local time can shift the heatmap /
+    # days_since_* buckets by one day around midnight.
+    today = datetime.now(timezone.utc).date()
     window_dates = [(today - timedelta(days=i)).isoformat() for i in range(window_days)]
     events = storage.get_events_for_dates(window_dates, limit=_STATS_EVENT_LIMIT)
-    own_events = [e for e in events if e.client_id in client_ids]
+    own_events = [e for e in events if e.client_id in activity_actor_ids]
 
     # activity_heatmap — one row per date in the window, count of own events.
     per_date: dict[str, int] = {}
@@ -286,7 +302,9 @@ def _compute_account_stats(user_id: str, window_days: int, storage: HiveStorage)
             idx += 1
         memory_growth.append({"date": day.isoformat(), "cumulative": cumulative})
 
-    is_exempt = user_id in _exempt_users()
+    # Admins and explicitly-exempted users both get an unbounded limit —
+    # matches the exemption logic in /api/stats (#535 follow-up).
+    is_exempt = is_admin or user_id in _exempt_users()
     quota = {
         "memory_count": len(memories),
         "memory_limit": None if is_exempt else get_memory_limit(),
@@ -368,13 +386,18 @@ async def get_account_stats(
     ] = "90",
 ) -> dict[str, Any]:
     user_id: str = claims["sub"]
+    is_admin = claims.get("role") == "admin"
     window_days = int(window)
 
     cache_key = f"{user_id}:{window_days}"
     cached = _STATS_CACHE.get(cache_key)
-    if cached and time.time() - cached[0] < _STATS_CACHE_TTL:
-        return cached[1]
+    if cached is not None:
+        if time.time() - cached[0] < _STATS_CACHE_TTL:
+            return cached[1]
+        # Drop the expired entry so the cache doesn't grow unbounded as
+        # new (user, window) keys are seen over the Lambda's lifetime.
+        _STATS_CACHE.pop(cache_key, None)
 
-    data = _compute_account_stats(user_id, window_days, storage)
+    data = _compute_account_stats(user_id, window_days, storage, is_admin=is_admin)
     _STATS_CACHE[cache_key] = (time.time(), data)
     return data
