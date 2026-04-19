@@ -832,6 +832,42 @@ Repeat until all checks pass. Auto-merge fires automatically once they do.
 
 If the same check fails 3 times without a clear fix, stop and ask.
 
+#### 7.5 Request Copilot review (only for `agent-safe` PRs)
+
+Runs **only** when the linked issue is labelled `agent-safe`. For every
+other PR, skip straight to step 8. The gate is intentional — Copilot
+review is opt-in via the label so the team can grow the surface
+gradually instead of flipping every autonomous PR onto it at once.
+
+1. After CI is green, request a Copilot review on the PR via
+   `mcp__github__request_copilot_review`.
+2. Poll `mcp__github__pull_request_read` with `method=get_reviews`
+   every ~60s until a review from the `copilot-pull-request-reviewer`
+   actor appears in `SUBMITTED` state (typically 2–5 min).
+3. Fetch the review comments via `get_review_comments` and triage
+   each unresolved thread:
+   - **Correctness / security / clarity finding** — write the fix on
+     the same branch, run `uv run inv pre-push` locally (the post-fix
+     safety gate — if it breaks, revert the fix, reply `This would
+     introduce a regression; declining.`, resolve the thread), push,
+     then re-request Copilot review.
+   - **Pure style nit** (Tailwind class order, const-vs-let, naming
+     preference, import sort) — decline with a short canned reply
+     citing project conventions, then resolve the thread.
+   - **Ambiguous, architecturally significant, or would meaningfully
+     change scope** — emit
+     `HUMAN_INPUT_REQUIRED: Copilot flagged X on #NNN — unclear call`
+     and stop.
+4. **Hard iteration cap: 3.** After the third Copilot review
+   round-trip, stop and ask — prevents ping-pong where each fix
+   surfaces a new finding.
+5. Once all threads resolved AND CI green, auto-merge fires.
+
+Apply fixes to real findings even if they're small — Copilot's value
+is catching the subtle correctness issues the test suite won't.
+Default to disagreeing on style-only comments; default to agreeing on
+security / correctness / clarity.
+
 #### 8. Monitor development branch CI/CD post-merge
 
 After the PR merges, the `development` branch pipeline triggers. Record the
@@ -995,6 +1031,13 @@ queue trustworthy.
 
 - `epic` — tracking issue with sub-issue checklist; never queue-eligible
 - `bug` / `enhancement` / `chore` — issue type
+- `agent-safe` — PR from this issue runs through the autonomous-flow
+  Copilot review step (§Autonomous issue workflow §7.5). Apply when
+  the work is low-risk enough that an LLM reviewer's feedback is
+  actionable without human judgement: `priority:p2` / `p3`,
+  `size:xs` / `s` / `m`, and not touching `infra/stacks/hive_stack.py`,
+  `.github/workflows/`, or any auth / token-issuance path. Leave off
+  anything that warrants full human review.
 
 ### Issue creation rules
 
