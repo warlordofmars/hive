@@ -355,12 +355,25 @@ gh pr merge --auto --merge
    git checkout -b release/vX.Y.Z origin/development
    ```
 
-2. **Update `CHANGELOG.md`** — move items from `[Unreleased]` to a new
-   versioned section, e.g. `## [X.Y.Z] - 2026-04-11`. The **draft release
-   auto-maintained by Release Drafter** (see
-   https://github.com/warlordofmars/hive/releases) is the source of
-   truth — copy its body into the new section rather than re-deriving
-   from PR history. Commit the change:
+2. **Pick the version number from the drained milestone, not from
+   Release Drafter.** The milestone title (`vX.Y`) is the commitment;
+   Release Drafter's draft often auto-labels the next patch (e.g.
+   `v0.22.1`) because it bumps from the last published tag regardless
+   of scope. If the milestone says `v0.23`, the release is `v0.23.0`.
+
+3. **Update `CHANGELOG.md`** — move items from `[Unreleased]` into a
+   new `## vX.Y.Z — YYYY-MM-DD` section **curated into
+   `Added / Changed / Fixed / Meta` subsections** matching the prior
+   releases in the file. The **draft release auto-maintained by
+   Release Drafter** (see
+   https://github.com/warlordofmars/hive/releases) is the
+   what-landed source of truth — don't re-derive from PR history —
+   but the Drafter body is a flat bulleted list of PR titles; do
+   **not** paste it verbatim. Group related PRs, write 1–2
+   descriptive sentences per bullet explaining *what changed and
+   why*, and cite the PRs in parentheses. Compare the prior versioned
+   section (`v0.22.0`) for the exact tone and subsection structure.
+   Commit the change:
 
    ```bash
    git add CHANGELOG.md
@@ -368,20 +381,20 @@ gh pr merge --auto --merge
    git push -u origin release/vX.Y.Z
    ```
 
-3. **Open a PR** from `release/vX.Y.Z` → `main`:
+4. **Open a PR** from `release/vX.Y.Z` → `main`:
 
    ```bash
    gh pr create --base main --title "release: vX.Y.Z" \
      --body "Release vX.Y.Z. See CHANGELOG for details."
    ```
 
-4. **Merge with `--merge`** (not squash) once CI passes:
+5. **Merge with `--merge`** (not squash) once CI passes:
 
    ```bash
    gh pr merge NNN --merge --delete-branch
    ```
 
-5. **CI takes over** — on merge to `main`, the pipeline automatically:
+6. **CI takes over** — on merge to `main`, the pipeline automatically:
    - Creates the GitHub release + tag
    - Deploys to prod
    - Back-merges `main` → `development`
