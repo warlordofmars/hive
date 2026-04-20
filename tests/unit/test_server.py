@@ -2399,3 +2399,379 @@ class TestMcpResources:
                 body = list_memory_resources()
         # Truncation note mentions the actual limit, not a hard-coded 500.
         assert "Index capped at 2" in body
+
+
+class TestPackContextHelpers:
+    """#452 — unit tests for the pack_context pure-function helpers.
+
+    Split from the integration tests below so token-budget logic can be
+    verified without any auth or storage plumbing.
+    """
+
+    def test_estimate_tokens_empty(self):
+        from hive.server import estimate_tokens
+
+        assert estimate_tokens("") == 0
+
+    def test_estimate_tokens_rounds_up(self):
+        from hive.server import estimate_tokens
+
+        # Ceil arithmetic — 1 char still costs 1 token so the packer
+        # never under-counts a fragment.
+        assert estimate_tokens("a") == 1
+        assert estimate_tokens("abcd") == 1  # exactly 1 token at 4 cpt
+        assert estimate_tokens("abcde") == 2  # 5 chars → 2 tokens
+
+    def test_score_for_ordering_all_modes(self):
+        from hive.server import _score_for_ordering
+
+        kwargs = dict(semantic=0.9, recency=0.4, blended=0.6)
+        assert _score_for_ordering("relevance", **kwargs) == 0.9
+        assert _score_for_ordering("recency", **kwargs) == 0.4
+        assert _score_for_ordering("relevance+recency", **kwargs) == 0.6
+        # Unknown modes fall through to the blended default so a client
+        # passing `ordering="garbage"` still gets sensible output.
+        assert _score_for_ordering("garbage", **kwargs) == 0.6
+
+    def test_pack_memories_greedy_fits_within_budget(self):
+        from hive.models import Memory
+        from hive.server import pack_memories_within_budget
+
+        # Entry lines are `- **{key}**: {value}` so the char count is
+        # 9 + len(value). With 4 chars/token:
+        #   a → ceil(49/4) = 13 tokens
+        #   b → ceil(409/4) = 103 tokens  (too big)
+        #   c → ceil(29/4) = 8 tokens
+        a = Memory(key="a", value="x" * 40, tags=[], owner_client_id="c1")
+        b = Memory(key="b", value="y" * 400, tags=[], owner_client_id="c1")
+        c = Memory(key="c", value="z" * 20, tags=[], owner_client_id="c1")
+
+        packed, used = pack_memories_within_budget(
+            [(a, 1.0), (b, 0.9), (c, 0.8)],
+            budget_tokens=25,
+        )
+        # `a` fits (13 tokens), `b` overflows and is skipped, `c` fits
+        # in the remaining budget. Token count includes the `\n`
+        # separator between entries: 13 (a) + 1 (sep) + 8 (c) = 22.
+        assert [m.key for m in packed] == ["a", "c"]
+        assert used == 22
+
+    def test_pack_memories_empty_when_budget_below_smallest(self):
+        from hive.models import Memory
+        from hive.server import pack_memories_within_budget
+
+        packed, used = pack_memories_within_budget(
+            [(Memory(key="a", value="x" * 1000, tags=[], owner_client_id="c1"), 1.0)],
+            budget_tokens=1,
+        )
+        assert packed == []
+        assert used == 0
+
+    def test_pack_memories_skips_oversized_mid_stream(self):
+        from hive.models import Memory
+        from hive.server import pack_memories_within_budget
+
+        # Test that a mid-stream memory too big for the remaining budget
+        # is skipped without aborting the loop — later small ones still
+        # fit.
+        small = Memory(key="s1", value="x" * 10, tags=[], owner_client_id="c1")
+        huge = Memory(key="huge", value="y" * 1000, tags=[], owner_client_id="c1")
+        also_small = Memory(key="s2", value="z" * 10, tags=[], owner_client_id="c1")
+        packed, _ = pack_memories_within_budget(
+            [(small, 1.0), (huge, 0.9), (also_small, 0.8)],
+            budget_tokens=50,
+        )
+        assert [m.key for m in packed] == ["s1", "s2"]
+
+    def test_render_packed_context_empty_has_explanatory_body(self):
+        from hive.server import _render_packed_context
+
+        out = _render_packed_context("ops", [], 0)
+        assert "0 memories" in out
+        # Users should get a reason, not just an empty block.
+        assert "No relevant memories" in out
+
+    def test_render_empty_within_budget_returns_full_when_it_fits(self):
+        from hive.server import _render_empty_within_budget
+
+        out = _render_empty_within_budget("ops", 1000)
+        assert "No relevant memories" in out
+
+    def test_render_empty_within_budget_drops_body_when_too_tight(self):
+        from hive.server import _render_empty_within_budget, estimate_tokens
+
+        # Budget between "header only" and "header + explanatory body".
+        out = _render_empty_within_budget("ops", 15)
+        # The explanatory body is gone but the header survives.
+        assert "No relevant memories" not in out
+        assert "## Context for 'ops'" in out
+        assert estimate_tokens(out) <= 15
+
+    def test_render_empty_within_budget_falls_back_to_terse(self):
+        from hive.server import _render_empty_within_budget
+
+        # 5-token budget is too tight for the header; falls back to the
+        # single-line terse message.
+        out = _render_empty_within_budget("ops", 5)
+        assert out == "_no context_"
+
+    def test_render_empty_within_budget_returns_empty_for_zero_budget(self):
+        from hive.server import _render_empty_within_budget
+
+        # 1-token budget can't fit even "_no context_" (3 tokens) so
+        # the tool returns an empty string rather than break contract.
+        assert _render_empty_within_budget("ops", 1) == ""
+
+    def test_render_packed_context_formats_entries(self):
+        from hive.models import Memory
+        from hive.server import _render_packed_context
+
+        # Singular copy — `1 memory`, not the grammatically wrong
+        # "1 memories" the first draft would have shown.
+        m = Memory(key="k", value="v", tags=[], owner_client_id="c1")
+        out = _render_packed_context("ops", [m], 3)
+        assert out.startswith("## Context for 'ops' (1 memory, ~3 tokens)")
+        assert "- **k**: v" in out
+
+        # Plural copy — ≥2 memories → `memories`.
+        m2 = Memory(key="k2", value="v2", tags=[], owner_client_id="c1")
+        plural = _render_packed_context("ops", [m, m2], 6)
+        assert plural.startswith("## Context for 'ops' (2 memories, ~6 tokens)")
+
+
+class TestPackContext:
+    """#452 — integration tests for the pack_context MCP tool."""
+
+    async def test_returns_empty_block_when_no_index(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context
+        from hive.vector_store import VectorIndexNotFoundError
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = VectorIndexNotFoundError("no index")
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("anything", ctx=_make_ctx(jwt))
+        assert "0 memories" in _text(result)
+
+    async def test_returns_empty_block_on_vector_error(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context
+
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+        mock_vs.search.side_effect = RuntimeError("bedrock down")
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("anything", ctx=_make_ctx(jwt))
+        # Non-fatal degradation — we return an empty block rather than a
+        # ToolError, matching search_memories' behaviour.
+        assert "0 memories" in _text(result)
+
+    async def test_packs_memories_matching_topic(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("alpha", "alpha content about topic", [], ctx=ctx)
+        await remember("beta", "beta content about topic", [], ctx=ctx)
+        m_alpha = storage.get_memory_by_key("alpha")
+        m_beta = storage.get_memory_by_key("beta")
+
+        mock_vs = _make_mock_vector_store([(m_alpha.memory_id, 0.9), (m_beta.memory_id, 0.8)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("topic", budget_tokens=500, ctx=ctx)
+
+        text = _text(result)
+        assert "2 memories" in text
+        assert "- **alpha**: alpha content about topic" in text
+        assert "- **beta**: beta content about topic" in text
+
+    async def test_packs_within_budget_when_memories_overflow(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        # Each value is 200 chars ≈ 50 tokens; two of these plus the
+        # line-format wrapper will blow a 30-token budget, so only one
+        # should land.
+        await remember("small", "x" * 200, [], ctx=ctx)
+        await remember("huge", "y" * 200, [], ctx=ctx)
+        m_s = storage.get_memory_by_key("small")
+        m_h = storage.get_memory_by_key("huge")
+        mock_vs = _make_mock_vector_store([(m_s.memory_id, 0.9), (m_h.memory_id, 0.8)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            # Each entry is ~54 tokens (13-char prefix + 200-char value).
+            # Budget 100 minus the ~14-token header reserve leaves ~86
+            # tokens — enough for one memory, but two would need ~108.
+            result = await pack_context("topic", budget_tokens=100, ctx=ctx)
+        text = _text(result)
+        # Only the first (higher-scoring) memory fits; the second is
+        # skipped silently rather than truncated.
+        assert "1 memory" in text
+        assert "- **small**" in text
+        assert "- **huge**" not in text
+
+    async def test_skips_redacted_memories(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context, redact_memory, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("visible", "visible content", [], ctx=ctx)
+        await remember("tombstoned", "private content", [], ctx=ctx)
+        await redact_memory("tombstoned", ctx=ctx)
+
+        m_v = storage.get_memory_by_key("visible")
+        m_t = storage.get_memory_by_key("tombstoned")
+        mock_vs = _make_mock_vector_store([(m_v.memory_id, 0.9), (m_t.memory_id, 0.85)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("content", budget_tokens=500, ctx=ctx)
+        text = _text(result)
+        assert "- **visible**" in text
+        # Tombstoned memories must never surface — pack_context has no
+        # include_redacted escape hatch on purpose; redacted memories
+        # belong out of reach.
+        assert "tombstoned" not in text
+        assert "private content" not in text
+
+    async def test_ordering_modes_sort_candidates_differently(self, server_env):
+        """Pure-relevance puts high-semantic first; pure-recency inverts it."""
+        from unittest.mock import patch
+
+        from hive.server import pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("old-but-relevant", "very relevant content", [], ctx=ctx)
+        await remember("new-but-off-topic", "less relevant content", [], ctx=ctx)
+        m_old = storage.get_memory_by_key("old-but-relevant")
+        m_new = storage.get_memory_by_key("new-but-off-topic")
+        # Manually backdate `old-but-relevant` so recency score rewards
+        # the newer entry even though its semantic score is lower.
+        m_old.updated_at = datetime.now(timezone.utc) - timedelta(days=365)
+        m_old.created_at = m_old.updated_at
+        storage.put_memory(m_old)
+
+        mock_vs = _make_mock_vector_store([(m_old.memory_id, 0.95), (m_new.memory_id, 0.4)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            relevance_first = await pack_context(
+                "relevant", budget_tokens=40, ordering="relevance", ctx=ctx
+            )
+        # `relevance` ranking puts the high-semantic memory first, so
+        # it's the one that lands in the 40-token budget.
+        assert "- **old-but-relevant**" in _text(relevance_first)
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            recency_first = await pack_context(
+                "relevant", budget_tokens=40, ordering="recency", ctx=ctx
+            )
+        # `recency` ranking picks the newer-but-off-topic one instead.
+        assert "- **new-but-off-topic**" in _text(recency_first)
+
+    async def test_clamps_budget_to_valid_range(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context
+
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        mock_vs = _make_mock_vector_store([])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            # Budget 0 clamps to 1 — the tiny-budget fallback returns an
+            # empty string rather than overshooting the advertised
+            # budget with header text. No crash, contract honoured.
+            result = await pack_context("x", budget_tokens=0, ctx=ctx)
+        assert _text(result) == ""
+
+        # A sub-default but reasonable budget (say, 50) should still
+        # render the empty block when there are no candidates.
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("x", budget_tokens=50, ctx=ctx)
+        assert "0 memories" in _text(result)
+
+    async def test_tiny_budget_falls_back_to_empty_within_budget(self, server_env):
+        """Regression for iter-3 r3111445601 — budget ≤ header_reserve.
+
+        When `budget_tokens` is tiny (< header_reserve ~14 tokens), the
+        successful path used to call pack_memories_within_budget with
+        an artificially floored budget of 1 and then render the full
+        header, overshooting the advertised budget. Now it degrades to
+        `_render_empty_within_budget` like the vector-error branches.
+        """
+        from unittest.mock import patch
+
+        from hive.server import estimate_tokens, pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "some-content", [], ctx=ctx)
+        m = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.9)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("t", budget_tokens=5, ctx=ctx)
+        rendered = _text(result)
+        # Contract holds: rendered output fits in the advertised budget.
+        assert estimate_tokens(rendered) <= 5
+
+    async def test_rendered_overshoot_collapses_to_empty(self, server_env):
+        """Belt-and-braces: if the token heuristic mis-counts the rendered
+        output (e.g. weird unicode the 4-chars-per-token heuristic
+        overshoots), the final rendered block is recomputed from
+        `_render_empty_within_budget` so the advertised budget still
+        holds. Exercised by injecting a mid-stream spike into
+        ``estimate_tokens`` after the greedy packer has already fit.
+        """
+        from unittest.mock import patch
+
+        from hive.server import pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "content", [], ctx=ctx)
+        m = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.9)])
+
+        # First call = header_reserve probe (small); subsequent calls
+        # (per-memory + final rendered check) return a spike that
+        # tricks the "rendered > budget" guard into firing.
+        call_count = {"n": 0}
+
+        def fake_estimate(text: str) -> int:
+            call_count["n"] += 1
+            return 1 if call_count["n"] == 1 else 10_000
+
+        with (
+            patch("hive.server._vector_store", return_value=mock_vs),
+            patch("hive.server.estimate_tokens", side_effect=fake_estimate),
+        ):
+            result = await pack_context("t", budget_tokens=500, ctx=ctx)
+
+        # Overshoot branch fired — result is the empty-fallback header,
+        # not the packed-memories block.
+        rendered = _text(result)
+        assert "- **" not in rendered  # no packed bullets
+
+    async def test_invalid_ordering_falls_back_to_blend(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "content", [], ctx=ctx)
+        m = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.9)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            # Unknown ordering string must not crash the tool — it
+            # silently falls back to the default blend. Agents that
+            # typo "relevancy" should still get a usable response.
+            result = await pack_context("content", ordering="nonsense", ctx=ctx)
+        assert "1 memory" in _text(result)

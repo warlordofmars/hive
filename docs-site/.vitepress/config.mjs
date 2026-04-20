@@ -82,6 +82,7 @@ export default defineConfig({
           { text: "list_memories", link: "/tools/list-memories" },
           { text: "search_memories", link: "/tools/search-memories" },
           { text: "summarize_context", link: "/tools/summarize-context" },
+          { text: "pack_context", link: "/tools/pack-context" },
           { text: "Prompts (slash commands)", link: "/tools/prompts" },
         ],
       },

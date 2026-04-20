@@ -1,6 +1,6 @@
 # MCP tools overview
 
-Hive exposes six tools that your AI agent can call during a conversation. You don't invoke these directly — your agent decides when to use them based on your instructions.
+Hive exposes seven tools that your AI agent can call during a conversation. You don't invoke these directly — your agent decides when to use them based on your instructions.
 
 ## Tool summary
 
@@ -12,6 +12,7 @@ Hive exposes six tools that your AI agent can call during a conversation. You do
 | [`list_memories`](/tools/list-memories) | List all memories with a given tag |
 | [`search_memories`](/tools/search-memories) | Search memories by semantic similarity |
 | [`summarize_context`](/tools/summarize-context) | Summarise all memories on a topic |
+| [`pack_context`](/tools/pack-context) | Token-budget-aware context pack for agents |
 
 ## Scopes
 
@@ -19,7 +20,7 @@ Each OAuth token has one or both of the following scopes:
 
 | Scope | Grants access to |
 | --- | --- |
-| `memories:read` | `recall`, `list_memories`, `search_memories`, `summarize_context` |
+| `memories:read` | `recall`, `list_memories`, `search_memories`, `summarize_context`, `pack_context` |
 | `memories:write` | `remember`, `forget` |
 
 Tokens issued through the standard OAuth flow get both scopes by default.
@@ -33,6 +34,7 @@ You typically don't need to tell your agent which tool to use — just give natu
 - *"List everything tagged..."* → `list_memories`
 - *"Forget the..."* → `forget`
 - *"Give me a summary of..."* → `summarize_context`
+- *"Fill my remaining context window with..."* → `pack_context`
 
 ## Progress notifications
 
