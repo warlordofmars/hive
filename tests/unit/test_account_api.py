@@ -431,6 +431,10 @@ class TestAccountStats:
         entry = body["freshness"][0]
         assert entry["days_since_created"] >= 0
         assert entry["days_since_accessed"] >= 0
+        # Key + tags ride along so the scatter tooltip + click-through can
+        # work without a second API round-trip per dot.
+        assert isinstance(entry["key"], str) and entry["key"]
+        assert isinstance(entry["tags"], list)
 
     def test_top_recalled_only_includes_recalled_memories(self, client):
         from hive.models import Memory
