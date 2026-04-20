@@ -1495,10 +1495,14 @@ def forget_older_than_prompt(
 # Exposes the caller's memories as read-only MCP Resources in addition
 # to the existing tool surface. Supported URIs:
 #
-#   memory://index        — newline-separated list of memory:// URIs the
+#   memory://_index       — newline-separated list of memory:// URIs the
 #                           authenticated client owns
 #   memory://{key}        — the value of a single memory, addressable by
 #                           key
+#
+# The leading underscore on `_index` puts it in a reserved namespace so
+# a user can still store and read a memory whose key is literally
+# `index` — otherwise the concrete URI would shadow the template.
 #
 # All reads are scoped to the authenticated OAuth client (client_id) and
 # require the `memories:read` scope. Resources are intentionally read-
@@ -1560,13 +1564,15 @@ def _resource_auth() -> tuple[HiveStorage, str]:
 
 
 @mcp.resource(
-    "memory://index",
+    "memory://_index",
     name="Memory index",
     description=(
         "Newline-separated list of `memory://` URIs owned by the authenticated "
         "client. Read this first to discover what's available, then read "
         "individual memories via `memory://{key}`. Keys containing `/` or `:` "
-        "are percent-encoded so each URI round-trips losslessly."
+        "are percent-encoded so each URI round-trips losslessly. The "
+        "underscore-prefixed path is reserved so a memory with the literal "
+        "key `index` can still be read via `memory://index`."
     ),
     mime_type="text/plain",
 )

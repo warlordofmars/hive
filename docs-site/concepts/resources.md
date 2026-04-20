@@ -12,7 +12,7 @@ Alongside its [tools](/tools/overview) and [prompts](/tools/prompts), Hive expos
 
 | URI | What it returns |
 | --- | --- |
-| `memory://index` | A newline-separated list of every `memory://{key}` URI the authenticated client owns |
+| `memory://_index` | A newline-separated list of every `memory://{key}` URI the authenticated client owns. The leading underscore is a reserved namespace — a user can still store a memory with the literal key `index` and read it via `memory://index`. |
 | `memory://{key}` | The value of one specific memory |
 
 All reads are scoped to the authenticated OAuth client (`client_id`) and require the `memories:read` scope. The token flows through the same `Authorization: Bearer <token>` header as the tools — nothing new to configure.
@@ -21,10 +21,10 @@ All reads are scoped to the authenticated OAuth client (`client_id`) and require
 
 Resources are listed in two places:
 
-- `resources/list` returns the concrete `memory://index` resource
+- `resources/list` returns the concrete `memory://_index` resource
 - `resources/templates/list` returns the template `memory://{key}`
 
-Clients typically read `memory://index` first to discover what's available. Keys that contain `/` or `:` are [percent-encoded](https://datatracker.ietf.org/doc/html/rfc3986#section-2.1) so each URI is parseable by standard URI tooling and round-trips losslessly:
+Clients typically read `memory://_index` first to discover what's available. Keys that contain `/` or `:` are [percent-encoded](https://datatracker.ietf.org/doc/html/rfc3986#section-2.1) so each URI is parseable by standard URI tooling and round-trips losslessly:
 
 ```
 memory://release-cadence
@@ -52,7 +52,7 @@ memory://release-cadence
 Resource reads enforce tenant isolation at the handler level:
 
 - `memory://{key}` returns "not found" (not "forbidden") when the key belongs to another OAuth client, so the existence of another tenant's keys never leaks
-- `memory://index` only enumerates memories owned by the authenticated client — other tenants' keys never appear
+- `memory://_index` only enumerates memories owned by the authenticated client — other tenants' keys never appear
 
 ## Redacted memories
 
@@ -60,7 +60,7 @@ Memories that have been tombstoned via the `redact_memory` tool are excluded fro
 
 ## Truncation
 
-`memory://index` caps at the first 500 entries (sorted alphabetically). Redacted and expired memories are filtered out of the rendered body, so the visible URI count is often smaller than the cap. When the cap triggers, the body ends with a note directing the agent to fall back to the [`list_memories`](/tools/list-memories) tool for narrower retrieval — tags are the right primitive for large corpora.
+`memory://_index` caps at the first 500 entries (sorted alphabetically). Redacted and expired memories are filtered out of the rendered body, so the visible URI count is often smaller than the cap. When the cap triggers, the body ends with a note directing the agent to fall back to the [`list_memories`](/tools/list-memories) tool for narrower retrieval — tags are the right primitive for large corpora.
 
 ## Writes still go through tools
 

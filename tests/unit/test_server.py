@@ -2130,7 +2130,7 @@ class TestMcpResources:
         uris = {str(r.uri) for r in resources}
         # Static index resource must be registered so clients see it in
         # `resources/list` without needing to build a URI.
-        assert "memory://index" in uris
+        assert "memory://_index" in uris
 
         templates = await mcp.list_resource_templates()
         template_uris = {str(t.uri_template) for t in templates}
@@ -2208,6 +2208,36 @@ class TestMcpResources:
         with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
             value = read_memory_resource("res-key")
         assert value == "res-value"
+
+    async def test_index_uri_does_not_shadow_key_named_index(self, server_env):
+        """Regression for iter-3 r3111826839.
+
+        The static `memory://_index` URI lives in an underscore-prefixed
+        reserved namespace so a user's memory with the literal key
+        `index` can still be read as `memory://index` via the template.
+        """
+        from unittest.mock import patch
+
+        from hive.server import (
+            list_memory_resources,
+            read_memory_resource,
+            remember,
+        )
+
+        _, client_id, jwt = server_env
+        # Store a memory with key literally "index".
+        await remember("index", "the real index value", [], ctx=_make_ctx(jwt))
+
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            # Template read resolves to the user's memory, not the
+            # index listing.
+            value = read_memory_resource("index")
+            assert value == "the real index value"
+
+            # The static index listing is still reachable at its
+            # reserved URI and contains the user's `index` key.
+            body = list_memory_resources()
+        assert "memory://index" in body.splitlines()
 
     async def test_resource_uri_round_trips_keys_with_slash_and_colon(self, server_env):
         """Keys legally contain `/` and `:` (see key-conventions docs).
