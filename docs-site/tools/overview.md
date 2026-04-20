@@ -1,6 +1,6 @@
 # MCP tools overview
 
-Hive exposes six tools that your AI agent can call during a conversation. You don't invoke these directly — your agent decides when to use them based on your instructions.
+Hive exposes seven tools that your AI agent can call during a conversation. You don't invoke these directly — your agent decides when to use them based on your instructions.
 
 ## Tool summary
 
@@ -12,6 +12,7 @@ Hive exposes six tools that your AI agent can call during a conversation. You do
 | [`list_memories`](/tools/list-memories) | List all memories with a given tag |
 | [`search_memories`](/tools/search-memories) | Search memories by semantic similarity |
 | [`summarize_context`](/tools/summarize-context) | Summarise all memories on a topic |
+| [`pack_context`](/tools/pack-context) | Token-budget-aware context pack for agents |
 
 ## Scopes
 

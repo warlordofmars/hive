@@ -13,6 +13,7 @@ Tools:
   list_memories(tag)          — list memories by tag
   list_tags()                 — list distinct tags for the caller's memories
   summarize_context(topic)    — synthesise memories into a summary
+  pack_context(topic, ...)    — token-budget-aware context pack (#452)
 """
 
 from __future__ import annotations
@@ -1374,6 +1375,209 @@ async def relate_memories(
         storage,
         client_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# pack_context (#452)
+# ---------------------------------------------------------------------------
+#
+# Token-budget-aware retrieval: agents ask for "as much relevant context
+# as fits in N tokens" rather than top-K or everything-under-a-tag. The
+# tool runs the same hybrid search as `search_memories`, re-orders by
+# the caller's preferred strategy, estimates tokens per candidate, and
+# greedily packs until the budget is exhausted.
+
+
+_PACK_CONTEXT_CANDIDATE_POOL = 50
+_PACK_CONTEXT_DEFAULT_BUDGET = 2000
+_PACK_CONTEXT_MAX_BUDGET = 100_000
+# Conservative char-per-token ratio that covers both English prose and
+# code/JSON fragments without pulling in tiktoken (a ~10MB C extension).
+# Over-estimating is fine — agents prefer under-budget to over-budget.
+_PACK_CONTEXT_CHARS_PER_TOKEN = 4
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count for a block of text.
+
+    Uses a simple chars-per-token heuristic (4 chars ≈ 1 token, the
+    long-run Anthropic/OpenAI English average) instead of tiktoken so
+    the Lambda bundle stays slim. Slightly conservative — the packer
+    would rather leave budget on the table than overflow.
+    """
+    if not text:
+        return 0
+    # ceil so a 3-char string still costs 1 token, not 0.
+    return (len(text) + _PACK_CONTEXT_CHARS_PER_TOKEN - 1) // _PACK_CONTEXT_CHARS_PER_TOKEN
+
+
+def _score_for_ordering(
+    ordering: str,
+    *,
+    semantic: float,
+    recency: float,
+    blended: float,
+) -> float:
+    """Pick the sort key for a candidate memory based on the ordering mode.
+
+    Extracted so the pack-context unit tests can assert each mode
+    directly without walking the full pipeline.
+    """
+    if ordering == "relevance":
+        return semantic
+    if ordering == "recency":
+        return recency
+    # Default: relevance+recency blend (matches search_memories default).
+    return blended
+
+
+def pack_memories_within_budget(
+    memories: list[tuple[Memory, float]],
+    budget_tokens: int,
+) -> tuple[list[Memory], int]:
+    """Greedily pack memories into a token budget, preserving input order.
+
+    ``memories`` is a pre-sorted list of (Memory, score) tuples; the
+    score is only carried for the header and ignored here. Returns the
+    subset that fits and the sum of their estimated tokens.
+
+    Items larger than the remaining budget are skipped — we don't
+    truncate individual memories because a half-quoted decision is
+    worse than a missing one. The caller can drop the budget lower or
+    adjust ordering to surface smaller candidates.
+    """
+    packed: list[Memory] = []
+    used = 0
+    for memory, _score in memories:
+        entry_tokens = estimate_tokens(_render_memory_entry(memory))
+        if used + entry_tokens > budget_tokens:
+            continue
+        packed.append(memory)
+        used += entry_tokens
+    return packed, used
+
+
+def _render_memory_entry(memory: Memory) -> str:
+    """Render a single memory as the line shape used in the packed block."""
+    return f"- **{memory.key}**: {memory.value}"
+
+
+def _render_packed_context(topic: str, packed: list[Memory], used_tokens: int) -> str:
+    """Render the full packed-context string the tool returns.
+
+    Separated from the tool body so the formatting is unit-testable
+    without any storage or auth plumbing.
+    """
+    if not packed:
+        return (
+            f"## Context for {topic!r} (0 memories, ~0 tokens)\n\n"
+            "_No relevant memories fit within the token budget._"
+        )
+    header = f"## Context for {topic!r} ({len(packed)} memories, ~{used_tokens} tokens)"
+    body = "\n".join(_render_memory_entry(m) for m in packed)
+    return f"{header}\n\n{body}"
+
+
+@mcp.tool(
+    title="Pack context",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
+async def pack_context(
+    topic: Annotated[str, "Topic / query to retrieve context for"],
+    budget_tokens: Annotated[
+        int,
+        "Maximum tokens in the returned context block (1–100000). Defaults to 2000.",
+    ] = _PACK_CONTEXT_DEFAULT_BUDGET,
+    ordering: Annotated[
+        str,
+        "How to rank candidates before packing: 'relevance' (pure semantic), "
+        "'recency' (pure last-accessed decay), or 'relevance+recency' (blend, default).",
+    ] = "relevance+recency",
+    ctx: Context | None = None,
+) -> str:
+    """Retrieve as many relevant memories as fit within ``budget_tokens``.
+
+    Unlike ``search_memories`` (fixed top-K) or ``list_memories`` (full
+    tag slice), ``pack_context`` lets the agent ask for "fill my
+    remaining context window with the most useful memories about X".
+    The return is a markdown block ready to drop straight into a
+    prompt — caller doesn't need to post-process JSON.
+    """
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    budget = max(1, min(int(budget_tokens), _PACK_CONTEXT_MAX_BUDGET))
+    mode = (
+        ordering
+        if ordering in {"relevance", "recency", "relevance+recency"}
+        else ("relevance+recency")
+    )
+
+    try:
+        pairs = _vector_store().search(topic, client_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
+    except VectorIndexNotFoundError:
+        return _tool_result(_render_packed_context(topic, [], 0), storage, client_id)
+    except Exception:
+        logger.warning("Vector search failed in pack_context (non-fatal)", exc_info=True)
+        return _tool_result(_render_packed_context(topic, [], 0), storage, client_id)
+
+    hydrated = storage.hydrate_memory_ids(pairs)
+
+    # Score every candidate through the standard blend pipeline so the
+    # `relevance+recency` mode matches search_memories exactly.
+    query_tokens = tokenize(topic)
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[Memory, float]] = []
+    for memory, sem in hydrated:
+        if memory.is_redacted:
+            continue
+        kw = keyword_score(query_tokens, memory.value)
+        rec = recency_score(memory, now=now)
+        blended = blend_score(semantic=sem, keyword=kw, recency=rec)
+        scored.append(
+            (memory, _score_for_ordering(mode, semantic=sem, recency=rec, blended=blended))
+        )
+
+    # Sort descending by chosen score; `reverse=True` keeps the highest
+    # scorer first for the greedy packer to fit first.
+    scored.sort(key=lambda row: row[1], reverse=True)
+    packed, used_tokens = pack_memories_within_budget(scored, budget)
+
+    _log(
+        storage,
+        ActivityEvent(
+            event_type=EventType.memory_searched,
+            client_id=client_id,
+            metadata={
+                "tool": "pack_context",
+                "topic": topic,
+                "budget_tokens": budget,
+                "ordering": mode,
+                "packed_count": len(packed),
+                "used_tokens": used_tokens,
+            },
+        ),
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "pack_context for '%s': %d memories in %d/%d tokens",
+        topic,
+        len(packed),
+        used_tokens,
+        budget,
+        extra={
+            "tool": "pack_context",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="pack_context")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="pack_context",
+    )
+    return _tool_result(_render_packed_context(topic, packed, used_tokens), storage, client_id)
 
 
 # ---------------------------------------------------------------------------
