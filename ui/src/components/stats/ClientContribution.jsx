@@ -11,24 +11,12 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { SLICE_COLORS } from "../../lib/chartPalette.js";
 
 // #539 — stacked bar chart showing "Claude Code wrote X, Cursor wrote Y"
 // over time, one stacked bar per day in the window. Auto-hides with an
 // explanatory caption when the user has only one OAuth client actor,
 // since a single-colour stack reads as noise.
-
-// Same colour palette as TagDistribution so the Stats tab feels cohesive.
-// Keep the brand orange first so the most-active client reads as "primary".
-const CLIENT_COLORS = [
-  "#e8a020", // brand orange
-  "#1a73e8", // blue
-  "#00897b", // teal
-  "#9334e8", // purple
-  "#34a853", // green
-  "#fb923c", // orange-500
-  "#d93025", // red
-  "#64748b", // slate
-];
 
 // Short fallback label when we have no display name for a client id —
 // the first 8 chars keeps client ids distinguishable on the legend
@@ -116,7 +104,7 @@ export default function ClientContribution({ data, clientNames }) {
             dataKey={cid}
             name={cid}
             stackId="events"
-            fill={CLIENT_COLORS[i % CLIENT_COLORS.length]}
+            fill={SLICE_COLORS[i % SLICE_COLORS.length]}
           />
         ))}
       </BarChart>
