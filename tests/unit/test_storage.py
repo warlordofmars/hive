@@ -542,6 +542,104 @@ class TestTokenStorage:
         assert fetched.revoked
 
 
+class TestAuthCodeAtomicRedemption:
+    """#584 — OAuth authorization codes are single-use (RFC 6749 §10.5).
+
+    `mark_auth_code_used` is the commit point of the redemption
+    pipeline; it uses a conditional UpdateItem so concurrent
+    redemptions of the same code can't both succeed.
+    """
+
+    def _create_code(self, storage) -> str:
+        auth_code = storage.create_auth_code(
+            client_id="c1",
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read",
+            code_challenge="challenge",
+        )
+        return auth_code.code
+
+    def test_first_redemption_flips_used(self, storage):
+        from hive.storage import AuthCodeAlreadyUsed
+
+        code = self._create_code(storage)
+        storage.mark_auth_code_used(code)
+
+        fetched = storage.get_auth_code(code)
+        assert fetched is not None
+        assert fetched.used is True
+
+        # Sequential second call raises — the conditional write rejects
+        # because `used = true` no longer matches the expected `false`.
+        with pytest.raises(AuthCodeAlreadyUsed):
+            storage.mark_auth_code_used(code)
+
+    def test_missing_code_raises_already_used(self, storage):
+        from hive.storage import AuthCodeAlreadyUsed
+
+        # `attribute_exists(PK)` in the ConditionExpression guards
+        # against forged codes — a caller cannot spin up new tokens
+        # by passing a code that was never issued.
+        with pytest.raises(AuthCodeAlreadyUsed):
+            storage.mark_auth_code_used("never-issued-code")
+
+    def test_concurrent_redemption_exactly_one_winner(self, storage):
+        """The TOCTOU regression — both callers read `used=False`, race
+        to write. The conditional UpdateItem serialises them and
+        exactly one wins.
+        """
+        import threading
+
+        from hive.storage import AuthCodeAlreadyUsed
+
+        code = self._create_code(storage)
+
+        results: list[str] = []
+        barrier = threading.Barrier(2)
+
+        def redeem() -> None:
+            barrier.wait()  # align both threads on the write
+            try:
+                storage.mark_auth_code_used(code)
+                results.append("ok")
+            except AuthCodeAlreadyUsed:
+                results.append("rejected")
+
+        t1 = threading.Thread(target=redeem)
+        t2 = threading.Thread(target=redeem)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Exactly one redemption succeeds, the other is rejected — no
+        # "both succeed" outcome survives the conditional write.
+        assert sorted(results) == ["ok", "rejected"]
+
+        fetched = storage.get_auth_code(code)
+        assert fetched is not None
+        assert fetched.used is True
+
+    def test_unexpected_client_error_reraises(self, storage):
+        """Only ConditionalCheckFailedException is translated to
+        AuthCodeAlreadyUsed — every other ClientError bubbles up
+        verbatim so accidental swallowing can't mask genuine AWS
+        failures."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=throttled),
+            pytest.raises(ClientError),
+        ):
+            storage.mark_auth_code_used("any-code")
+
+
 # ---------------------------------------------------------------------------
 # Activity log tests
 # ---------------------------------------------------------------------------
