@@ -1581,11 +1581,24 @@ async def pack_context(
     # Reserve budget for the header + trailing blank line so the total
     # rendered tokens stay under the advertised `budget`. Use the most
     # expensive possible header (assumes 5-digit `used_tokens` and
-    # 3-digit count) so we never under-reserve. Floor the effective
-    # budget at 1 so degenerate callers still get an empty block.
+    # 3-digit count) so we never under-reserve.
     header_reserve = estimate_tokens(f"## Context for {topic!r} (000 memories, ~00000 tokens)\n\n")
-    effective_budget = max(1, budget - header_reserve)
-    packed, used_tokens = pack_memories_within_budget(scored, effective_budget)
+    if budget <= header_reserve:
+        # Tiny budget — can't even fit the header. Degrade straight
+        # through the same fallback ladder as the vector-error branches.
+        rendered = _render_empty_within_budget(topic, budget)
+        packed: list[Memory] = []
+        used_tokens = 0
+    else:
+        packed, used_tokens = pack_memories_within_budget(scored, budget - header_reserve)
+        rendered = _render_packed_context(topic, packed, used_tokens)
+        # Belt-and-braces: if our token estimate still overshoots the
+        # rendered output (e.g. weird unicode the heuristic mis-counts),
+        # collapse to the empty fallback so the contract holds.
+        if estimate_tokens(rendered) > budget:
+            rendered = _render_empty_within_budget(topic, budget)
+            packed = []
+            used_tokens = 0
 
     _log(
         storage,
@@ -1622,7 +1635,7 @@ async def pack_context(
         unit="Milliseconds",
         operation="pack_context",
     )
-    return _tool_result(_render_packed_context(topic, packed, used_tokens), storage, client_id)
+    return _tool_result(rendered, storage, client_id)
 
 
 # ---------------------------------------------------------------------------

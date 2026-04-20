@@ -2685,10 +2685,41 @@ class TestPackContext:
         ctx = _make_ctx(jwt)
         mock_vs = _make_mock_vector_store([])
         with patch("hive.server._vector_store", return_value=mock_vs):
-            # Budget 0 clamps to 1; should still render the empty block
-            # (no memories, no tokens) rather than crash.
+            # Budget 0 clamps to 1 — the tiny-budget fallback returns an
+            # empty string rather than overshooting the advertised
+            # budget with header text. No crash, contract honoured.
             result = await pack_context("x", budget_tokens=0, ctx=ctx)
+        assert _text(result) == ""
+
+        # A sub-default but reasonable budget (say, 50) should still
+        # render the empty block when there are no candidates.
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("x", budget_tokens=50, ctx=ctx)
         assert "0 memories" in _text(result)
+
+    async def test_tiny_budget_falls_back_to_empty_within_budget(self, server_env):
+        """Regression for iter-3 r3111445601 — budget ≤ header_reserve.
+
+        When `budget_tokens` is tiny (< header_reserve ~14 tokens), the
+        successful path used to call pack_memories_within_budget with
+        an artificially floored budget of 1 and then render the full
+        header, overshooting the advertised budget. Now it degrades to
+        `_render_empty_within_budget` like the vector-error branches.
+        """
+        from unittest.mock import patch
+
+        from hive.server import estimate_tokens, pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "some-content", [], ctx=ctx)
+        m = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.9)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await pack_context("t", budget_tokens=5, ctx=ctx)
+        rendered = _text(result)
+        # Contract holds: rendered output fits in the advertised budget.
+        assert estimate_tokens(rendered) <= 5
 
     async def test_invalid_ordering_falls_back_to_blend(self, server_env):
         from unittest.mock import patch
