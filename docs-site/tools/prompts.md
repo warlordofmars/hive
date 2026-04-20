@@ -53,7 +53,7 @@ Tags are comma-separated; blank entries are trimmed. If you omit tags the memory
 
 ## `/forget-older-than`
 
-Interactive prune using only Hive's actual MCP tools: the agent calls `list_tags`, walks each tag with `list_memories(tag)`, compares every memory's `last_accessed_at` (the closest proxy to last-touched that the tool response exposes), shows the key + timestamp, and asks for per-memory confirmation before calling `forget`.
+Interactive prune using only Hive's actual MCP tools: the agent calls `list_tags`, walks each tag with `list_memories(tag)`, and compares every memory's `last_accessed_at` to the threshold. If `last_accessed_at` is null (memory written but never recalled), the agent falls back to the `version` timestamp — a UTC ISO string that updates on every write and is always present in the response. The agent shows the key + the timestamp it used and asks for per-memory confirmation before calling `forget`.
 
 **Example**
 
@@ -61,7 +61,7 @@ Interactive prune using only Hive's actual MCP tools: the agent calls `list_tags
 /forget-older-than days=180
 ```
 
-The template explicitly forbids batch-delete without confirmation, so even if the agent returns many stale memories you stay in control. Memories whose `last_accessed_at` is null count as stale when their implicit age exceeds the threshold.
+The template explicitly forbids batch-delete without confirmation, so even if the agent returns many stale memories you stay in control.
 
 ## Client support
 

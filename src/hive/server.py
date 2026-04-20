@@ -1426,9 +1426,9 @@ def what_do_you_know_about_prompt(
 ) -> str:
     return (
         f"Search Hive for {query!r}. Call `search_memories` with query={query!r} "
-        "and top_k=10. Read the highest-scoring results and incorporate them "
-        "into your next response, citing each memory's key. If no memory "
-        "scores above the default threshold, say so plainly."
+        "and top_k=10. Read the returned memories and incorporate them into "
+        "your next response, citing each memory's key. If the returned items "
+        "list is empty, say so plainly."
     )
 
 
@@ -1436,9 +1436,8 @@ def what_do_you_know_about_prompt(
     name="remember-this",
     title="Remember this",
     description=(
-        "Store a memory in Hive under a given key, optionally tagged. The "
-        "value defaults to the current selection or the most recent agent "
-        "message if the client supplies no explicit value."
+        "Store a memory in Hive under a given key, optionally tagged. Supply "
+        "the value explicitly; tags may be omitted."
     ),
 )
 def remember_this_prompt(
@@ -1470,17 +1469,21 @@ def remember_this_prompt(
 def forget_older_than_prompt(
     days: Annotated[int, "Drop memories whose last access is older than this many days"],
 ) -> str:
-    # Uses only tools Hive actually exposes: `list_memories` needs a
-    # tag, so iterate `list_tags()` → `list_memories(tag)` and compare
-    # each item's `last_accessed_at` (the closest proxy to
-    # last-touched). `updated_at` isn't surfaced through the MCP layer.
+    # Uses only tools Hive actually exposes. `list_memories` needs a
+    # tag, so iterate `list_tags()` → `list_memories(tag)`. The tool
+    # response surfaces `last_accessed_at` and `version` (a UTC ISO
+    # timestamp that updates on every write); `version` is the
+    # well-defined fallback when `last_accessed_at` is null (memory
+    # written but never recalled).
     return (
         f"Help me prune stale memories. Call `list_tags` to discover my tag "
         f"namespace, then for each tag call `list_memories(tag)`. For every "
-        f"memory whose `last_accessed_at` is more than {days} days ago (or "
-        f"is null and whose implicit age exceeds {days} days), show me the "
-        "key + last-accessed timestamp and ask 'forget this?' — only call "
-        "`forget` when I reply yes. Do not batch-delete without confirmation."
+        f"memory whose `last_accessed_at` is more than {days} days ago — or "
+        f"whose `last_accessed_at` is null and whose `version` timestamp is "
+        f"more than {days} days ago — show me the key plus the timestamp "
+        "you used (`last_accessed_at` or `version`) and ask 'forget this?' — "
+        "only call `forget` when I reply yes. Do not batch-delete without "
+        "confirmation."
     )
 
 

@@ -2046,6 +2046,10 @@ class TestMcpPrompts:
         assert "`list_memories(tag)`" in out
         assert "`forget`" in out
         assert "last_accessed_at" in out
+        # `version` is the well-defined fallback when `last_accessed_at`
+        # is null — without it the template would hand-wave at
+        # "implicit age" with no field to compute it from.
+        assert "`version`" in out
         assert "updated_at" not in out
         # Safety: the template must explicitly forbid bulk-delete
         # without user confirmation.
