@@ -2,6 +2,8 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import ClientContribution, {
+  makeLegendFormatter,
+  makeTooltipFormatter,
   pivotByDate,
   resolveClientName,
 } from "./ClientContribution.jsx";
@@ -61,6 +63,28 @@ describe("pivotByDate", () => {
       { date: "2026-04-01", client_id: "c1", count: 2 },
     ]);
     expect(rows.map((r) => r.date)).toEqual(["2026-04-01", "2026-04-03"]);
+  });
+});
+
+describe("makeTooltipFormatter / makeLegendFormatter", () => {
+  it("tooltip formatter wraps value + resolved name tuple", () => {
+    const fmt = makeTooltipFormatter({ c1: "Claude Code" });
+    expect(fmt(5, "c1")).toEqual([5, "Claude Code"]);
+  });
+
+  it("tooltip formatter falls back to id prefix when no name map", () => {
+    const fmt = makeTooltipFormatter();
+    expect(fmt(1, "abcdefghijkl")).toEqual([1, "abcdefgh"]);
+  });
+
+  it("legend formatter resolves the value against the name map", () => {
+    const fmt = makeLegendFormatter({ c1: "Claude Code" });
+    expect(fmt("c1")).toBe("Claude Code");
+  });
+
+  it("legend formatter falls back for unknown ids", () => {
+    const fmt = makeLegendFormatter({});
+    expect(fmt("cursorclient")).toBe("cursorcl");
   });
 });
 

@@ -40,6 +40,18 @@ export function resolveClientName(clientId, nameMap) {
   return clientId.slice(0, 8);
 }
 
+// Recharts calls Tooltip/Legend formatters once per rendered segment;
+// jsdom doesn't paint the SVG so those inline arrows would never fire
+// from a component render test. Extract named factories so tests hit
+// them directly (same pattern as TagDistribution.handlePieSliceClick).
+export function makeTooltipFormatter(nameMap) {
+  return (value, name) => [value, resolveClientName(name, nameMap)];
+}
+
+export function makeLegendFormatter(nameMap) {
+  return (value) => resolveClientName(value, nameMap);
+}
+
 // Pivot the flat `[{date, client_id, count}]` entries into
 // `[{date, <client_id>: count, ...}]` rows so recharts' Bar stacking
 // works (recharts needs one column per stack key).
@@ -92,11 +104,11 @@ export default function ClientContribution({ data, clientNames }) {
             border: "1px solid var(--border)",
             fontSize: 12,
           }}
-          formatter={(value, name) => [value, resolveClientName(name, clientNames)]}
+          formatter={makeTooltipFormatter(clientNames)}
         />
         <Legend
           wrapperStyle={{ fontSize: 11, color: "var(--text-muted)" }}
-          formatter={(value) => resolveClientName(value, clientNames)}
+          formatter={makeLegendFormatter(clientNames)}
         />
         {clientIds.map((cid, i) => (
           <Bar

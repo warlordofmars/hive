@@ -63,14 +63,12 @@ const MINIMAL_STATS = {
   })),
   client_contribution: [{ date: "2026-04-01", client_id: "c1", count: 2 }],
   client_names: { c1: "Claude Code" },
-  // Seven entries so RawPreview's `value.length > take` overflow branch
-  // is exercised (default `take` is 5). TagCooccurrence is the last
-  // placeholder card still rendering via RawPreview (until #540 lands).
-  tag_cooccurrence: Array.from({ length: 7 }, (_, i) => ({
-    source: `s${i}`,
-    target: `t${i}`,
-    weight: i + 1,
-  })),
+  // Small tag_cooccurrence exercises RawPreview's `else` branch
+  // (`value.length <= take`). A dedicated test below overrides this
+  // with 7 entries to exercise the `>` overflow branch. TagCooccurrence
+  // is the last placeholder card still rendering via RawPreview
+  // (until #540 lands).
+  tag_cooccurrence: [{ source: "a", target: "b", weight: 1 }],
 };
 
 describe("GraphCard", () => {
@@ -244,5 +242,22 @@ describe("Stats", () => {
     await act(async () => render(<Stats />));
     await waitFor(() => expect(screen.getByText("Activity heatmap")).toBeTruthy());
     expect(screen.getByText("No activity in this window yet.")).toBeTruthy();
+  });
+
+  it("RawPreview renders the '…more' suffix when tag_cooccurrence overflows", async () => {
+    // Exercises RawPreview's `value.length > take` branch — the
+    // default fixture keeps tag_cooccurrence small so the opposite
+    // branch is covered too.
+    api.getAccountStats.mockResolvedValueOnce({
+      ...MINIMAL_STATS,
+      tag_cooccurrence: Array.from({ length: 7 }, (_, i) => ({
+        source: `s${i}`,
+        target: `t${i}`,
+        weight: i + 1,
+      })),
+    });
+    await act(async () => render(<Stats />));
+    await waitFor(() => expect(screen.getByText("Tag co-occurrence")).toBeTruthy());
+    expect(screen.getByText(/\+2 more/)).toBeTruthy();
   });
 });
