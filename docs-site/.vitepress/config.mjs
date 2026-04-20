@@ -100,6 +100,7 @@ export default defineConfig({
           { text: "Tags and organisation", link: "/concepts/tags" },
           { text: "Key naming conventions", link: "/concepts/key-conventions" },
           { text: "Quotas and rate limits", link: "/concepts/quotas" },
+          { text: "MCP Resources", link: "/concepts/resources" },
         ],
       },
       {

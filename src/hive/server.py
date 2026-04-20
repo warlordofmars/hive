@@ -28,7 +28,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
-from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.tools.tool import ToolResult
 from pydantic import AnyHttpUrl
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -1485,6 +1485,95 @@ def forget_older_than_prompt(
         "only call `forget` when I reply yes. Do not batch-delete without "
         "confirmation."
     )
+
+
+# ---------------------------------------------------------------------------
+# MCP Resources (#446)
+# ---------------------------------------------------------------------------
+#
+# Exposes the caller's memories as read-only MCP Resources in addition
+# to the existing tool surface. Supported URIs:
+#
+#   memory://index        — newline-separated list of memory:// URIs the
+#                           authenticated client owns
+#   memory://{key}        — the value of a single memory, addressable by
+#                           key
+#
+# All reads are scoped to the authenticated OAuth client (client_id) and
+# require the `memories:read` scope. Resources are intentionally read-
+# only — writes still go through the `remember` tool so the quota + TTL
+# + version machinery stays in one place.
+
+
+_MEMORY_RESOURCE_LIST_LIMIT = 500
+
+
+def _resource_auth() -> tuple[HiveStorage, str]:
+    """Resolve ``(storage, client_id)`` for an MCP Resource read.
+
+    Resources don't receive a ``Context`` object the way tools do, so
+    the token is pulled via ``get_access_token()`` — the
+    ``RemoteAuthProvider`` on the ``FastMCP`` instance has already
+    validated it by the time the handler runs. Raises ``ValueError``
+    on missing token / insufficient scope; the MCP framework surfaces
+    that as an error response to the client.
+    """
+    token = get_access_token()
+    if token is None:
+        raise ValueError("Unauthorized: no valid access token")
+    scopes = set(token.scopes or [])
+    if _MEMORIES_READ_SCOPE not in scopes:
+        raise ValueError(f"Insufficient scope: '{_MEMORIES_READ_SCOPE}' required")
+    return HiveStorage(), token.client_id
+
+
+@mcp.resource(
+    "memory://index",
+    name="Memory index",
+    description=(
+        "Newline-separated list of `memory://` URIs owned by the authenticated "
+        "client. Read this first to discover what's available, then read "
+        "individual memories via `memory://{key}`."
+    ),
+    mime_type="text/plain",
+)
+def list_memory_resources() -> str:
+    storage, client_id = _resource_auth()
+    memories, next_cursor = storage.list_all_memories(
+        client_id=client_id, limit=_MEMORY_RESOURCE_LIST_LIMIT
+    )
+    uris = sorted(f"memory://{m.key}" for m in memories if not m.is_redacted)
+    body = "\n".join(uris)
+    if next_cursor:
+        # Flag truncation so the agent knows to fall back to
+        # `list_memories(tag=…)` for narrower retrieval rather than
+        # assume the index is exhaustive.
+        body += (
+            f"\n\n_(Truncated at {_MEMORY_RESOURCE_LIST_LIMIT} entries. "
+            "Use the `list_memories` tool with tags for targeted retrieval.)_"
+        )
+    return body
+
+
+@mcp.resource(
+    "memory://{key}",
+    name="Memory content",
+    description=(
+        "Read the value of a single memory by its key. Scoped to the authenticated OAuth client."
+    ),
+    mime_type="text/plain",
+)
+def read_memory_resource(key: str) -> str:
+    storage, client_id = _resource_auth()
+    memory = storage.get_memory_by_key(key)
+    # Tenant isolation: `get_memory_by_key` doesn't filter by owner, so
+    # a client asking for another tenant's key would otherwise succeed.
+    # Treat cross-tenant lookups as 404 to avoid leaking existence.
+    if memory is None or memory.owner_client_id != client_id:
+        raise ValueError(f"Memory not found: {key}")
+    if memory.is_redacted:
+        raise ValueError(f"Memory has been redacted: {key}")
+    return memory.value
 
 
 # ---------------------------------------------------------------------------
