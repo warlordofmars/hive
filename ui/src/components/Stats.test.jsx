@@ -24,6 +24,9 @@ vi.mock("./stats/TagDistribution.jsx", () => ({
 vi.mock("./stats/MemoryGrowth.jsx", () => ({
   default: () => <div data-testid="memory-growth" />,
 }));
+vi.mock("./stats/FreshnessScatter.jsx", () => ({
+  default: () => <div data-testid="freshness-scatter" />,
+}));
 vi.mock("./stats/QuotaGauge.jsx", () => ({
   default: ({ quota }) => (
     <div data-testid="quota-gauge">
@@ -48,16 +51,22 @@ const MINIMAL_STATS = {
     cumulative: i,
   })),
   quota: { memory_count: 12, memory_limit: 100 },
-  // Seven entries so RawPreview's `value.length > take` overflow branch
-  // is exercised (default `take` is 5). The three still-placeholder cards
-  // (Freshness / ClientContribution / TagCooccurrence) render via
-  // RawPreview until their dedicated sub-issues land.
-  freshness: Array.from({ length: 7 }, (_, i) => ({
+  freshness: Array.from({ length: 12 }, (_, i) => ({
     memory_id: `m${i}`,
+    key: `key-${i}`,
+    tags: [`t${i}`],
     days_since_created: i * 5,
     days_since_accessed: i,
   })),
-  client_contribution: [{ date: "2026-04-01", client_id: "c1", count: 2 }],
+  // Seven entries so RawPreview's `value.length > take` overflow branch
+  // is exercised (default `take` is 5). The two remaining placeholder
+  // cards (ClientContribution / TagCooccurrence) still render via
+  // RawPreview until #539 / #540 land.
+  client_contribution: Array.from({ length: 7 }, (_, i) => ({
+    date: `2026-04-${String(i + 1).padStart(2, "0")}`,
+    client_id: `c${i}`,
+    count: i + 1,
+  })),
   tag_cooccurrence: [{ source: "a", target: "b", weight: 3 }],
 };
 

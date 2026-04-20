@@ -4,6 +4,7 @@ import PropTypes from "prop-types";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
 import ActivityHeatmap from "./stats/ActivityHeatmap.jsx";
+import FreshnessScatter from "./stats/FreshnessScatter.jsx";
 import MemoryGrowth from "./stats/MemoryGrowth.jsx";
 import QuotaGauge from "./stats/QuotaGauge.jsx";
 import TagDistribution from "./stats/TagDistribution.jsx";
@@ -12,11 +13,11 @@ import { Card } from "./ui/card.jsx";
 
 // #535 — Stats tab scaffolding.
 //
-// Renders a grid of GraphCards backed by /api/account/stats. Five cards
+// Renders a grid of GraphCards backed by /api/account/stats. Six cards
 // are fully implemented (ActivityHeatmap, TopRecalled, TagDistribution,
-// MemoryGrowth, QuotaGauge); the remaining three (Freshness,
-// ClientContribution, TagCooccurrence) still show a JSON preview via
-// RawPreview until their dedicated sub-issues (#538 / #539 / #540) land.
+// MemoryGrowth, QuotaGauge, FreshnessScatter); the remaining two
+// (ClientContribution, TagCooccurrence) still show a JSON preview via
+// RawPreview until their dedicated sub-issues (#539 / #540) land.
 
 const WINDOWS = [
   { value: "30", label: "Last 30 days" },
@@ -205,8 +206,9 @@ export default function Stats() {
           title="Freshness"
           description="Days since creation and last access per memory."
           data={data.freshness}
+          empty="No freshness data yet."
         >
-          <RawPreview value={data.freshness} />
+          <FreshnessScatter data={data.freshness} />
         </GraphCard>
 
         <GraphCard

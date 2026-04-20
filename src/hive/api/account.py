@@ -322,6 +322,8 @@ def _compute_account_stats(
         freshness.append(
             {
                 "memory_id": m.memory_id,
+                "key": m.key,
+                "tags": m.tags,
                 "days_since_created": age,
                 "days_since_accessed": accessed_age,
             }
