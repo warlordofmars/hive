@@ -2103,3 +2103,299 @@ class TestMcpPrompts:
         msg = result.messages[0]
         assert msg.role == "user"
         assert "ops" in msg.content.text
+
+
+class TestMcpResources:
+    """#446 — MCP Resources exposing memories by URI.
+
+    Resources are auth-protected via ``get_access_token()``; tests mock
+    the dependency so handlers run in isolation without a full FastMCP
+    request context.
+    """
+
+    def _mock_token(self, client_id: str, scopes: list[str] | None = None):
+        """Build a stand-in ``AccessToken`` with the given scopes."""
+        from unittest.mock import MagicMock
+
+        tok = MagicMock()
+        tok.client_id = client_id
+        tok.scopes = scopes if scopes is not None else ["memories:read"]
+        return tok
+
+    @pytest.mark.asyncio
+    async def test_list_resources_advertises_index_and_template(self):
+        from hive.server import mcp
+
+        resources = await mcp.list_resources()
+        uris = {str(r.uri) for r in resources}
+        # Static index resource must be registered so clients see it in
+        # `resources/list` without needing to build a URI.
+        assert "memory://_index" in uris
+
+        templates = await mcp.list_resource_templates()
+        template_uris = {str(t.uri_template) for t in templates}
+        assert "memory://{key}" in template_uris
+
+    def test_resource_auth_rejects_missing_token(self):
+        from unittest.mock import patch
+
+        from hive.server import _resource_auth
+
+        with (
+            patch("hive.server.get_access_token", return_value=None),
+            pytest.raises(ValueError, match="Unauthorized"),
+        ):
+            _resource_auth()
+
+    def test_resource_auth_rejects_missing_scope(self):
+        from unittest.mock import patch
+
+        from hive.server import _resource_auth
+
+        # Token exists but doesn't have memories:read — must refuse to
+        # surface memory content.
+        no_read = self._mock_token("c1", scopes=["memories:write"])
+        with (
+            patch("hive.server.get_access_token", return_value=no_read),
+            pytest.raises(ValueError, match="Insufficient scope"),
+        ):
+            _resource_auth()
+
+    def test_resource_auth_tolerates_none_scopes_list(self):
+        from unittest.mock import patch
+
+        from hive.server import _resource_auth
+
+        # Pydantic-style tokens may surface scopes as `None` rather than
+        # an empty list. Both shapes must route to "insufficient scope"
+        # rather than crashing on `None` set-construction.
+        tok = self._mock_token("c1", scopes=None)
+        tok.scopes = None
+        with (
+            patch("hive.server.get_access_token", return_value=tok),
+            pytest.raises(ValueError, match="Insufficient scope"),
+        ):
+            _resource_auth()
+
+    def test_resource_auth_enforces_rate_limit(self):
+        from unittest.mock import patch
+
+        from hive.rate_limiter import RateLimitExceeded
+        from hive.server import _resource_auth
+
+        # Resources hit DynamoDB (memory://index can scan pages), so the
+        # same per-client rate limit the tool surface uses must apply —
+        # a misbehaving client can't burst the index endpoint without
+        # burning the account's budget.
+        tok = self._mock_token("c1")
+        with (
+            patch("hive.server.get_access_token", return_value=tok),
+            patch(
+                "hive.server.check_rate_limit",
+                side_effect=RateLimitExceeded(retry_after=30),
+            ),
+            pytest.raises(ValueError, match="Rate limit exceeded"),
+        ):
+            _resource_auth()
+
+    async def test_read_memory_resource_returns_value(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import read_memory_resource, remember
+
+        _, client_id, jwt = server_env
+        await remember("res-key", "res-value", [], ctx=_make_ctx(jwt))
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            value = read_memory_resource("res-key")
+        assert value == "res-value"
+
+    async def test_index_uri_does_not_shadow_key_named_index(self, server_env):
+        """Regression for iter-3 r3111826839.
+
+        The static `memory://_index` URI lives in an underscore-prefixed
+        reserved namespace so a user's memory with the literal key
+        `index` can still be read as `memory://index` via the template.
+        """
+        from unittest.mock import patch
+
+        from hive.server import (
+            list_memory_resources,
+            read_memory_resource,
+            remember,
+        )
+
+        _, client_id, jwt = server_env
+        # Store a memory with key literally "index".
+        await remember("index", "the real index value", [], ctx=_make_ctx(jwt))
+
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            # Template read resolves to the user's memory, not the
+            # index listing.
+            value = read_memory_resource("index")
+            assert value == "the real index value"
+
+            # The static index listing is still reachable at its
+            # reserved URI and contains the user's `index` key.
+            body = list_memory_resources()
+        assert "memory://index" in body.splitlines()
+
+    async def test_resource_uri_round_trips_keys_with_slash_and_colon(self, server_env):
+        """Keys legally contain `/` and `:` (see key-conventions docs).
+
+        A raw `memory://project:task/42:summary` is an ambiguous URI
+        that clients can't parse back to the original key. The fix
+        percent-encodes on the index side; the read handler
+        percent-decodes, so the round-trip is lossless.
+        """
+        from unittest.mock import patch
+
+        from hive.server import (
+            _decode_memory_key,
+            _encode_memory_key,
+            list_memory_resources,
+            read_memory_resource,
+            remember,
+        )
+
+        _, client_id, jwt = server_env
+        raw_key = "project:task/42:summary"
+        await remember(raw_key, "round-trip value", [], ctx=_make_ctx(jwt))
+
+        # Index publishes the encoded form.
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            body = list_memory_resources()
+        encoded = _encode_memory_key(raw_key)
+        assert f"memory://{encoded}" in body.splitlines()
+        # Encoded form contains no structural characters that would
+        # confuse a URI parser.
+        assert "/" not in encoded and ":" not in encoded
+
+        # Read handler decodes the URI parameter back to the raw key
+        # and fetches correctly.
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            value = read_memory_resource(encoded)
+        assert value == "round-trip value"
+
+        # Round-trip identity as a hygiene check.
+        assert _decode_memory_key(encoded) == raw_key
+
+    async def test_read_memory_resource_rejects_cross_tenant_lookup(self, server_env):
+        """Reading another client's memory key must 404, not leak content.
+
+        `storage.get_memory_by_key` doesn't filter by owner — the
+        resource handler is the scope boundary, so a client asking
+        for another tenant's key must get "not found" and not the
+        value. Verifies the tenant-isolation guard on the handler.
+        """
+        from unittest.mock import patch
+
+        from hive.server import read_memory_resource, remember
+
+        _, client_id, jwt = server_env
+        await remember("tenant-a-key", "secret", [], ctx=_make_ctx(jwt))
+        other_client_token = self._mock_token("some-other-client")
+        with (
+            patch("hive.server.get_access_token", return_value=other_client_token),
+            pytest.raises(ValueError, match="Memory not found"),
+        ):
+            read_memory_resource("tenant-a-key")
+
+    async def test_read_memory_resource_404s_for_missing_key(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import read_memory_resource
+
+        _, client_id, _ = server_env
+        with (
+            patch("hive.server.get_access_token", return_value=self._mock_token(client_id)),
+            pytest.raises(ValueError, match="Memory not found"),
+        ):
+            read_memory_resource("never-stored")
+
+    async def test_read_memory_resource_refuses_redacted(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import read_memory_resource, redact_memory, remember
+
+        _, client_id, jwt = server_env
+        await remember("tombstoned", "original", [], ctx=_make_ctx(jwt))
+        await redact_memory("tombstoned", ctx=_make_ctx(jwt))
+        with (
+            patch("hive.server.get_access_token", return_value=self._mock_token(client_id)),
+            pytest.raises(ValueError, match="redacted"),
+        ):
+            read_memory_resource("tombstoned")
+
+    async def test_list_memory_resources_returns_owned_keys(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import list_memory_resources, remember
+
+        _, client_id, jwt = server_env
+        await remember("a", "va", [], ctx=_make_ctx(jwt))
+        await remember("b", "vb", [], ctx=_make_ctx(jwt))
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            body = list_memory_resources()
+        lines = body.splitlines()
+        assert "memory://a" in lines
+        assert "memory://b" in lines
+        # Sorted alphabetically so output is stable between reads —
+        # clients can cache the index and diff.
+        assert lines == sorted(lines)
+
+    async def test_list_memory_resources_excludes_redacted(self, server_env):
+        from unittest.mock import patch
+
+        from hive.server import (
+            list_memory_resources,
+            redact_memory,
+            remember,
+        )
+
+        _, client_id, jwt = server_env
+        await remember("visible", "v", [], ctx=_make_ctx(jwt))
+        await remember("gone", "v", [], ctx=_make_ctx(jwt))
+        await redact_memory("gone", ctx=_make_ctx(jwt))
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            body = list_memory_resources()
+        assert "memory://visible" in body
+        assert "memory://gone" not in body
+
+    async def test_list_memory_resources_excludes_other_tenants(self, server_env):
+        """Tenant isolation on the list path — another client's memories
+        never appear in the authenticated client's index."""
+        from unittest.mock import patch
+
+        from hive.server import list_memory_resources, remember
+
+        _, client_id, jwt = server_env
+        await remember("mine", "v", [], ctx=_make_ctx(jwt))
+        with patch(
+            "hive.server.get_access_token",
+            return_value=self._mock_token("some-other-client"),
+        ):
+            body = list_memory_resources()
+        # The other client owns no memories, so the index is empty.
+        assert body == ""
+
+    async def test_list_memory_resources_flags_truncation(self, server_env):
+        """When the corpus exceeds the limit, the index surfaces the cap
+        so the agent knows to fall back to `list_memories(tag=…)`."""
+        from unittest.mock import patch
+
+        from hive.server import list_memory_resources, remember
+
+        _, client_id, jwt = server_env
+        # Monkey-patch the limit down so the test doesn't need to
+        # write 500 memories just to trip the truncation flag.
+        with patch("hive.server._MEMORY_RESOURCE_LIST_LIMIT", 2):
+            await remember("k1", "v", [], ctx=_make_ctx(jwt))
+            await remember("k2", "v", [], ctx=_make_ctx(jwt))
+            await remember("k3", "v", [], ctx=_make_ctx(jwt))
+            with patch(
+                "hive.server.get_access_token",
+                return_value=self._mock_token(client_id),
+            ):
+                body = list_memory_resources()
+        # Truncation note mentions the actual limit, not a hard-coded 500.
+        assert "Index capped at 2" in body
