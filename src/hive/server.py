@@ -1376,6 +1376,118 @@ async def relate_memories(
 
 
 # ---------------------------------------------------------------------------
+# MCP Prompts (#447)
+# ---------------------------------------------------------------------------
+#
+# MCP Prompts are pre-built, parameterised prompt templates that supported
+# clients (e.g. Claude Code, Cursor) surface as slash commands. Each prompt
+# returns a string; FastMCP wraps it as a single user-role message under the
+# hood. The agent then executes the template by calling the named Hive tool.
+#
+# These prompts are pure templates — they do not hit DynamoDB, and
+# deliberately do not require auth (the underlying tool call does). That
+# keeps the prompt renderer cheap and means unauthenticated clients can
+# still discover + inspect them.
+
+
+@mcp.prompt(
+    name="recall-context",
+    title="Recall context",
+    description=(
+        "Recall everything Hive knows about a topic and use it as foreground "
+        "context for the rest of the conversation."
+    ),
+)
+def recall_context_prompt(
+    topic: Annotated[str, "Topic to summarise memories about"],
+) -> str:
+    # `!r` renders the string as a Python repr so apostrophes, quotes,
+    # and newlines in the user input don't produce an ambiguous
+    # pseudo-call signature. The agent still interprets the instruction
+    # in prose — `!r` just keeps the argument boundaries unambiguous.
+    return (
+        f"Use Hive to recall what I know about {topic!r}. Call the "
+        f"`summarize_context` tool with topic={topic!r}, then treat the "
+        "result as foreground context for the rest of this conversation. "
+        "If the summary is empty, say so and ask what I'd like to remember."
+    )
+
+
+@mcp.prompt(
+    name="what-do-you-know-about",
+    title="What do you know about…",
+    description=(
+        "Semantic-search Hive's memories for a free-text query and weave the "
+        "top results into the next response."
+    ),
+)
+def what_do_you_know_about_prompt(
+    query: Annotated[str, "Free-text query to search memories for"],
+) -> str:
+    return (
+        f"Search Hive for {query!r}. Call `search_memories` with query={query!r} "
+        "and top_k=10. Read the returned memories and incorporate them into "
+        "your next response, citing each memory's key. If the returned items "
+        "list is empty, say so plainly."
+    )
+
+
+@mcp.prompt(
+    name="remember-this",
+    title="Remember this",
+    description=(
+        "Store a memory in Hive under a given key, optionally tagged. Supply "
+        "the value explicitly; tags may be omitted."
+    ),
+)
+def remember_this_prompt(
+    key: Annotated[str, "Unique key to store the memory under"],
+    value: Annotated[str, "Content of the memory — pass the current selection"],
+    tags: Annotated[
+        str,
+        "Optional comma-separated tags (e.g. 'work,roadmap'). Empty for none.",
+    ] = "",
+) -> str:
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    tag_clause = f" tags={tag_list!r}" if tag_list else " tags=[]"
+    return (
+        f"Store this in Hive. Call `remember` with key={key!r},{tag_clause}, "
+        f"and value={value!r}. Confirm once the memory is written, quoting "
+        "the returned memory_id."
+    )
+
+
+@mcp.prompt(
+    name="forget-older-than",
+    title="Forget older than…",
+    description=(
+        "Enumerate memories older than N days and interactively forget them. "
+        "Pairs with the bulk-delete flow (#427) — agent must confirm each "
+        "deletion with the user before calling `forget`."
+    ),
+)
+def forget_older_than_prompt(
+    days: Annotated[int, "Drop memories whose last access is older than this many days"],
+) -> str:
+    # Uses only tools Hive actually exposes. `list_memories` needs a
+    # tag, so iterate `list_tags()` → `list_memories(tag)`. The tool
+    # response surfaces `last_accessed_at` and `version` (a UTC ISO
+    # timestamp that updates on every write); `version` is the
+    # well-defined fallback when `last_accessed_at` is null (memory
+    # written but never recalled).
+    return (
+        f"Help me prune stale memories. Call `list_tags` to discover my tag "
+        f"namespace, then for each tag call `list_memories(tag)`. For every "
+        f"memory whose `last_accessed_at` is more than {days} days ago — or "
+        f"whose `last_accessed_at` is null and whose `version` timestamp is "
+        f"more than {days} days ago — show me the key plus the timestamp "
+        "you used (`last_accessed_at` or `version`) and ask 'forget this?' — "
+        "only call `forget` when I reply yes. Do not batch-delete without "
+        "confirmation."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
 
