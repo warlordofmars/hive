@@ -49,8 +49,13 @@ export function pivotByDate(data) {
   const clientIds = new Set();
   for (const entry of data ?? []) {
     clientIds.add(entry.client_id);
-    if (!byDate.has(entry.date)) byDate.set(entry.date, { date: entry.date });
-    byDate.get(entry.date)[entry.client_id] = entry.count;
+    // Resolve the row via a single Map read so we don't chain a
+    // nullable .get() into a property write — keeps SonarCloud's
+    // null-deref check happy without changing behaviour (the row
+    // always exists after the ?? below).
+    const row = byDate.get(entry.date) ?? { date: entry.date };
+    row[entry.client_id] = entry.count;
+    byDate.set(entry.date, row);
   }
   return {
     rows: Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date)),
