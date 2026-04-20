@@ -1552,9 +1552,7 @@ async def pack_context(
     # expensive possible header (assumes 5-digit `used_tokens` and
     # 3-digit count) so we never under-reserve. Floor the effective
     # budget at 1 so degenerate callers still get an empty block.
-    header_reserve = estimate_tokens(
-        f"## Context for {topic!r} (000 memories, ~00000 tokens)\n\n"
-    )
+    header_reserve = estimate_tokens(f"## Context for {topic!r} (000 memories, ~00000 tokens)\n\n")
     effective_budget = max(1, budget - header_reserve)
     packed, used_tokens = pack_memories_within_budget(scored, effective_budget)
 
