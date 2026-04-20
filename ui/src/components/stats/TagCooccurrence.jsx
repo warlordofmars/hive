@@ -1,21 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useMemo, useState } from "react";
 import PropTypes from "prop-types";
-
-// Palette mirrors TagDistribution's — #604 consolidates the two into
-// `ui/src/lib/chartPalette.js`; this file picks up the shared import
-// when this branch rebases onto #604. Inline here so #540 doesn't
-// block on that merge.
-const SLICE_COLORS = [
-  "#e8a020", // brand orange
-  "#1a73e8", // blue
-  "#00897b", // teal
-  "#9334e8", // purple
-  "#34a853", // green
-  "#fb923c", // orange-500
-  "#d93025", // red
-  "#64748b", // slate
-];
+import { SLICE_COLORS } from "../../lib/chartPalette.js";
 
 // #540 — tag co-occurrence network. Nodes = tags, edges = the number
 // of memories that carry both tags. A custom SVG with a circular
@@ -164,6 +150,8 @@ export default function TagCooccurrence({ data }) {
                 onFocus={() => setHovered(n.tag)}
                 onBlur={() => setHovered(null)}
                 tabIndex={0}
+                role="img"
+                aria-label={`${n.tag}: ${n.weight} co-occurrences`}
                 data-tag={n.tag}
                 style={{ cursor: "pointer" }}
               >
@@ -210,6 +198,3 @@ TagCooccurrence.propTypes = {
     }),
   ),
 };
-
-TagCooccurrence.MIN_TAGS = MIN_TAGS;
-TagCooccurrence.TOP_K_TAGS = TOP_K_TAGS;

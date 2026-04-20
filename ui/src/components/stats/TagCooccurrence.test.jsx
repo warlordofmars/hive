@@ -9,7 +9,7 @@ import TagCooccurrence, {
 
 // Six distinct tags reaches the MIN_TAGS threshold (5) — pair
 // everything up so each tag carries at least one edge.
-const FIVE_TAG_DATA = [
+const SIX_TAG_DATA = [
   { source: "a", target: "b", weight: 3 },
   { source: "a", target: "c", weight: 2 },
   { source: "b", target: "c", weight: 1 },
@@ -42,7 +42,7 @@ describe("polarPosition", () => {
 
 describe("buildGraph", () => {
   it("returns sorted nodes + matching edges from flat rows", () => {
-    const { nodes, edges } = buildGraph(FIVE_TAG_DATA);
+    const { nodes, edges } = buildGraph(SIX_TAG_DATA);
     // Six unique tags in the dataset, all within TOP_K_TAGS=15.
     expect(nodes.map((n) => n.tag).sort()).toEqual(["a", "b", "c", "d", "e", "f"]);
     expect(edges).toHaveLength(5);
@@ -111,15 +111,15 @@ describe("TagCooccurrence", () => {
   });
 
   it("renders an SVG with one node per tag when the threshold is met", () => {
-    const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
-    // Six unique tags across FIVE_TAG_DATA → six circles.
+    const { container } = render(<TagCooccurrence data={SIX_TAG_DATA} />);
+    // Six unique tags across SIX_TAG_DATA → six circles.
     expect(container.querySelectorAll("circle")).toHaveLength(6);
     // All five edges show up as <line> elements.
     expect(container.querySelectorAll("line")).toHaveLength(5);
   });
 
   it("hover dims unrelated edges and nodes", () => {
-    const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
+    const { container } = render(<TagCooccurrence data={SIX_TAG_DATA} />);
     // Hover node "a". Tags a, b, c are its neighbours; d/e/f are not.
     const aGroup = container.querySelector('g[data-tag="a"]');
     fireEvent.mouseEnter(aGroup);
@@ -138,9 +138,9 @@ describe("TagCooccurrence", () => {
 
   it("hovering a target-side tag still resolves its source neighbour", () => {
     // Covers the `e.target === hovered` branch — without this, the
-    // only path that fires in `FIVE_TAG_DATA` is the source-side
+    // only path that fires in `SIX_TAG_DATA` is the source-side
     // match because "a" is never on the target side.
-    const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
+    const { container } = render(<TagCooccurrence data={SIX_TAG_DATA} />);
     const cGroup = container.querySelector('g[data-tag="c"]');
     fireEvent.mouseEnter(cGroup);
     const edges = container.querySelectorAll("line");
@@ -155,7 +155,7 @@ describe("TagCooccurrence", () => {
   });
 
   it("keyboard focus also triggers the hover emphasis", () => {
-    const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
+    const { container } = render(<TagCooccurrence data={SIX_TAG_DATA} />);
     const aGroup = container.querySelector('g[data-tag="a"]');
     fireEvent.focus(aGroup);
     const aCircle = aGroup.querySelector("circle");
@@ -168,7 +168,7 @@ describe("TagCooccurrence", () => {
 
   it("mentions the top-15 cap only when the chart is actually trimmed", () => {
     const { container: small } = render(
-      <TagCooccurrence data={FIVE_TAG_DATA} />,
+      <TagCooccurrence data={SIX_TAG_DATA} />,
     );
     expect(small.textContent).not.toContain("Showing the top 15");
 
@@ -182,7 +182,7 @@ describe("TagCooccurrence", () => {
   });
 
   it("singular copy when an edge has weight 1", () => {
-    const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
+    const { container } = render(<TagCooccurrence data={SIX_TAG_DATA} />);
     // Edge (b, c, 1) should produce "1 shared memory" (singular), not "memories".
     const edges = container.querySelectorAll("line");
     const bcEdge = Array.from(edges).find((line) => {
@@ -193,7 +193,7 @@ describe("TagCooccurrence", () => {
   });
 
   it("label anchors flip between 'start' and 'end' based on hemisphere", () => {
-    const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
+    const { container } = render(<TagCooccurrence data={SIX_TAG_DATA} />);
     const texts = container.querySelectorAll("text");
     const anchors = new Set(
       Array.from(texts).map((t) => t.getAttribute("text-anchor")),
