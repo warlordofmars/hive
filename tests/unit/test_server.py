@@ -2081,7 +2081,7 @@ class TestMcpPrompts:
         assert '"Bob\'s query"' in out
 
         key = "note's-key"
-        value = 'a "double-quoted" value with \'apostrophes\''
+        value = "a \"double-quoted\" value with 'apostrophes'"
         out = remember_this_prompt(key, value)
         # Both key + value must survive the boundary unambiguously.
         assert "note's-key" in out
