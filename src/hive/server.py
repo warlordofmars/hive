@@ -1529,7 +1529,8 @@ async def pack_context(
     ordering: Annotated[
         str,
         "How to rank candidates before packing: 'relevance' (pure semantic), "
-        "'recency' (pure last-accessed decay), or 'relevance+recency' (blend, default).",
+        "'recency' (last-accessed decay, falling back to updated-at decay), or "
+        "'relevance+recency' (blend, default).",
     ] = "relevance+recency",
     ctx: Context | None = None,
 ) -> str:
