@@ -136,6 +136,24 @@ describe("TagCooccurrence", () => {
     expect(deEdge.getAttribute("stroke-opacity")).toBe("0.55");
   });
 
+  it("hovering a target-side tag still resolves its source neighbour", () => {
+    // Covers the `e.target === hovered` branch — without this, the
+    // only path that fires in `FIVE_TAG_DATA` is the source-side
+    // match because "a" is never on the target side.
+    const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
+    const cGroup = container.querySelector('g[data-tag="c"]');
+    fireEvent.mouseEnter(cGroup);
+    const edges = container.querySelectorAll("line");
+    // (a, c) edge should stay bright because "a" is a target-side
+    // neighbour of "c"; the 117-branch add on source must fire.
+    const acEdge = Array.from(edges).find((line) => {
+      const title = line.querySelector("title")?.textContent ?? "";
+      return title.includes("a + c");
+    });
+    expect(acEdge.getAttribute("stroke-opacity")).toBe("0.55");
+    fireEvent.mouseLeave(cGroup);
+  });
+
   it("keyboard focus also triggers the hover emphasis", () => {
     const { container } = render(<TagCooccurrence data={FIVE_TAG_DATA} />);
     const aGroup = container.querySelector('g[data-tag="a"]');

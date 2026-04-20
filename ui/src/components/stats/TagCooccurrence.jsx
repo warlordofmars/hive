@@ -63,11 +63,7 @@ export function buildGraph(data) {
   const topTags = Array.from(nodeWeights.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, TOP_K_TAGS)
-    .map(([tag], i) => ({
-      tag,
-      index: i,
-      weight: nodeWeights.get(tag) ?? 0,
-    }));
+    .map(([tag, weight], i) => ({ tag, index: i, weight }));
   const tagSet = new Set(topTags.map((n) => n.tag));
   const edges = rows
     .filter((e) => tagSet.has(e.source) && tagSet.has(e.target))
