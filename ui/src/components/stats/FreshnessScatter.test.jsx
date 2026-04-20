@@ -121,6 +121,11 @@ describe("FreshnessScatter", () => {
     expect(formatScatterTooltip(1, "other", { payload: {} })).toEqual([1, "other"]);
     // Handles a missing entry (no .payload) without crashing.
     expect(formatScatterTooltip(1, "days_since_created")).toEqual(["1 days old", ""]);
+    // Exercises the `p.key ?? ""` fallback on the `days_since_accessed`
+    // branch — a payload without a key must still produce a [value, ""]
+    // tuple rather than `[value, undefined]`.
+    expect(formatScatterTooltip(2, "days_since_accessed", { payload: {} }))
+      .toEqual(["2 days since access", ""]);
   });
 
   it("ScatterTooltipContent renders key + tags + counts when active", () => {
@@ -150,6 +155,16 @@ describe("FreshnessScatter", () => {
     const body = screen.getByTestId("freshness-tooltip");
     // No comma-separated tag line renders for the empty list.
     expect(body.textContent).not.toContain(",");
+  });
+
+  it("ScatterTooltipContent tolerates a payload row with no .payload wrapper", () => {
+    // Exercises the `payload[0].payload ?? {}` fallback — recharts can
+    // hand us a payload row before it's been hydrated with a datum.
+    render(<ScatterTooltipContent active={true} payload={[{}]} />);
+    const body = screen.getByTestId("freshness-tooltip");
+    // Both axis values render as `undefined days…` but the component
+    // must not throw trying to read `.key` / `.tags` off `undefined`.
+    expect(body.textContent).toContain("days old");
   });
 
   it("ScatterTooltipContent returns null when inactive / empty", () => {
