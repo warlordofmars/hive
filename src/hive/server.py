@@ -1585,12 +1585,16 @@ def list_memory_resources() -> str:
     )
     body = "\n".join(uris)
     if next_cursor:
-        # Flag truncation so the agent knows to fall back to
-        # `list_memories(tag=…)` for narrower retrieval rather than
-        # assume the index is exhaustive.
+        # Flag that the index view is capped so the agent knows to
+        # fall back to `list_memories(tag=…)` for narrower retrieval.
+        # Redacted + expired items are filtered out of the body above,
+        # so the visible URI count is often less than the cap — avoid
+        # implying the body itself holds exactly _MEMORY_RESOURCE_LIST_LIMIT
+        # entries.
         body += (
-            f"\n\n_(Truncated at {_MEMORY_RESOURCE_LIST_LIMIT} entries. "
-            "Use the `list_memories` tool with tags for targeted retrieval.)_"
+            f"\n\n_(Index capped at {_MEMORY_RESOURCE_LIST_LIMIT} entries; "
+            "more results may exist. Use the `list_memories` tool with "
+            "tags for targeted retrieval.)_"
         )
     return body
 
@@ -1614,10 +1618,13 @@ def read_memory_resource(key: str) -> str:
     # Tenant isolation: `get_memory_by_key` doesn't filter by owner, so
     # a client asking for another tenant's key would otherwise succeed.
     # Treat cross-tenant lookups as 404 to avoid leaking existence.
+    # `!r` quotes the key in error messages so a client key containing
+    # newlines / control chars can't forge fake log lines or break the
+    # response envelope for clients that render the error verbatim.
     if memory is None or memory.owner_client_id != client_id:
-        raise ValueError(f"Memory not found: {decoded_key}")
+        raise ValueError(f"Memory not found: {decoded_key!r}")
     if memory.is_redacted:
-        raise ValueError(f"Memory has been redacted: {decoded_key}")
+        raise ValueError(f"Memory has been redacted: {decoded_key!r}")
     return memory.value
 
 

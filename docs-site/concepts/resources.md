@@ -24,25 +24,27 @@ Resources are listed in two places:
 - `resources/list` returns the concrete `memory://index` resource
 - `resources/templates/list` returns the template `memory://{key}`
 
-Clients typically read `memory://index` first to discover what's available:
+Clients typically read `memory://index` first to discover what's available. Keys that contain `/` or `:` are [percent-encoded](https://datatracker.ietf.org/doc/html/rfc3986#section-2.1) so each URI is parseable by standard URI tooling and round-trips losslessly:
 
 ```
-memory://release/cadence
-memory://release/back-merge
-memory://release/smoke-tests
+memory://release-cadence
+memory://release-back-merge
+memory://release%2Fsmoke-tests
 ```
+
+(The third example shows a key `release/smoke-tests` with the `/` encoded as `%2F`. Clients should always read the URI verbatim from the index rather than reconstructing it — that's the only way to guarantee an exact match for the read.)
 
 Then read a specific entry:
 
 ```
-memory://release/cadence
+memory://release-cadence
 → "Weekly on Thursdays at 2pm UTC"
 ```
 
 ## Why resources, not just tools
 
 - **Lower latency** — clients can cache resources and stream them into context without a round-trip through the model
-- **Declarative referencing** — the agent can point at `memory://release/cadence` in a prompt instead of calling a tool and pasting the response
+- **Declarative referencing** — the agent can point at `memory://release-cadence` in a prompt instead of calling a tool and pasting the response
 - **MCP primitive alignment** — using the full primitive set (tools, resources, prompts) lets Hive slot into any compliant client without custom client glue
 
 ## Tenant isolation
@@ -58,7 +60,7 @@ Memories that have been tombstoned via the `redact_memory` tool are excluded fro
 
 ## Truncation
 
-`memory://index` caps at the first 500 URIs (sorted alphabetically). When truncation kicks in, the resource body ends with a note directing the agent to fall back to the [`list_memories`](/tools/list-memories) tool for narrower retrieval — tags are the right primitive for large corpora.
+`memory://index` caps at the first 500 entries (sorted alphabetically). Redacted and expired memories are filtered out of the rendered body, so the visible URI count is often smaller than the cap. When the cap triggers, the body ends with a note directing the agent to fall back to the [`list_memories`](/tools/list-memories) tool for narrower retrieval — tags are the right primitive for large corpora.
 
 ## Writes still go through tools
 

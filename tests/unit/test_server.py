@@ -2368,4 +2368,4 @@ class TestMcpResources:
             ):
                 body = list_memory_resources()
         # Truncation note mentions the actual limit, not a hard-coded 500.
-        assert "Truncated at 2" in body
+        assert "Index capped at 2" in body
