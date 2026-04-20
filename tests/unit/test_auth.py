@@ -623,6 +623,41 @@ class TestOAuthToken:
         resp = tc.post("/oauth/token", data=data)  # second use — rejected
         assert resp.status_code == 400
 
+    def test_concurrent_redemption_loser_gets_400(self, oauth_client):
+        """#584 regression — simulates the race where two requests both
+        pass the `auth_code.used` pre-check and the storage-level
+        conditional write picks one winner.
+
+        We can't reliably trigger the race in-process against moto, so
+        patch `mark_auth_code_used` to raise `AuthCodeAlreadyUsed` on
+        the only call and assert the endpoint surfaces a clean 400
+        instead of a 500. This verifies the `try/except` in
+        `oauth.py`, which is the half of the fix the storage-level
+        concurrency test in `test_storage.py` doesn't reach.
+        """
+        from unittest.mock import patch
+
+        from hive.storage import AuthCodeAlreadyUsed
+
+        tc, storage, client = oauth_client
+        code, verifier = self._get_auth_code(tc, storage, client)
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://app.example.com/cb",
+            "client_id": client.client_id,
+            "code_verifier": verifier,
+        }
+        with patch(
+            "hive.storage.HiveStorage.mark_auth_code_used",
+            side_effect=AuthCodeAlreadyUsed("raced"),
+        ):
+            resp = tc.post("/oauth/token", data=data)
+        assert resp.status_code == 400
+        # Losing redeemer gets the same error body as a pre-observed
+        # "already-used" code — no token pair, no stack trace leaked.
+        assert "already-used" in resp.json()["detail"]
+
 
 class TestOAuthAuthorizeEdgeCases:
     def test_wrong_challenge_method_returns_400(self, oauth_client):
