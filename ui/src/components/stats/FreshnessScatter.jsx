@@ -17,8 +17,10 @@ import {
 // #538 — freshness scatter: x = days since created, y = days since last
 // accessed. The stale-quadrant (upper-right) highlights memories that
 // are both old and have not been touched recently — candidate cleanup.
-// A scatter needs enough points to read as a distribution; sub-10 is
-// better served by the parent GraphCard's empty copy.
+// A scatter needs enough points to read as a distribution; when the
+// user has fewer than MIN_POINTS memories this component renders its
+// own min-points prompt instead of the chart (GraphCard's empty copy
+// only fires for a truly empty `data` prop, not for 1–9 entries).
 
 const MIN_POINTS = 10;
 const STALE_THRESHOLD_DAYS = 30;
@@ -114,9 +116,9 @@ export default function FreshnessScatter({ data }) {
             x2={maxAxis}
             y1={STALE_THRESHOLD_DAYS}
             y2={maxAxis}
-            fill="var(--danger)"
+            fill={STALE_FILL}
             fillOpacity={0.08}
-            stroke="var(--danger)"
+            stroke={STALE_FILL}
             strokeOpacity={0.25}
             strokeDasharray="4 4"
             ifOverflow="extendDomain"
@@ -156,18 +158,21 @@ export default function FreshnessScatter({ data }) {
             formatter={formatScatterTooltip}
           />
           <Scatter data={points} onClick={openMemory} cursor="pointer">
-            {points.map((p) => (
-              <Cell
-                key={p.memory_id}
-                fill={isStale(p) ? STALE_FILL : FRESH_FILL}
-                // Shape differs per-quadrant so users relying on
-                // high-contrast or colour-blind mode still see the
-                // stale distinction without depending on hue alone.
-                stroke={isStale(p) ? STALE_FILL : FRESH_FILL}
-                strokeWidth={isStale(p) ? 2 : 0}
-                fillOpacity={isStale(p) ? 0.95 : 0.75}
-              />
-            ))}
+            {points.map((p) => {
+              const stale = isStale(p);
+              return (
+                <Cell
+                  key={p.memory_id}
+                  fill={stale ? STALE_FILL : FRESH_FILL}
+                  // Shape differs per-quadrant so users relying on
+                  // high-contrast or colour-blind mode still see the
+                  // stale distinction without depending on hue alone.
+                  stroke={stale ? STALE_FILL : FRESH_FILL}
+                  strokeWidth={stale ? 2 : 0}
+                  fillOpacity={stale ? 0.95 : 0.75}
+                />
+              );
+            })}
           </Scatter>
         </ScatterChart>
       </ResponsiveContainer>
