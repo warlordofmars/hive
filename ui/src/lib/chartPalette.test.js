@@ -4,10 +4,11 @@ import { SLICE_COLORS } from "./chartPalette.js";
 
 describe("SLICE_COLORS", () => {
   it("exports an 8-slot palette of hex strings", () => {
-    // Eight slots matches TagDistribution's TOP_N + "Other" capacity
-    // and ClientContribution's same-module consumption — keeping the
-    // length locked prevents a silent reshuffle if a colour is ever
-    // inserted in the middle.
+    // Eight slots cover the ranked slice colours consumed by
+    // TagDistribution and ClientContribution (the "Other" bucket uses
+    // OTHER_COLOR, not SLICE_COLORS) — keeping the length locked
+    // prevents a silent reshuffle if a colour is ever inserted in the
+    // middle.
     expect(SLICE_COLORS).toHaveLength(8);
     for (const c of SLICE_COLORS) {
       expect(c).toMatch(/^#[0-9a-f]{6}$/i);

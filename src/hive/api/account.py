@@ -216,8 +216,9 @@ async def export_account(
 # #535 — /account/stats
 #
 # Personal usage analytics for the Stats tab. Returns eight pre-aggregated
-# graph datasets in a single response so the UI renders without chained
-# round-trips. Results are cached for ``_STATS_CACHE_TTL`` seconds per
+# graph datasets plus a ``client_names`` lookup map (for
+# ClientContribution's legend) in a single response so the UI renders
+# without chained round-trips. Results are cached for ``_STATS_CACHE_TTL`` seconds per
 # ``(user_id, window_days)`` key — the aggregation walks every memory and
 # a windowed slice of the activity log, so the cache shields the table
 # from repeated panel refreshes.
@@ -377,7 +378,9 @@ def _compute_account_stats(
     description=(
         "Return eight pre-aggregated graph datasets for the authenticated user "
         "(activity heatmap, top-recalled memories, tag distribution, memory "
-        "growth, quota, freshness, client contribution, tag co-occurrence). "
+        "growth, quota, freshness, client contribution, tag co-occurrence) "
+        "plus a ``client_names`` lookup map so chart labels can resolve "
+        "client IDs without a second round-trip. "
         "Results are cached server-side for 60s per (user, window) pair."
     ),
     responses={401: {"description": "Unauthorized"}, 422: {"description": "Invalid window"}},

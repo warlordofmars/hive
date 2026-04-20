@@ -92,14 +92,14 @@ describe("ClientContribution", () => {
   it("renders an explanatory caption when fewer than 2 clients", () => {
     render(<ClientContribution data={[{ date: "d", client_id: "c1", count: 1 }]} />);
     expect(
-      screen.getByText(/two or more OAuth clients have written memories/),
+      screen.getByText(/two or more OAuth clients have recorded activity/),
     ).toBeTruthy();
   });
 
   it("renders the caption when data is missing", () => {
     render(<ClientContribution />);
     expect(
-      screen.getByText(/two or more OAuth clients have written memories/),
+      screen.getByText(/two or more OAuth clients have recorded activity/),
     ).toBeTruthy();
   });
 

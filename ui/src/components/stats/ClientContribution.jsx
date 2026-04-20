@@ -13,10 +13,11 @@ import {
 } from "recharts";
 import { SLICE_COLORS } from "../../lib/chartPalette.js";
 
-// #539 — stacked bar chart showing "Claude Code wrote X, Cursor wrote Y"
-// over time, one stacked bar per day in the window. Auto-hides with an
-// explanatory caption when the user has only one OAuth client actor,
-// since a single-colour stack reads as noise.
+// #539 — stacked bar chart of activity events per day, segmented by
+// OAuth client (reads, writes, deletes — anything that shows up in the
+// activity log). Auto-hides with an explanatory caption when the user
+// has only one OAuth client actor, since a single-colour stack reads
+// as noise.
 
 // Short fallback label when we have no display name for a client id —
 // the first 8 chars keeps client ids distinguishable on the legend
@@ -64,7 +65,7 @@ export default function ClientContribution({ data, clientNames }) {
     return (
       <div className="text-xs text-[var(--text-muted)] italic py-2">
         Contribution breakdown appears once two or more OAuth clients have
-        written memories on your behalf.
+        recorded activity on your behalf.
       </div>
     );
   }
