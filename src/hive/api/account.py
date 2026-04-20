@@ -337,6 +337,11 @@ def _compute_account_stats(
     client_contribution = [
         {"date": d, "client_id": cid, "count": n} for (d, cid), n in sorted(contrib.items())
     ]
+    # client_names — display-name lookup so the ClientContribution chart
+    # can label each stacked segment without a second round-trip. Falls
+    # back to the client_id prefix on the UI side for ids we can't
+    # resolve (e.g. deleted clients, or the user_id actor itself).
+    client_names: dict[str, str] = {c.client_id: c.client_name for c in clients}
 
     # tag_cooccurrence — undirected edges between tags that share a memory,
     # weighted by how many memories they co-appear in. Sorted by weight
@@ -361,6 +366,7 @@ def _compute_account_stats(
         "quota": quota,
         "freshness": freshness,
         "client_contribution": client_contribution,
+        "client_names": client_names,
         "tag_cooccurrence": tag_cooccurrence,
     }
 

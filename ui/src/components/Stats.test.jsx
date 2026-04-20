@@ -27,6 +27,9 @@ vi.mock("./stats/MemoryGrowth.jsx", () => ({
 vi.mock("./stats/FreshnessScatter.jsx", () => ({
   default: () => <div data-testid="freshness-scatter" />,
 }));
+vi.mock("./stats/ClientContribution.jsx", () => ({
+  default: () => <div data-testid="client-contribution" />,
+}));
 vi.mock("./stats/QuotaGauge.jsx", () => ({
   default: ({ quota }) => (
     <div data-testid="quota-gauge">
@@ -58,16 +61,16 @@ const MINIMAL_STATS = {
     days_since_created: i * 5,
     days_since_accessed: i,
   })),
+  client_contribution: [{ date: "2026-04-01", client_id: "c1", count: 2 }],
+  client_names: { c1: "Claude Code" },
   // Seven entries so RawPreview's `value.length > take` overflow branch
-  // is exercised (default `take` is 5). The two remaining placeholder
-  // cards (ClientContribution / TagCooccurrence) still render via
-  // RawPreview until #539 / #540 land.
-  client_contribution: Array.from({ length: 7 }, (_, i) => ({
-    date: `2026-04-${String(i + 1).padStart(2, "0")}`,
-    client_id: `c${i}`,
-    count: i + 1,
+  // is exercised (default `take` is 5). TagCooccurrence is the last
+  // placeholder card still rendering via RawPreview (until #540 lands).
+  tag_cooccurrence: Array.from({ length: 7 }, (_, i) => ({
+    source: `s${i}`,
+    target: `t${i}`,
+    weight: i + 1,
   })),
-  tag_cooccurrence: [{ source: "a", target: "b", weight: 3 }],
 };
 
 describe("GraphCard", () => {
