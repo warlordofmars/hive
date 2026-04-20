@@ -1959,3 +1959,100 @@ class TestHiveTokenVerifier:
         verifier = HiveTokenVerifier()
         result = await verifier.verify_token("not-a-valid-token")
         assert result is None
+
+
+class TestMcpPrompts:
+    """#447 — MCP Prompts for common Hive workflows.
+
+    Each prompt is a pure template function; the tests exercise the
+    rendering logic directly (string return) and also round-trip through
+    ``FastMCP.render_prompt`` to confirm it registers as an advertised
+    prompt with the expected argument schema.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_prompts_exposes_four_workflows(self):
+        from hive.server import mcp
+
+        prompts = await mcp.list_prompts()
+        names = sorted(p.name for p in prompts)
+        assert names == [
+            "forget-older-than",
+            "recall-context",
+            "remember-this",
+            "what-do-you-know-about",
+        ]
+        # Every prompt carries a non-empty description so clients can
+        # render a menu entry without re-deriving from the docstring.
+        for p in prompts:
+            assert p.description, f"missing description on {p.name}"
+
+    def test_recall_context_template_names_topic_and_tool(self):
+        from hive.server import recall_context_prompt
+
+        out = recall_context_prompt("release checklist")
+        assert "release checklist" in out
+        # Must name the exact tool the agent should call — if we rename
+        # the MCP tool, this test surfaces the prompt drift.
+        assert "`summarize_context`" in out
+
+    def test_what_do_you_know_about_calls_search_memories(self):
+        from hive.server import what_do_you_know_about_prompt
+
+        out = what_do_you_know_about_prompt("Stats tab")
+        assert "Stats tab" in out
+        assert "`search_memories`" in out
+        # top_k must be explicit so agents don't fall back to whatever
+        # default they implement.
+        assert "top_k=10" in out
+
+    def test_remember_this_renders_tags_when_provided(self):
+        from hive.server import remember_this_prompt
+
+        out = remember_this_prompt("release-cadence", "weekly", tags="ops,release")
+        assert "release-cadence" in out
+        assert "weekly" in out
+        # tags list must survive verbatim, in canonical list form.
+        assert "['ops', 'release']" in out
+        assert "`remember`" in out
+
+    def test_remember_this_trims_blank_tag_entries(self):
+        from hive.server import remember_this_prompt
+
+        # Blank entries between commas are dropped so clients sending
+        # " , a , " don't produce an empty tag that write-through
+        # validation would later reject.
+        out = remember_this_prompt("k", "v", tags=" , a , ")
+        assert "['a']" in out
+
+    def test_remember_this_with_empty_tags_renders_empty_list(self):
+        from hive.server import remember_this_prompt
+
+        out = remember_this_prompt("k", "v", tags="")
+        # No tag-specific keyword-arg drift: the prompt always includes
+        # tags=... so the agent never forgets to pass the parameter.
+        assert "tags=[]" in out
+
+    def test_forget_older_than_names_list_and_forget_tools(self):
+        from hive.server import forget_older_than_prompt
+
+        out = forget_older_than_prompt(30)
+        assert "30 days" in out
+        assert "`list_memories`" in out
+        assert "`forget`" in out
+        # Safety: the template must explicitly forbid bulk-delete
+        # without user confirmation.
+        assert "confirmation" in out.lower() or "confirm" in out.lower()
+
+    @pytest.mark.asyncio
+    async def test_render_prompt_roundtrip_produces_user_message(self):
+        from hive.server import mcp
+
+        # End-to-end through FastMCP's render pipeline — confirms the
+        # prompt is discoverable by name, accepts the declared arguments,
+        # and wraps the string return as a single user-role message.
+        result = await mcp.render_prompt("recall-context", {"topic": "ops"})
+        assert len(result.messages) == 1
+        msg = result.messages[0]
+        assert msg.role == "user"
+        assert "ops" in msg.content.text

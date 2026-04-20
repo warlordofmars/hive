@@ -1376,6 +1376,106 @@ async def relate_memories(
 
 
 # ---------------------------------------------------------------------------
+# MCP Prompts (#447)
+# ---------------------------------------------------------------------------
+#
+# MCP Prompts are pre-built, parameterised prompt templates that supported
+# clients (e.g. Claude Code, Cursor) surface as slash commands. Each prompt
+# returns a string; FastMCP wraps it as a single user-role message under the
+# hood. The agent then executes the template by calling the named Hive tool.
+#
+# These prompts are pure templates — they do not hit DynamoDB, and
+# deliberately do not require auth (the underlying tool call does). That
+# keeps the prompt renderer cheap and means unauthenticated clients can
+# still discover + inspect them.
+
+
+@mcp.prompt(
+    name="recall-context",
+    title="Recall context",
+    description=(
+        "Recall everything Hive knows about a topic and use it as foreground "
+        "context for the rest of the conversation."
+    ),
+)
+def recall_context_prompt(
+    topic: Annotated[str, "Topic to summarise memories about"],
+) -> str:
+    return (
+        f"Use Hive to recall what I know about '{topic}'. Call the "
+        f"`summarize_context` tool with topic='{topic}', then treat the "
+        "result as foreground context for the rest of this conversation. "
+        "If the summary is empty, say so and ask what I'd like to remember."
+    )
+
+
+@mcp.prompt(
+    name="what-do-you-know-about",
+    title="What do you know about…",
+    description=(
+        "Semantic-search Hive's memories for a free-text query and weave the "
+        "top results into the next response."
+    ),
+)
+def what_do_you_know_about_prompt(
+    query: Annotated[str, "Free-text query to search memories for"],
+) -> str:
+    return (
+        f"Search Hive for '{query}'. Call `search_memories` with query='{query}' "
+        "and top_k=10. Read the highest-scoring results and incorporate them "
+        "into your next response, citing each memory's key. If no memory "
+        "scores above the default threshold, say so plainly."
+    )
+
+
+@mcp.prompt(
+    name="remember-this",
+    title="Remember this",
+    description=(
+        "Store a memory in Hive under a given key, optionally tagged. The "
+        "value defaults to the current selection or the most recent agent "
+        "message if the client supplies no explicit value."
+    ),
+)
+def remember_this_prompt(
+    key: Annotated[str, "Unique key to store the memory under"],
+    value: Annotated[str, "Content of the memory — pass the current selection"],
+    tags: Annotated[
+        str,
+        "Optional comma-separated tags (e.g. 'work,roadmap'). Empty for none.",
+    ] = "",
+) -> str:
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    tag_clause = f" tags={tag_list!r}" if tag_list else " tags=[]"
+    return (
+        f"Store this in Hive. Call `remember` with key='{key}',{tag_clause}, "
+        f"and value set to: <<<{value}>>>. Confirm once the memory is "
+        "written, quoting the returned memory_id."
+    )
+
+
+@mcp.prompt(
+    name="forget-older-than",
+    title="Forget older than…",
+    description=(
+        "Enumerate memories older than N days and interactively forget them. "
+        "Pairs with the bulk-delete flow (#427) — agent must confirm each "
+        "deletion with the user before calling `forget`."
+    ),
+)
+def forget_older_than_prompt(
+    days: Annotated[int, "Drop memories last updated more than this many days ago"],
+) -> str:
+    return (
+        f"Help me prune old memories. Call `list_memories` (no tag filter) "
+        f"and identify any memory whose `updated_at` is more than {days} days "
+        "ago. For each, show me the key + last-updated timestamp and ask "
+        "'forget this?' — only call `forget` when I reply yes. Do not "
+        "batch-delete without confirmation."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
 
