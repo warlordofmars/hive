@@ -806,7 +806,7 @@
     },
     "/api/account/stats": {
       "get": {
-        "description": "Return eight pre-aggregated graph datasets for the authenticated user (activity heatmap, top-recalled memories, tag distribution, memory growth, quota, freshness, client contribution, tag co-occurrence). Results are cached server-side for 60s per (user, window) pair.",
+        "description": "Return eight pre-aggregated graph datasets for the authenticated user (activity heatmap, top-recalled memories, tag distribution, memory growth, quota, freshness, client contribution, tag co-occurrence) plus a ``client_names`` lookup map so chart labels can resolve client IDs without a second round-trip. Results are cached server-side for 60s per (user, window) pair.",
         "operationId": "get_account_stats_api_account_stats_get",
         "parameters": [
           {

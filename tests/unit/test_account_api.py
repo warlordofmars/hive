@@ -457,6 +457,19 @@ class TestAccountStats:
         # out; only the hot memory should surface.
         assert keys == ["hot-key"]
 
+    def test_client_names_maps_client_id_to_display_name(self, client):
+        from hive.models import OAuthClient
+
+        tc, storage = client
+        # Register a named client owned by the user so the stats endpoint
+        # has a display name to surface.
+        oc = OAuthClient(client_name="Claude Code", owner_user_id=_USER_ID)
+        storage.put_client(oc)
+
+        resp = tc.get("/api/account/stats")
+        names = resp.json()["client_names"]
+        assert names.get(oc.client_id) == "Claude Code"
+
     def test_tag_cooccurrence_edges(self, client):
         from hive.models import Memory
 
