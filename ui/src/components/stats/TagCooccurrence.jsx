@@ -46,13 +46,26 @@ export function buildGraph(data) {
   }
   // Highest total-weight tags first. Trim to TOP_K so the ring stays
   // readable; edges touching dropped nodes fall away automatically.
+  // Ties are broken alphabetically by tag so DynamoDB scan-order
+  // shuffling doesn't cause node positions / colours to drift between
+  // otherwise-identical requests.
   const topTags = Array.from(nodeWeights.entries())
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, TOP_K_TAGS)
     .map(([tag, weight], i) => ({ tag, index: i, weight }));
   const tagSet = new Set(topTags.map((n) => n.tag));
+  // Same tie-breaker rule on edges — weight first, then
+  // (source, target) — so equal-weight edges render in a stable order
+  // and the trim at TOP_K_EDGES is deterministic.
   const edges = rows
     .filter((e) => tagSet.has(e.source) && tagSet.has(e.target))
+    .slice()
+    .sort(
+      (a, b) =>
+        b.weight - a.weight ||
+        a.source.localeCompare(b.source) ||
+        a.target.localeCompare(b.target),
+    )
     .slice(0, TOP_K_EDGES);
   return { nodes: topTags, edges };
 }
@@ -73,8 +86,8 @@ export default function TagCooccurrence({ data }) {
   if (nodes.length < MIN_TAGS) {
     return (
       <div className="text-xs text-[var(--text-muted)] italic py-2">
-        Tag co-occurrence appears once you've tagged {MIN_TAGS} distinct
-        tags across your memories.
+        Tag co-occurrence appears once at least {MIN_TAGS} tags have
+        co-occurred across your memories.
       </div>
     );
   }

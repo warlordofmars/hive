@@ -99,14 +99,14 @@ describe("TagCooccurrence", () => {
       <TagCooccurrence data={[{ source: "a", target: "b", weight: 1 }]} />,
     );
     expect(
-      screen.getByText(/Tag co-occurrence appears once you've tagged 5 distinct/),
+      screen.getByText(/Tag co-occurrence appears once at least 5 tags have co-occurred/),
     ).toBeTruthy();
   });
 
   it("renders the caption for missing data", () => {
     render(<TagCooccurrence />);
     expect(
-      screen.getByText(/Tag co-occurrence appears once you've tagged 5 distinct/),
+      screen.getByText(/Tag co-occurrence appears once at least 5 tags have co-occurred/),
     ).toBeTruthy();
   });
 
