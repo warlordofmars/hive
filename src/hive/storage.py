@@ -79,13 +79,21 @@ class VersionConflict(Exception):
 
 
 class AuthCodeAlreadyUsed(Exception):
-    """Raised by ``mark_auth_code_used`` when another redemption got there first.
+    """Raised by ``mark_auth_code_used`` when the conditional write is rejected.
 
-    OAuth 2.1 authorization codes are single-use (RFC 6749 §10.5).
-    ``mark_auth_code_used`` now enforces that with a conditional
-    ``UpdateItem``; two concurrent redemptions can't both succeed.
-    The caller (token endpoint) maps this to the same 400 response
-    as an unknown / expired code.
+    Two conditions trip the conditional ``UpdateItem``:
+
+    1. Another redemption raced ahead and flipped ``used`` to ``true``
+       (the RFC 6749 §10.5 single-use case this fix exists for).
+    2. No AUTHCODE item exists under the supplied key — the
+       ``attribute_exists(PK)`` guard rejects forged / never-issued
+       codes so callers can't mint tokens from arbitrary strings.
+
+    Both are indistinguishable from the client's perspective: the
+    token endpoint maps either to ``400 "Invalid or already-used
+    code"``. The name stays narrow because concurrent redemption is
+    the motivating case; the forged-code path is a defensive
+    side-effect of the same condition.
     """
 
 
