@@ -68,6 +68,21 @@ describe("buildGraph", () => {
     }
   });
 
+  it("breaks equal-weight ties by source then target for edge ordering", () => {
+    // Two edges share both weight (5) AND source ("a"), so the third
+    // tie-breaker (`target.localeCompare`) decides order. Without it
+    // the output would depend on input order, which is non-stable
+    // once the data comes from a DynamoDB scan.
+    const { edges } = buildGraph([
+      { source: "a", target: "z", weight: 5 },
+      { source: "a", target: "b", weight: 5 },
+      { source: "c", target: "d", weight: 1 },
+    ]);
+    const ab = edges.findIndex((e) => e.source === "a" && e.target === "b");
+    const az = edges.findIndex((e) => e.source === "a" && e.target === "z");
+    expect(ab).toBeLessThan(az);
+  });
+
   it("returns empty lists for missing / empty input", () => {
     expect(buildGraph()).toEqual({ nodes: [], edges: [] });
     expect(buildGraph([])).toEqual({ nodes: [], edges: [] });
