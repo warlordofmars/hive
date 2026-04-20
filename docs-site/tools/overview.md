@@ -1,6 +1,6 @@
 # MCP tools overview
 
-Hive exposes seven tools that your AI agent can call during a conversation. You don't invoke these directly — your agent decides when to use them based on your instructions.
+Hive exposes MCP tools that your AI agent can call during a conversation. You don't invoke these directly — your agent decides when to use them based on your instructions.
 
 ## Tool summary
 
@@ -20,8 +20,8 @@ Each OAuth token has one or both of the following scopes:
 
 | Scope | Grants access to |
 | --- | --- |
-| `memories:read` | `recall`, `list_memories`, `search_memories`, `summarize_context`, `pack_context` |
-| `memories:write` | `remember`, `forget` |
+| `memories:read` | `recall`, `list_memories`, `list_tags`, `memory_history`, `relate_memories`, `search_memories`, `summarize_context`, `pack_context` |
+| `memories:write` | `remember`, `remember_if_absent`, `forget`, `forget_all`, `redact_memory`, `restore_memory` |
 
 Tokens issued through the standard OAuth flow get both scopes by default.
 
