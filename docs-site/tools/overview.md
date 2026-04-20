@@ -22,6 +22,7 @@ Each OAuth token has one or both of the following scopes:
 | --- | --- |
 | `memories:read` | `recall`, `list_memories`, `list_tags`, `memory_history`, `relate_memories`, `search_memories`, `summarize_context`, `pack_context` |
 | `memories:write` | `remember`, `remember_if_absent`, `forget`, `forget_all`, `redact_memory`, `restore_memory` |
+| _(none required)_ | `ping` — health check, requires only a valid Bearer token |
 
 Tokens issued through the standard OAuth flow get both scopes by default.
 
