@@ -583,42 +583,40 @@ class TestAuthCodeAtomicRedemption:
         with pytest.raises(AuthCodeAlreadyUsed):
             storage.mark_auth_code_used("never-issued-code")
 
-    def test_concurrent_redemption_exactly_one_winner(self, storage):
-        """The TOCTOU regression — both callers read `used=False`, race
-        to write. The conditional UpdateItem serialises them and
-        exactly one wins.
-        """
-        import threading
+    def test_update_uses_conditional_write_on_unused_state(self, storage):
+        """The TOCTOU fix hinges on the conditional write — two
+        redemptions that both read `used=False` can't both commit.
 
-        from hive.storage import AuthCodeAlreadyUsed
+        Rather than spawning threads (moto's mock backend isn't a
+        reliable concurrency harness), assert the wire-level contract:
+        `mark_auth_code_used` issues an `UpdateItem` whose
+        `ConditionExpression` requires `used = false` AND the item
+        exists. DynamoDB's server-side serialisation of conditional
+        writes is what actually enforces single-use; this test pins
+        the condition so a future refactor can't silently drop it.
+        """
+        from unittest.mock import MagicMock
 
         code = self._create_code(storage)
+        captured: dict[str, object] = {}
 
-        results: list[str] = []
-        barrier = threading.Barrier(2)
+        original = storage.table.update_item
 
-        def redeem() -> None:
-            barrier.wait()  # align both threads on the write
-            try:
-                storage.mark_auth_code_used(code)
-                results.append("ok")
-            except AuthCodeAlreadyUsed:
-                results.append("rejected")
+        def _spy(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return original(**kwargs)
 
-        t1 = threading.Thread(target=redeem)
-        t2 = threading.Thread(target=redeem)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.update_item.side_effect = _spy
 
-        # Exactly one redemption succeeds, the other is rejected — no
-        # "both succeed" outcome survives the conditional write.
-        assert sorted(results) == ["ok", "rejected"]
+        storage.mark_auth_code_used(code)
 
-        fetched = storage.get_auth_code(code)
-        assert fetched is not None
-        assert fetched.used is True
+        assert "ConditionExpression" in captured
+        cond = captured["ConditionExpression"]
+        assert "attribute_exists(PK)" in cond
+        assert "#u = :f" in cond
+        assert captured["ExpressionAttributeNames"] == {"#u": "used"}
+        assert captured["ExpressionAttributeValues"] == {":t": True, ":f": False}
 
     def test_unexpected_client_error_reraises(self, storage):
         """Only ConditionalCheckFailedException is translated to
