@@ -852,11 +852,17 @@ enable auto-merge once the Copilot loop below completes.
 1. After CI is green, request a Copilot review on the PR via
    `mcp__github__request_copilot_review`.
 2. Wait for the Copilot **`Agent` check-run** to move to
-   `completed` (`get_check_runs`, typically 2–5 min). **Do not rely
-   on `get_reviews` alone** — subsequent Copilot iterations can post
-   line-level comments without creating a new top-level review object,
-   so `get_reviews` will look empty even when new findings exist. The
-   authoritative signal is: Agent check completed + a fresh
+   `completed` (`get_check_runs`, typically 2–5 min), **then wait an
+   additional ~90s** before the first `get_review_comments` call —
+   the Agent check closes before Copilot finishes writing individual
+   line-level comments to the PR, so polling immediately on
+   completion returns an empty thread list even when findings are
+   incoming (observed on #606: Agent completed at 12:41:52, comments
+   posted at 12:43:03). **Do not rely on `get_reviews` alone** —
+   subsequent Copilot iterations can post line-level comments without
+   creating a new top-level review object, so `get_reviews` will
+   look empty even when new findings exist. The authoritative
+   signal is: Agent check completed + ≥90s elapsed + a fresh
    `get_review_comments` call shows threads from
    `copilot-pull-request-reviewer` whose `created_at` is after the
    last fix commit's timestamp.
