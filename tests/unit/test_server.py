@@ -2721,6 +2721,44 @@ class TestPackContext:
         # Contract holds: rendered output fits in the advertised budget.
         assert estimate_tokens(rendered) <= 5
 
+    async def test_rendered_overshoot_collapses_to_empty(self, server_env):
+        """Belt-and-braces: if the token heuristic mis-counts the rendered
+        output (e.g. weird unicode the 4-chars-per-token heuristic
+        overshoots), the final rendered block is recomputed from
+        `_render_empty_within_budget` so the advertised budget still
+        holds. Exercised by injecting a mid-stream spike into
+        ``estimate_tokens`` after the greedy packer has already fit.
+        """
+        from unittest.mock import patch
+
+        from hive.server import pack_context, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("a", "content", [], ctx=ctx)
+        m = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(m.memory_id, 0.9)])
+
+        # First call = header_reserve probe (small); subsequent calls
+        # (per-memory + final rendered check) return a spike that
+        # tricks the "rendered > budget" guard into firing.
+        call_count = {"n": 0}
+
+        def fake_estimate(text: str) -> int:
+            call_count["n"] += 1
+            return 1 if call_count["n"] == 1 else 10_000
+
+        with (
+            patch("hive.server._vector_store", return_value=mock_vs),
+            patch("hive.server.estimate_tokens", side_effect=fake_estimate),
+        ):
+            result = await pack_context("t", budget_tokens=500, ctx=ctx)
+
+        # Overshoot branch fired — result is the empty-fallback header,
+        # not the packed-memories block.
+        rendered = _text(result)
+        assert "- **" not in rendered  # no packed bullets
+
     async def test_invalid_ordering_falls_back_to_blend(self, server_env):
         from unittest.mock import patch
 
