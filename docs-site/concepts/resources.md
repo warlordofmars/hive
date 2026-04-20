@@ -54,7 +54,7 @@ Resource reads enforce tenant isolation at the handler level:
 
 ## Redacted memories
 
-Memories that have been [redacted](/concepts/tags) are excluded from the index and reject `memory://{key}` reads with an explicit "redacted" error. The error distinguishes a redacted memory from a missing one so client UIs can surface the right message.
+Memories that have been tombstoned via the `redact_memory` tool are excluded from the index and reject `memory://{key}` reads with an explicit "redacted" error. The error distinguishes a redacted memory from a missing one so client UIs can surface the right message.
 
 ## Truncation
 
@@ -62,7 +62,7 @@ Memories that have been [redacted](/concepts/tags) are excluded from the index a
 
 ## Writes still go through tools
 
-Resources are intentionally read-only. Storing, updating, and deleting memories continues to go through [`remember`](/tools/remember) / [`forget`](/tools/forget) / [`redact_memory`](/tools/remember). Centralising writes in one place keeps the quota, TTL, version, and audit-log machinery in a single code path.
+Resources are intentionally read-only. Storing, updating, and deleting memories continues to go through [`remember`](/tools/remember) / [`forget`](/tools/forget) plus the `redact_memory` tool (advertised via `tools/list` on supported clients). Centralising writes in one place keeps the quota, TTL, version, and audit-log machinery in a single code path.
 
 ## Client support
 

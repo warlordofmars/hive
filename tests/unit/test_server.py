@@ -2177,6 +2177,27 @@ class TestMcpResources:
         ):
             _resource_auth()
 
+    def test_resource_auth_enforces_rate_limit(self):
+        from unittest.mock import patch
+
+        from hive.rate_limiter import RateLimitExceeded
+        from hive.server import _resource_auth
+
+        # Resources hit DynamoDB (memory://index can scan pages), so the
+        # same per-client rate limit the tool surface uses must apply —
+        # a misbehaving client can't burst the index endpoint without
+        # burning the account's budget.
+        tok = self._mock_token("c1")
+        with (
+            patch("hive.server.get_access_token", return_value=tok),
+            patch(
+                "hive.server.check_rate_limit",
+                side_effect=RateLimitExceeded(retry_after=30),
+            ),
+            pytest.raises(ValueError, match="Rate limit exceeded"),
+        ):
+            _resource_auth()
+
     async def test_read_memory_resource_returns_value(self, server_env):
         from unittest.mock import patch
 
@@ -2187,6 +2208,46 @@ class TestMcpResources:
         with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
             value = read_memory_resource("res-key")
         assert value == "res-value"
+
+    async def test_resource_uri_round_trips_keys_with_slash_and_colon(self, server_env):
+        """Keys legally contain `/` and `:` (see key-conventions docs).
+
+        A raw `memory://project:task/42:summary` is an ambiguous URI
+        that clients can't parse back to the original key. The fix
+        percent-encodes on the index side; the read handler
+        percent-decodes, so the round-trip is lossless.
+        """
+        from unittest.mock import patch
+
+        from hive.server import (
+            _decode_memory_key,
+            _encode_memory_key,
+            list_memory_resources,
+            read_memory_resource,
+            remember,
+        )
+
+        _, client_id, jwt = server_env
+        raw_key = "project:task/42:summary"
+        await remember(raw_key, "round-trip value", [], ctx=_make_ctx(jwt))
+
+        # Index publishes the encoded form.
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            body = list_memory_resources()
+        encoded = _encode_memory_key(raw_key)
+        assert f"memory://{encoded}" in body.splitlines()
+        # Encoded form contains no structural characters that would
+        # confuse a URI parser.
+        assert "/" not in encoded and ":" not in encoded
+
+        # Read handler decodes the URI parameter back to the raw key
+        # and fetches correctly.
+        with patch("hive.server.get_access_token", return_value=self._mock_token(client_id)):
+            value = read_memory_resource(encoded)
+        assert value == "round-trip value"
+
+        # Round-trip identity as a hygiene check.
+        assert _decode_memory_key(encoded) == raw_key
 
     async def test_read_memory_resource_rejects_cross_tenant_lookup(self, server_env):
         """Reading another client's memory key must 404, not leak content.

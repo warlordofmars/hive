@@ -23,6 +23,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
+from urllib.parse import quote, unquote
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
@@ -1508,15 +1509,41 @@ def forget_older_than_prompt(
 _MEMORY_RESOURCE_LIST_LIMIT = 500
 
 
+def _encode_memory_key(key: str) -> str:
+    """Percent-encode a memory key for use in a ``memory://`` URI.
+
+    Keys legally contain ``/``, ``:``, and other characters the URI
+    grammar treats as structural (authority / path / query delimiters),
+    so a naive ``f"memory://{key}"`` produces an ambiguous URI that
+    clients can't parse back to the original key. Quote everything
+    except ASCII alphanumerics and the unreserved-char set; the result
+    round-trips losslessly via ``_decode_memory_key``.
+    """
+    # `safe=""` forces `/` + `:` to be encoded; alphanumerics and
+    # unreserved chars (`-_.~`) pass through unchanged.
+    return quote(key, safe="")
+
+
+def _decode_memory_key(encoded: str) -> str:
+    """Inverse of ``_encode_memory_key``."""
+    return unquote(encoded)
+
+
 def _resource_auth() -> tuple[HiveStorage, str]:
     """Resolve ``(storage, client_id)`` for an MCP Resource read.
 
     Resources don't receive a ``Context`` object the way tools do, so
     the token is pulled via ``get_access_token()`` — the
     ``RemoteAuthProvider`` on the ``FastMCP`` instance has already
-    validated it by the time the handler runs. Raises ``ValueError``
-    on missing token / insufficient scope; the MCP framework surfaces
-    that as an error response to the client.
+    validated it by the time the handler runs.
+
+    Applies the same per-client rate-limit the tool-side ``_auth()``
+    uses: even though resource reads are cheap individually, the
+    ``memory://index`` handler scans DynamoDB and a misbehaving client
+    could run the account's rate-limit budget without it.
+
+    Raises ``ValueError`` on missing token / insufficient scope / rate
+    limit; the MCP framework surfaces that as an error response.
     """
     token = get_access_token()
     if token is None:
@@ -1524,7 +1551,12 @@ def _resource_auth() -> tuple[HiveStorage, str]:
     scopes = set(token.scopes or [])
     if _MEMORIES_READ_SCOPE not in scopes:
         raise ValueError(f"Insufficient scope: '{_MEMORIES_READ_SCOPE}' required")
-    return HiveStorage(), token.client_id
+    storage = HiveStorage()
+    try:
+        check_rate_limit(token.client_id, storage)
+    except RateLimitExceeded as exc:
+        raise ValueError(f"Rate limit exceeded. Retry after {exc.retry_after}s.") from exc
+    return storage, token.client_id
 
 
 @mcp.resource(
@@ -1533,7 +1565,8 @@ def _resource_auth() -> tuple[HiveStorage, str]:
     description=(
         "Newline-separated list of `memory://` URIs owned by the authenticated "
         "client. Read this first to discover what's available, then read "
-        "individual memories via `memory://{key}`."
+        "individual memories via `memory://{key}`. Keys containing `/` or `:` "
+        "are percent-encoded so each URI round-trips losslessly."
     ),
     mime_type="text/plain",
 )
@@ -1542,7 +1575,14 @@ def list_memory_resources() -> str:
     memories, next_cursor = storage.list_all_memories(
         client_id=client_id, limit=_MEMORY_RESOURCE_LIST_LIMIT
     )
-    uris = sorted(f"memory://{m.key}" for m in memories if not m.is_redacted)
+    # Skip both redacted and expired entries — otherwise the index can
+    # advertise keys that `read_memory_resource` will later 404 on
+    # (`get_memory_by_id` filters expired, `list_all_memories` doesn't).
+    uris = sorted(
+        f"memory://{_encode_memory_key(m.key)}"
+        for m in memories
+        if not m.is_redacted and not m.is_expired
+    )
     body = "\n".join(uris)
     if next_cursor:
         # Flag truncation so the agent knows to fall back to
@@ -1559,20 +1599,25 @@ def list_memory_resources() -> str:
     "memory://{key}",
     name="Memory content",
     description=(
-        "Read the value of a single memory by its key. Scoped to the authenticated OAuth client."
+        "Read the value of a single memory by its key. Scoped to the authenticated "
+        "OAuth client. The `{key}` portion may be percent-encoded — keys with "
+        "`/` or `:` work as long as they're quoted."
     ),
     mime_type="text/plain",
 )
 def read_memory_resource(key: str) -> str:
     storage, client_id = _resource_auth()
-    memory = storage.get_memory_by_key(key)
+    # FastMCP passes the URI template parameter as the encoded substring;
+    # decode back to the original key before hitting storage.
+    decoded_key = _decode_memory_key(key)
+    memory = storage.get_memory_by_key(decoded_key)
     # Tenant isolation: `get_memory_by_key` doesn't filter by owner, so
     # a client asking for another tenant's key would otherwise succeed.
     # Treat cross-tenant lookups as 404 to avoid leaking existence.
     if memory is None or memory.owner_client_id != client_id:
-        raise ValueError(f"Memory not found: {key}")
+        raise ValueError(f"Memory not found: {decoded_key}")
     if memory.is_redacted:
-        raise ValueError(f"Memory has been redacted: {key}")
+        raise ValueError(f"Memory has been redacted: {decoded_key}")
     return memory.value
 
 
