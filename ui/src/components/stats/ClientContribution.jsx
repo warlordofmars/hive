@@ -59,7 +59,7 @@ export function pivotByDate(data) {
   }
   return {
     rows: Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date)),
-    clientIds: Array.from(clientIds).sort(),
+    clientIds: Array.from(clientIds).sort((a, b) => a.localeCompare(b)),
   };
 }
 
