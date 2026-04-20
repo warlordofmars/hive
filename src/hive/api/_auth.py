@@ -36,6 +36,10 @@ async def require_token(
     try:
         check_rate_limit(token.client_id, storage)
     except RateLimitExceeded as exc:
+        # #367 — surface rate-limit pressure in the admin dashboard. Emit
+        # twice: aggregate (Environment only) + drill-down (endpoint + reason).
+        await emit_metric("RateLimitedRequests")
+        await emit_metric("RateLimitedRequests", endpoint="/api", reason="rate_limit")
         raise HTTPException(
             status_code=429,
             detail="Rate limit exceeded",

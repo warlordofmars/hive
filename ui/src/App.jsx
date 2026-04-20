@@ -23,6 +23,7 @@ import UseCasesPage from "./components/UseCasesPage.jsx";
 import ApiKeysPanel from "./components/ApiKeysPanel.jsx";
 import MemoryBrowser from "./components/MemoryBrowser.jsx";
 import SetupPanel from "./components/SetupPanel.jsx";
+import Stats from "./components/Stats.jsx";
 import UsersPanel from "./components/UsersPanel.jsx";
 import { Button } from "./components/ui/button.jsx";
 import { Toaster } from "./components/ui/sonner.jsx";
@@ -30,6 +31,7 @@ import { useTheme } from "./hooks/useTheme.js";
 
 const BASE_TABS = [
   { id: "memories", label: "Memories" },
+  { id: "stats", label: "Stats" },
   { id: "clients", label: "OAuth Clients" },
   { id: "api-keys", label: "API Keys" },
   { id: "activity", label: "Activity Log" },
@@ -200,6 +202,7 @@ function AppShell() {
 
       <main className="flex-1 p-4 md:p-6 max-w-[1100px] mx-auto w-full">
         {tab === "memories" && <MemoryBrowser />}
+        {tab === "stats" && <Stats />}
         {tab === "clients" && <ClientManager />}
         {tab === "api-keys" && <ApiKeysPanel />}
         {tab === "activity" && <ActivityLog />}

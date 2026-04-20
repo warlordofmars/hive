@@ -5,6 +5,7 @@ Admin-only endpoints for CloudWatch metrics and AWS Cost Explorer data.
 
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import time
 from typing import Annotated, Any
@@ -149,6 +150,24 @@ def _build_metric_queries(period_label: str) -> list[dict[str, Any]]:
                 "Metric": {
                     "Namespace": NAMESPACE,
                     "MetricName": "CSPViolations",
+                    "Dimensions": [{"Name": "Environment", "Value": ENVIRONMENT}],
+                },
+                "Period": stat_period,
+                "Stat": "Sum",
+            },
+        }
+    )
+    # RateLimitedRequests (#367) — count of 429-equivalent responses from the
+    # MCP server, the management-API auth path, and /api/memories quota checks.
+    # Same twin-emit pattern as CSP: aggregate here, drill-down by endpoint
+    # available via CloudWatch directly.
+    queries.append(
+        {
+            "Id": "rate_limited_requests",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": NAMESPACE,
+                    "MetricName": "RateLimitedRequests",
                     "Dimensions": [{"Name": "Environment", "Value": ENVIRONMENT}],
                 },
                 "Period": stat_period,
@@ -381,19 +400,30 @@ async def get_audit_log(
     client_id: Annotated[str | None, Query(description="Filter by client_id")] = None,
     event_type: Annotated[str | None, Query(description="Filter by event_type")] = None,
 ) -> dict[str, Any]:
-    import datetime as _dt
-
-    today = _dt.date.today()
+    # Anchor on UTC "today" — audit shards are keyed by the event's UTC
+    # date (see storage.log_audit_event) so any local-time anchor drifts
+    # away from the partition keys whenever the host TZ isn't UTC.
+    # Query ``days + 1`` shards so a request made just after midnight UTC
+    # still sees events that landed on yesterday's shard a few seconds
+    # earlier — otherwise the endpoint silently drops near-boundary
+    # audit events (observed failure: tests/unit/test_admin_api.py
+    # ::TestAdminAuditLog at 2026-04-20T00:00:01Z).
+    today = _dt.datetime.now(_dt.timezone.utc).date()
     dates = [
         (today - _dt.timedelta(days=i)).isoformat()
-        for i in range(days)  # NOSONAR — days bounded by FastAPI Query(ge=1, le=90)
+        for i in range(days + 1)  # NOSONAR — days bounded by FastAPI Query(ge=1, le=90)
     ]
+    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)
     events = storage.get_audit_events_for_dates(
         dates,
         client_id=client_id,
         event_type=event_type,
         limit=limit + 1,
     )
+    # Trim events older than the rolling window — the extra shard
+    # captures anything that tipped over midnight, but we shouldn't
+    # include events from beyond `days * 24h` ago.
+    events = [e for e in events if e.timestamp >= cutoff]
     has_more = len(events) > limit
     events = events[:limit]
     return {

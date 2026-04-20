@@ -178,6 +178,8 @@ class TestAdminMetrics:
             "p99_summarizecontext",
             "tokens_issued",
             "token_failures",
+            "csp_violations",
+            "rate_limited_requests",
         ]
         cw_resp = _make_cw_response(metric_ids)
         with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
@@ -193,6 +195,9 @@ class TestAdminMetrics:
         assert "metrics" in body
         assert "inv_remember" in body["metrics"]
         assert body["metrics"]["inv_remember"]["values"] == [1.0]
+        # #367 — Rate-limited requests surface as a Dashboard stat card, so
+        # the admin metrics endpoint must include the aggregate query.
+        assert "rate_limited_requests" in body["metrics"]
 
     def test_returns_metrics_for_1h(self, admin_tc):
         with patch("hive.api.admin._cloudwatch_client") as mock_cw_factory:
@@ -538,6 +543,46 @@ class TestAdminAuditLog:
     def test_non_admin_forbidden(self, user_tc):
         resp = user_tc.get("/api/admin/audit-log?days=1")
         assert resp.status_code == 403
+
+    def test_returns_events_straddling_midnight_utc(self, admin_tc, audit_storage):
+        """Regression for #583.
+
+        Events written a few seconds before midnight UTC land in the
+        previous UTC date's shard. If the endpoint only queries "today"
+        UTC, those events are invisible to a ``days=1`` query made just
+        after midnight. The fix widens the shard scan by one day and
+        applies a time-based cutoff.
+        """
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+
+        from hive.models import ActivityEvent, EventType
+
+        # Three events straddling the midnight UTC boundary. The first
+        # two land on the pre-midnight shard, the last two on the
+        # post-midnight shard.
+        midnight = datetime(2026, 4, 20, 0, 0, 0, tzinfo=timezone.utc)
+        for offset_seconds in (-2, -1, 0, 1, 2):
+            audit_storage.log_audit_event(
+                ActivityEvent(
+                    event_type=EventType.memory_created,
+                    client_id="c",
+                    timestamp=midnight + timedelta(seconds=offset_seconds),
+                    metadata={"offset": offset_seconds},
+                )
+            )
+
+        # Simulate a request made 1.1 seconds after midnight UTC.
+        just_after_midnight = midnight + timedelta(seconds=1, microseconds=100_000)
+        with patch("hive.api.admin._dt.datetime", wraps=datetime) as mock_dt:
+            mock_dt.now.return_value = just_after_midnight
+            resp = admin_tc.get("/api/admin/audit-log?days=1&limit=50")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # All five events should surface — both pre- and post-midnight
+        # shards are scanned and none fall outside the 24h cutoff.
+        assert body["count"] == 5, body
 
     def test_storage_factory_returns_storage(self):
         """_storage() dep factory returns a HiveStorage so the endpoint can run in prod."""

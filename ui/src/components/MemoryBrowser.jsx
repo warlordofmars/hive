@@ -247,6 +247,30 @@ export default function MemoryBrowser() {
     return () => clearTimeout(searchDebounceRef.current);
   }, [searchQuery, runSearch]);
 
+  // #537 — Stats charts click-through: the Stats tab dispatches a
+  // `hive:memory-browser` CustomEvent with `{ tag }` or `{ search }` to
+  // focus this browser on a specific slice. Followed by a
+  // `hive:switch-tab` to jump the active tab.
+  useEffect(() => {
+    function onFocus(e) {
+      const detail = e.detail ?? {};
+      if (detail.tag) {
+        setSearchQuery("");
+        setIsSearchMode(false);
+        setTagFilter(detail.tag);
+      } else if (detail.search) {
+        setTagFilter("");
+        // Enter search mode explicitly so the list-load effect doesn't
+        // fire an unnecessary listMemories() before the debounced
+        // runSearch() kicks in.
+        setIsSearchMode(true);
+        setSearchQuery(detail.search);
+      }
+    }
+    globalThis.addEventListener("hive:memory-browser", onFocus);
+    return () => globalThis.removeEventListener("hive:memory-browser", onFocus);
+  }, []);
+
   // Collect distinct tags from loaded memories for suggestions
   const knownTags = [...new Set(memories.flatMap((m) => m.tags))].sort((a, b) => a.localeCompare(b));
 

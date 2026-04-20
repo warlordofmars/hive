@@ -78,6 +78,25 @@ class VersionConflict(Exception):
         super().__init__(f"Memory was updated since version {attempted_version!r}")
 
 
+class AuthCodeAlreadyUsed(Exception):
+    """Raised by ``mark_auth_code_used`` when the conditional write is rejected.
+
+    Two conditions trip the conditional ``UpdateItem``:
+
+    1. Another redemption raced ahead and flipped ``used`` to ``true``
+       (the RFC 6749 §10.5 single-use case this fix exists for).
+    2. No AUTHCODE item exists under the supplied key — the
+       ``attribute_exists(PK)`` guard rejects forged / never-issued
+       codes so callers can't mint tokens from arbitrary strings.
+
+    Both are indistinguishable from the client's perspective: the
+    token endpoint maps either to ``400 "Invalid or already-used
+    code"``. The name stays narrow because concurrent redemption is
+    the motivating case; the forged-code path is a defensive
+    side-effect of the same condition.
+    """
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -537,12 +556,35 @@ class HiveStorage:
         return AuthorizationCode.from_dynamo(item) if item else None
 
     def mark_auth_code_used(self, code: str) -> None:
-        self.table.update_item(
-            Key={"PK": f"AUTHCODE#{code}", "SK": "META"},
-            UpdateExpression="SET #u = :t",
-            ExpressionAttributeNames={"#u": "used"},
-            ExpressionAttributeValues={":t": True},
-        )
+        """Atomically mark an OAuth authorization code as redeemed.
+
+        RFC 6749 §10.5 requires authorization codes to be single-use.
+        Two concurrent `POST /oauth/token` requests with the same `code`
+        used to both pass the `auth_code.used` pre-check in
+        ``oauth.py`` before either could write back — the classic
+        read-check-write TOCTOU. This now enforces single-use at the
+        DynamoDB layer via a conditional write on ``used = false``;
+        exactly one concurrent redeemer succeeds, the other raises
+        :class:`AuthCodeAlreadyUsed`.
+
+        The caller should have already validated the code's existence,
+        client binding, redirect URI, expiry, and PKCE; this call is
+        the commit point of the redemption pipeline.
+        """
+        try:
+            self.table.update_item(
+                Key={"PK": f"AUTHCODE#{code}", "SK": "META"},
+                UpdateExpression="SET #u = :t",
+                ConditionExpression="attribute_exists(PK) AND #u = :f",
+                ExpressionAttributeNames={"#u": "used"},
+                ExpressionAttributeValues={":t": True, ":f": False},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise AuthCodeAlreadyUsed(
+                    "Authorization code has already been redeemed or does not exist"
+                ) from exc
+            raise
 
     # ------------------------------------------------------------------
     # Pending auth (PKCE state stored while user authenticates with Google)

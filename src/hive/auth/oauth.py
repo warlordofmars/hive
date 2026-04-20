@@ -32,7 +32,7 @@ from hive.models import (
     EventType,
     TokenResponse,
 )
-from hive.storage import HiveStorage
+from hive.storage import AuthCodeAlreadyUsed, HiveStorage
 
 # When set (non-prod environments only), /oauth/authorize issues auth codes
 # directly without redirecting to Google.  This keeps e2e tests functional
@@ -340,6 +340,9 @@ async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
             )
 
         auth_code = storage.get_auth_code(code)
+        # Missing / pre-observed-used codes still fail fast without
+        # hitting the conditional write — the atomic path below is the
+        # fix for the concurrent-redemption TOCTOU only.
         if auth_code is None or auth_code.used:
             raise HTTPException(status_code=400, detail="Invalid or already-used code")
         if auth_code.client_id != client_id:
@@ -351,7 +354,15 @@ async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
         if not _verify_pkce(code_verifier, auth_code.code_challenge):
             raise HTTPException(status_code=400, detail="PKCE verification failed")
 
-        storage.mark_auth_code_used(code)
+        # `mark_auth_code_used` is the commit point. If a concurrent
+        # redemption of the same code raced ahead of us, the
+        # conditional write fails with `AuthCodeAlreadyUsed` and we
+        # return the same 400 as the pre-check — RFC 6749 §10.5
+        # requires the losing redeemer gets no token pair.
+        try:
+            storage.mark_auth_code_used(code)
+        except AuthCodeAlreadyUsed as exc:
+            raise HTTPException(status_code=400, detail="Invalid or already-used code") from exc
         access, refresh = storage.create_token_pair(client_id, auth_code.scope)
 
     elif grant_type == "refresh_token":

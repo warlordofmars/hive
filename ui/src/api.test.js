@@ -217,6 +217,18 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/api/stats");
   });
 
+  it("getAccountStats passes window through", async () => {
+    mockOk({ window_days: 30 });
+    await api.getAccountStats(30);
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/account/stats?window=30");
+  });
+
+  it("getAccountStats defaults to 90-day window", async () => {
+    mockOk({ window_days: 90 });
+    await api.getAccountStats();
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/account/stats?window=90");
+  });
+
   it("getActivity with default params", async () => {
     mockOk({ items: [] });
     await api.getActivity();

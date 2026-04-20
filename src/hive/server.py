@@ -13,6 +13,7 @@ Tools:
   list_memories(tag)          — list memories by tag
   list_tags()                 — list distinct tags for the caller's memories
   summarize_context(topic)    — synthesise memories into a summary
+  pack_context(topic, ...)    — token-budget-aware context pack (#452)
 """
 
 from __future__ import annotations
@@ -23,12 +24,13 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
+from urllib.parse import quote, unquote
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
-from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.tools.tool import ToolResult
 from pydantic import AnyHttpUrl
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -192,6 +194,11 @@ async def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple
     try:
         check_rate_limit(token.client_id, storage)
     except RateLimitExceeded as exc:
+        # #367 — track 429-equivalent events so admins can see pressure in the
+        # dashboard. Emit twice: aggregate (Environment only) + drill-down
+        # dimensions (endpoint + reason).
+        await emit_metric("RateLimitedRequests")
+        await emit_metric("RateLimitedRequests", endpoint="mcp", reason="rate_limit")
         raise ToolError(f"Rate limit exceeded. Retry after {exc.retry_after}s.") from exc
 
     set_request_context(request_id, token.client_id)
@@ -1368,6 +1375,526 @@ async def relate_memories(
         storage,
         client_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# pack_context (#452)
+# ---------------------------------------------------------------------------
+#
+# Token-budget-aware retrieval: agents ask for "as much relevant context
+# as fits in N tokens" rather than top-K or everything-under-a-tag. The
+# tool runs the same hybrid search as `search_memories`, re-orders by
+# the caller's preferred strategy, estimates tokens per candidate, and
+# greedily packs until the budget is exhausted.
+
+
+_PACK_CONTEXT_CANDIDATE_POOL = 50
+_PACK_CONTEXT_DEFAULT_BUDGET = 2000
+_PACK_CONTEXT_MAX_BUDGET = 100_000
+# Conservative char-per-token ratio that covers both English prose and
+# code/JSON fragments without pulling in tiktoken (a ~10MB C extension).
+# Over-estimating is fine — agents prefer under-budget to over-budget.
+_PACK_CONTEXT_CHARS_PER_TOKEN = 4
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count for a block of text.
+
+    Uses a simple chars-per-token heuristic (4 chars ≈ 1 token, the
+    long-run Anthropic/OpenAI English average) instead of tiktoken so
+    the Lambda bundle stays slim. Slightly conservative — the packer
+    would rather leave budget on the table than overflow.
+    """
+    if not text:
+        return 0
+    # ceil so a 3-char string still costs 1 token, not 0.
+    return (len(text) + _PACK_CONTEXT_CHARS_PER_TOKEN - 1) // _PACK_CONTEXT_CHARS_PER_TOKEN
+
+
+def _score_for_ordering(
+    ordering: str,
+    *,
+    semantic: float,
+    recency: float,
+    blended: float,
+) -> float:
+    """Pick the sort key for a candidate memory based on the ordering mode.
+
+    Extracted so the pack-context unit tests can assert each mode
+    directly without walking the full pipeline.
+    """
+    if ordering == "relevance":
+        return semantic
+    if ordering == "recency":
+        return recency
+    # Default: relevance+recency blend (matches search_memories default).
+    return blended
+
+
+def pack_memories_within_budget(
+    memories: list[tuple[Memory, float]],
+    budget_tokens: int,
+) -> tuple[list[Memory], int]:
+    """Greedily pack memories into a token budget, preserving input order.
+
+    ``memories`` is a pre-sorted list of ``(Memory, score)`` tuples.
+    The function preserves the upstream ordering and ignores ``score``
+    itself — the caller is responsible for sorting. Returns the subset
+    that fits and the sum of their estimated tokens (including the
+    ``\\n`` separators that ``_render_packed_context`` inserts between
+    entries, so the returned token count matches the rendered block).
+
+    Items larger than the remaining budget are skipped — we don't
+    truncate individual memories because a half-quoted decision is
+    worse than a missing one. The caller can raise the budget or
+    adjust ordering to surface smaller candidates.
+    """
+    separator_tokens = estimate_tokens("\n")
+    packed: list[Memory] = []
+    used = 0
+    for memory, _score in memories:
+        entry_tokens = estimate_tokens(_render_memory_entry(memory))
+        # First entry has no preceding separator; subsequent ones do,
+        # matching what `_render_packed_context` will actually emit.
+        additional = entry_tokens + (separator_tokens if packed else 0)
+        if used + additional > budget_tokens:
+            continue
+        packed.append(memory)
+        used += additional
+    return packed, used
+
+
+def _render_memory_entry(memory: Memory) -> str:
+    """Render a single memory as the line shape used in the packed block."""
+    return f"- **{memory.key}**: {memory.value}"
+
+
+def _memory_label(count: int) -> str:
+    """Return the correctly pluralised label for a memory count."""
+    return "memory" if count == 1 else "memories"
+
+
+def _render_packed_context(topic: str, packed: list[Memory], used_tokens: int) -> str:
+    """Render the full packed-context string the tool returns.
+
+    Separated from the tool body so the formatting is unit-testable
+    without any storage or auth plumbing.
+    """
+    count = len(packed)
+    label = _memory_label(count)
+    if not packed:
+        return (
+            f"## Context for {topic!r} (0 {label}, ~0 tokens)\n\n"
+            "_No relevant memories fit within the token budget._"
+        )
+    header = f"## Context for {topic!r} ({count} {label}, ~{used_tokens} tokens)"
+    body = "\n".join(_render_memory_entry(m) for m in packed)
+    return f"{header}\n\n{body}"
+
+
+def _render_empty_within_budget(topic: str, budget_tokens: int) -> str:
+    """Render the best empty-state response that fits in the budget.
+
+    Tries the full ``_render_packed_context(topic, [], 0)`` first
+    (header + explanatory body). If that overshoots the budget, falls
+    back to progressively shorter strings so the advertised budget
+    contract holds even on the vector-error / no-index branches.
+    """
+    full = _render_packed_context(topic, [], 0)
+    if estimate_tokens(full) <= budget_tokens:
+        return full
+    # Drop the explanatory body; header alone is usually well under 20 tokens.
+    header_only = f"## Context for {topic!r} (0 memories, ~0 tokens)"
+    if estimate_tokens(header_only) <= budget_tokens:
+        return header_only
+    # Last-resort terse fallback for single-digit budgets. Agents asking
+    # for <5 tokens of context are doing something pathological, but we
+    # still honour the contract.
+    terse = "_no context_"
+    if estimate_tokens(terse) <= budget_tokens:
+        return terse
+    return ""
+
+
+@mcp.tool(
+    title="Pack context",
+    annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+)
+async def pack_context(
+    topic: Annotated[str, "Topic / query to retrieve context for"],
+    budget_tokens: Annotated[
+        int,
+        "Maximum tokens in the returned context block (1–100000). Defaults to 2000.",
+    ] = _PACK_CONTEXT_DEFAULT_BUDGET,
+    ordering: Annotated[
+        str,
+        "How to rank candidates before packing: 'relevance' (pure semantic), "
+        "'recency' (last-accessed decay, falling back to updated-at decay), or "
+        "'relevance+recency' (blend, default).",
+    ] = "relevance+recency",
+    ctx: Context | None = None,
+) -> str:
+    """Retrieve as many relevant memories as fit within ``budget_tokens``.
+
+    Unlike ``search_memories`` (fixed top-K) or ``list_memories`` (full
+    tag slice), ``pack_context`` lets the agent ask for "fill my
+    remaining context window with the most useful memories about X".
+    The return is a markdown block ready to drop straight into a
+    prompt — caller doesn't need to post-process JSON.
+    """
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    budget = max(1, min(int(budget_tokens), _PACK_CONTEXT_MAX_BUDGET))
+    mode = (
+        ordering
+        if ordering in {"relevance", "recency", "relevance+recency"}
+        else ("relevance+recency")
+    )
+
+    try:
+        pairs = _vector_store().search(topic, client_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
+    except VectorIndexNotFoundError:
+        return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
+    except Exception:
+        logger.warning("Vector search failed in pack_context (non-fatal)", exc_info=True)
+        return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
+
+    hydrated = storage.hydrate_memory_ids(pairs)
+
+    # Score every candidate through the standard blend pipeline so the
+    # `relevance+recency` mode matches search_memories exactly.
+    query_tokens = tokenize(topic)
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[Memory, float]] = []
+    for memory, sem in hydrated:
+        if memory.is_redacted:
+            continue
+        kw = keyword_score(query_tokens, memory.value)
+        rec = recency_score(memory, now=now)
+        blended = blend_score(semantic=sem, keyword=kw, recency=rec)
+        scored.append(
+            (memory, _score_for_ordering(mode, semantic=sem, recency=rec, blended=blended))
+        )
+
+    # Sort descending by chosen score; `reverse=True` keeps the highest
+    # scorer first for the greedy packer to fit first.
+    scored.sort(key=lambda row: row[1], reverse=True)
+    # Reserve budget for the header + trailing blank line so the total
+    # rendered tokens stay under the advertised `budget`. Use the most
+    # expensive possible header (assumes 5-digit `used_tokens` and
+    # 3-digit count) so we never under-reserve.
+    header_reserve = estimate_tokens(f"## Context for {topic!r} (000 memories, ~00000 tokens)\n\n")
+    if budget <= header_reserve:
+        # Tiny budget — can't even fit the header. Degrade straight
+        # through the same fallback ladder as the vector-error branches.
+        rendered = _render_empty_within_budget(topic, budget)
+        packed: list[Memory] = []
+        used_tokens = 0
+    else:
+        packed, used_tokens = pack_memories_within_budget(scored, budget - header_reserve)
+        rendered = _render_packed_context(topic, packed, used_tokens)
+        # Belt-and-braces: if our token estimate still overshoots the
+        # rendered output (e.g. weird unicode the heuristic mis-counts),
+        # collapse to the empty fallback so the contract holds.
+        if estimate_tokens(rendered) > budget:
+            rendered = _render_empty_within_budget(topic, budget)
+            packed = []
+            used_tokens = 0
+
+    _log(
+        storage,
+        ActivityEvent(
+            event_type=EventType.memory_searched,
+            client_id=client_id,
+            metadata={
+                "tool": "pack_context",
+                "topic": topic,
+                "budget_tokens": budget,
+                "ordering": mode,
+                "packed_count": len(packed),
+                "used_tokens": used_tokens,
+            },
+        ),
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "pack_context for '%s': %d memories in %d/%d tokens",
+        topic,
+        len(packed),
+        used_tokens,
+        budget,
+        extra={
+            "tool": "pack_context",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="pack_context")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="pack_context",
+    )
+    return _tool_result(rendered, storage, client_id)
+
+
+# ---------------------------------------------------------------------------
+# MCP Prompts (#447)
+# ---------------------------------------------------------------------------
+#
+# MCP Prompts are pre-built, parameterised prompt templates that supported
+# clients (e.g. Claude Code, Cursor) surface as slash commands. Each prompt
+# returns a string; FastMCP wraps it as a single user-role message under the
+# hood. The agent then executes the template by calling the named Hive tool.
+#
+# These prompts are pure templates — they do not hit DynamoDB, and
+# deliberately do not require auth (the underlying tool call does). That
+# keeps the prompt renderer cheap and means unauthenticated clients can
+# still discover + inspect them.
+
+
+@mcp.prompt(
+    name="recall-context",
+    title="Recall context",
+    description=(
+        "Recall everything Hive knows about a topic and use it as foreground "
+        "context for the rest of the conversation."
+    ),
+)
+def recall_context_prompt(
+    topic: Annotated[str, "Topic to summarise memories about"],
+) -> str:
+    # `!r` renders the string as a Python repr so apostrophes, quotes,
+    # and newlines in the user input don't produce an ambiguous
+    # pseudo-call signature. The agent still interprets the instruction
+    # in prose — `!r` just keeps the argument boundaries unambiguous.
+    return (
+        f"Use Hive to recall what I know about {topic!r}. Call the "
+        f"`summarize_context` tool with topic={topic!r}, then treat the "
+        "result as foreground context for the rest of this conversation. "
+        "If the summary is empty, say so and ask what I'd like to remember."
+    )
+
+
+@mcp.prompt(
+    name="what-do-you-know-about",
+    title="What do you know about…",
+    description=(
+        "Semantic-search Hive's memories for a free-text query and weave the "
+        "top results into the next response."
+    ),
+)
+def what_do_you_know_about_prompt(
+    query: Annotated[str, "Free-text query to search memories for"],
+) -> str:
+    return (
+        f"Search Hive for {query!r}. Call `search_memories` with query={query!r} "
+        "and top_k=10. Read the returned memories and incorporate them into "
+        "your next response, citing each memory's key. If the returned items "
+        "list is empty, say so plainly."
+    )
+
+
+@mcp.prompt(
+    name="remember-this",
+    title="Remember this",
+    description=(
+        "Store a memory in Hive under a given key, optionally tagged. Supply "
+        "the value explicitly; tags may be omitted."
+    ),
+)
+def remember_this_prompt(
+    key: Annotated[str, "Unique key to store the memory under"],
+    value: Annotated[str, "Content of the memory — pass the current selection"],
+    tags: Annotated[
+        str,
+        "Optional comma-separated tags (e.g. 'work,roadmap'). Empty for none.",
+    ] = "",
+) -> str:
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    tag_clause = f" tags={tag_list!r}" if tag_list else " tags=[]"
+    return (
+        f"Store this in Hive. Call `remember` with key={key!r},{tag_clause}, "
+        f"and value={value!r}. Confirm once the memory is written, quoting "
+        "the returned memory_id."
+    )
+
+
+@mcp.prompt(
+    name="forget-older-than",
+    title="Forget older than…",
+    description=(
+        "Enumerate memories older than N days and interactively forget them. "
+        "Pairs with the bulk-delete flow (#427) — agent must confirm each "
+        "deletion with the user before calling `forget`."
+    ),
+)
+def forget_older_than_prompt(
+    days: Annotated[int, "Drop memories whose last access is older than this many days"],
+) -> str:
+    # Uses only tools Hive actually exposes. `list_memories` needs a
+    # tag, so iterate `list_tags()` → `list_memories(tag)`. The tool
+    # response surfaces `last_accessed_at` and `version` (a UTC ISO
+    # timestamp that updates on every write); `version` is the
+    # well-defined fallback when `last_accessed_at` is null (memory
+    # written but never recalled).
+    return (
+        f"Help me prune stale memories. Call `list_tags` to discover my tag "
+        f"namespace, then for each tag call `list_memories(tag)`. For every "
+        f"memory whose `last_accessed_at` is more than {days} days ago — or "
+        f"whose `last_accessed_at` is null and whose `version` timestamp is "
+        f"more than {days} days ago — show me the key plus the timestamp "
+        "you used (`last_accessed_at` or `version`) and ask 'forget this?' — "
+        "only call `forget` when I reply yes. Do not batch-delete without "
+        "confirmation."
+    )
+
+
+# ---------------------------------------------------------------------------
+# MCP Resources (#446)
+# ---------------------------------------------------------------------------
+#
+# Exposes the caller's memories as read-only MCP Resources in addition
+# to the existing tool surface. Supported URIs:
+#
+#   memory://_index       — newline-separated list of memory:// URIs the
+#                           authenticated client owns
+#   memory://{key}        — the value of a single memory, addressable by
+#                           key
+#
+# The leading underscore on `_index` puts it in a reserved namespace so
+# a user can still store and read a memory whose key is literally
+# `index` — otherwise the concrete URI would shadow the template.
+#
+# All reads are scoped to the authenticated OAuth client (client_id) and
+# require the `memories:read` scope. Resources are intentionally read-
+# only — writes still go through the `remember` tool so the quota + TTL
+# + version machinery stays in one place.
+
+
+_MEMORY_RESOURCE_LIST_LIMIT = 500
+
+
+def _encode_memory_key(key: str) -> str:
+    """Percent-encode a memory key for use in a ``memory://`` URI.
+
+    Keys legally contain ``/``, ``:``, and other characters the URI
+    grammar treats as structural (authority / path / query delimiters),
+    so a naive ``f"memory://{key}"`` produces an ambiguous URI that
+    clients can't parse back to the original key. Quote everything
+    except ASCII alphanumerics and the unreserved-char set; the result
+    round-trips losslessly via ``_decode_memory_key``.
+    """
+    # `safe=""` forces `/` + `:` to be encoded; alphanumerics and
+    # unreserved chars (`-_.~`) pass through unchanged.
+    return quote(key, safe="")
+
+
+def _decode_memory_key(encoded: str) -> str:
+    """Inverse of ``_encode_memory_key``."""
+    return unquote(encoded)
+
+
+def _resource_auth() -> tuple[HiveStorage, str]:
+    """Resolve ``(storage, client_id)`` for an MCP Resource read.
+
+    Resources don't receive a ``Context`` object the way tools do, so
+    the token is pulled via ``get_access_token()`` — the
+    ``RemoteAuthProvider`` on the ``FastMCP`` instance has already
+    validated it by the time the handler runs.
+
+    Applies the same per-client rate-limit the tool-side ``_auth()``
+    uses: even though resource reads are cheap individually, the
+    ``memory://index`` handler scans DynamoDB and a misbehaving client
+    could run the account's rate-limit budget without it.
+
+    Raises ``ValueError`` on missing token / insufficient scope / rate
+    limit; the MCP framework surfaces that as an error response.
+    """
+    token = get_access_token()
+    if token is None:
+        raise ValueError("Unauthorized: no valid access token")
+    scopes = set(token.scopes or [])
+    if _MEMORIES_READ_SCOPE not in scopes:
+        raise ValueError(f"Insufficient scope: '{_MEMORIES_READ_SCOPE}' required")
+    storage = HiveStorage()
+    try:
+        check_rate_limit(token.client_id, storage)
+    except RateLimitExceeded as exc:
+        raise ValueError(f"Rate limit exceeded. Retry after {exc.retry_after}s.") from exc
+    return storage, token.client_id
+
+
+@mcp.resource(
+    "memory://_index",
+    name="Memory index",
+    description=(
+        "Newline-separated list of `memory://` URIs owned by the authenticated "
+        "client. Read this first to discover what's available, then read "
+        "individual memories via `memory://{key}`. Keys containing `/` or `:` "
+        "are percent-encoded so each URI round-trips losslessly. The "
+        "underscore-prefixed path is reserved so a memory with the literal "
+        "key `index` can still be read via `memory://index`."
+    ),
+    mime_type="text/plain",
+)
+def list_memory_resources() -> str:
+    storage, client_id = _resource_auth()
+    memories, next_cursor = storage.list_all_memories(
+        client_id=client_id, limit=_MEMORY_RESOURCE_LIST_LIMIT
+    )
+    # Skip both redacted and expired entries — otherwise the index can
+    # advertise keys that `read_memory_resource` will later 404 on
+    # (`get_memory_by_id` filters expired, `list_all_memories` doesn't).
+    uris = sorted(
+        f"memory://{_encode_memory_key(m.key)}"
+        for m in memories
+        if not m.is_redacted and not m.is_expired
+    )
+    body = "\n".join(uris)
+    if next_cursor:
+        # Flag that the index view is capped so the agent knows to
+        # fall back to `list_memories(tag=…)` for narrower retrieval.
+        # Redacted + expired items are filtered out of the body above,
+        # so the visible URI count is often less than the cap — avoid
+        # implying the body itself holds exactly _MEMORY_RESOURCE_LIST_LIMIT
+        # entries.
+        body += (
+            f"\n\n_(Index capped at {_MEMORY_RESOURCE_LIST_LIMIT} entries; "
+            "more results may exist. Use the `list_memories` tool with "
+            "tags for targeted retrieval.)_"
+        )
+    return body
+
+
+@mcp.resource(
+    "memory://{key}",
+    name="Memory content",
+    description=(
+        "Read the value of a single memory by its key. Scoped to the authenticated "
+        "OAuth client. The `{key}` portion may be percent-encoded — keys with "
+        "`/` or `:` work as long as they're quoted."
+    ),
+    mime_type="text/plain",
+)
+def read_memory_resource(key: str) -> str:
+    storage, client_id = _resource_auth()
+    # FastMCP passes the URI template parameter as the encoded substring;
+    # decode back to the original key before hitting storage.
+    decoded_key = _decode_memory_key(key)
+    memory = storage.get_memory_by_key(decoded_key)
+    # Tenant isolation: `get_memory_by_key` doesn't filter by owner, so
+    # a client asking for another tenant's key would otherwise succeed.
+    # Treat cross-tenant lookups as 404 to avoid leaking existence.
+    # `!r` quotes the key in error messages so a client key containing
+    # newlines / control chars can't forge fake log lines or break the
+    # response envelope for clients that render the error verbatim.
+    if memory is None or memory.owner_client_id != client_id:
+        raise ValueError(f"Memory not found: {decoded_key!r}")
+    if memory.is_redacted:
+        raise ValueError(f"Memory has been redacted: {decoded_key!r}")
+    return memory.value
 
 
 # ---------------------------------------------------------------------------

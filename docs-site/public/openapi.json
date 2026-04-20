@@ -804,6 +804,56 @@
         ]
       }
     },
+    "/api/account/stats": {
+      "get": {
+        "description": "Return eight pre-aggregated graph datasets for the authenticated user (activity heatmap, top-recalled memories, tag distribution, memory growth, quota, freshness, client contribution, tag co-occurrence) plus a ``client_names`` lookup map so chart labels can resolve client IDs without a second round-trip. Results are cached server-side for 60s per (user, window) pair.",
+        "operationId": "get_account_stats_api_account_stats_get",
+        "parameters": [
+          {
+            "description": "Time window for date-scoped series: 30 | 90 | 365 (days).",
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "default": "90",
+              "description": "Time window for date-scoped series: 30 | 90 | 365 (days).",
+              "pattern": "^(30|90|365)$",
+              "title": "Window",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Account Stats Api Account Stats Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "422": {
+            "description": "Invalid window"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Personal usage analytics",
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/api/activity": {
       "get": {
         "description": "Return recent activity events (memory creates, updates, deletes, client registrations, etc.) for the configured number of days.",

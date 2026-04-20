@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 
 from hive.api._auth import require_mgmt_user
+from hive.metrics import emit_metric
 from hive.models import (
     ActivityEvent,
     EventType,
@@ -158,6 +159,11 @@ async def create_memory(
     try:
         check_memory_quota(owner_user_id, storage)
     except QuotaExceeded as exc:
+        # #367 — track 429s so admins can see quota pressure in the dashboard.
+        # Emit twice: aggregate (Environment only) for the dashboard count, and
+        # a fully-dimensioned record for drill-down (endpoint + reason).
+        await emit_metric("RateLimitedRequests")
+        await emit_metric("RateLimitedRequests", endpoint="/api/memories", reason="quota")
         raise HTTPException(status_code=429, detail=exc.detail) from exc
     expires_at = None
     if body.ttl_seconds is not None:

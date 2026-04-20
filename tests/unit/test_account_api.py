@@ -344,3 +344,267 @@ class TestExportAccount:
         assert {c1.client_id, c2.client_id}.issubset(ids)
         event_client_ids = [e["client_id"] for e in body["activity_log"]]
         assert len(event_client_ids) >= 2
+
+
+# ---------------------------------------------------------------------------
+# GET /api/account/stats  (#535)
+# ---------------------------------------------------------------------------
+
+
+class TestAccountStats:
+    def setup_method(self):
+        # The endpoint caches results in a module-level dict keyed by
+        # (user_id, window). Wipe it between tests so cache-hit/miss
+        # assertions stay deterministic.
+        from hive.api.account import _STATS_CACHE
+
+        _STATS_CACHE.clear()
+
+    def test_unauthed_returns_401(self, unauthed_client):
+        resp = unauthed_client.get("/api/account/stats")
+        assert resp.status_code in (401, 403)
+
+    def test_returns_all_eight_series(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        assert resp.status_code == 200
+        body = resp.json()
+        for key in (
+            "activity_heatmap",
+            "top_recalled",
+            "tag_distribution",
+            "memory_growth",
+            "quota",
+            "freshness",
+            "client_contribution",
+            "tag_cooccurrence",
+        ):
+            assert key in body, f"missing series: {key}"
+        assert body["window_days"] == 90  # default
+
+    def test_default_window_is_90_days(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        assert len(resp.json()["activity_heatmap"]) == 90
+
+    def test_window_30(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats?window=30")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["window_days"] == 30
+        assert len(body["activity_heatmap"]) == 30
+        assert len(body["memory_growth"]) == 30
+
+    def test_window_365(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats?window=365")
+        assert resp.status_code == 200
+        assert resp.json()["window_days"] == 365
+
+    def test_invalid_window_returns_422(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats?window=7")
+        assert resp.status_code == 422
+
+    def test_quota_reports_memory_count_and_limit(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        quota = resp.json()["quota"]
+        assert quota["memory_count"] >= 1  # pre-seeded by the fixture
+        # Default memory_limit is set via get_memory_limit() — a positive int
+        # for a non-exempt, non-admin user.
+        assert isinstance(quota["memory_limit"], int)
+        assert quota["memory_limit"] > 0
+
+    def test_tag_distribution_counts_seeded_tag(self, client):
+        tc, _ = client
+        resp = tc.get("/api/account/stats")
+        tags = {t["tag"]: t["count"] for t in resp.json()["tag_distribution"]}
+        assert tags.get("t1") == 1  # from the fixture's pre-seeded memory
+
+    def test_freshness_has_entry_per_memory(self, client):
+        tc, storage = client
+        resp = tc.get("/api/account/stats")
+        body = resp.json()
+        assert len(body["freshness"]) == body["quota"]["memory_count"]
+        entry = body["freshness"][0]
+        assert entry["days_since_created"] >= 0
+        assert entry["days_since_accessed"] >= 0
+        # Key + tags ride along so the scatter tooltip + click-through can
+        # work without a second API round-trip per dot.
+        assert isinstance(entry["key"], str) and entry["key"]
+        assert isinstance(entry["tags"], list)
+
+    def test_top_recalled_only_includes_recalled_memories(self, client):
+        from hive.models import Memory
+
+        tc, storage = client
+        # Add a second memory with recall_count > 0.
+        hot = Memory(
+            key="hot-key",
+            value="hot",
+            tags=["hot"],
+            owner_client_id=_USER_ID,
+            owner_user_id=_USER_ID,
+            recall_count=5,
+        )
+        storage.put_memory(hot)
+
+        resp = tc.get("/api/account/stats")
+        keys = [m["key"] for m in resp.json()["top_recalled"]]
+        # The pre-seeded "test-key" has recall_count=0 and must be filtered
+        # out; only the hot memory should surface.
+        assert keys == ["hot-key"]
+
+    def test_client_names_maps_client_id_to_display_name(self, client):
+        from hive.models import OAuthClient
+
+        tc, storage = client
+        # Register a named client owned by the user so the stats endpoint
+        # has a display name to surface.
+        oc = OAuthClient(client_name="Claude Code", owner_user_id=_USER_ID)
+        storage.put_client(oc)
+
+        resp = tc.get("/api/account/stats")
+        names = resp.json()["client_names"]
+        assert names.get(oc.client_id) == "Claude Code"
+
+    def test_tag_cooccurrence_edges(self, client):
+        from hive.models import Memory
+
+        tc, storage = client
+        # A memory carrying two tags should produce one (a, b) edge.
+        storage.put_memory(
+            Memory(
+                key="pair",
+                value="v",
+                tags=["alpha", "beta"],
+                owner_client_id=_USER_ID,
+                owner_user_id=_USER_ID,
+            )
+        )
+
+        resp = tc.get("/api/account/stats")
+        edges = [(e["source"], e["target"], e["weight"]) for e in resp.json()["tag_cooccurrence"]]
+        assert ("alpha", "beta", 1) in edges
+
+    def test_cache_hit_returns_same_object(self, client, monkeypatch):
+        # Two back-to-back calls with the same window must share the cache.
+        # `assert first == second` alone isn't enough — deterministic input
+        # produces identical output with or without caching. Spy on
+        # `_compute_account_stats` and assert it runs exactly once across
+        # both requests.
+        from hive.api import account as account_mod
+
+        tc, _ = client
+
+        calls = 0
+        original = account_mod._compute_account_stats
+
+        def counting_compute(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(account_mod, "_compute_account_stats", counting_compute)
+
+        first = tc.get("/api/account/stats")
+        second = tc.get("/api/account/stats")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert calls == 1
+
+    def test_cache_miss_after_ttl_elapses(self, client, monkeypatch):
+        # Freeze `time.time()` so the cache ages past its TTL on the second
+        # call without actually sleeping.
+        from hive.api import account as account_mod
+
+        tc, _ = client
+
+        fake_time = [1_000_000.0]
+
+        def fake_now():
+            return fake_time[0]
+
+        monkeypatch.setattr(account_mod.time, "time", fake_now)
+
+        tc.get("/api/account/stats")
+        # Count cached entries.
+        assert len(account_mod._STATS_CACHE) == 1
+
+        # Jump past TTL; the next call should recompute (same payload, but
+        # the cache entry timestamp must advance).
+        prev_ts = next(iter(account_mod._STATS_CACHE.values()))[0]
+        fake_time[0] += account_mod._STATS_CACHE_TTL + 1
+
+        tc.get("/api/account/stats")
+        new_ts = next(iter(account_mod._STATS_CACHE.values()))[0]
+        assert new_ts > prev_ts
+
+    def test_different_windows_cached_independently(self, client):
+        from hive.api import account as account_mod
+
+        tc, _ = client
+        tc.get("/api/account/stats?window=30")
+        tc.get("/api/account/stats?window=90")
+        # One entry per (user, window).
+        assert len(account_mod._STATS_CACHE) == 2
+
+    def test_own_events_populate_heatmap_and_client_contribution(self, client):
+        """Exercises the `for e in own_events` loop bodies — needs both a
+        client owned by the user AND an activity event whose client_id
+        matches. Covers the activity_heatmap and client_contribution
+        aggregation paths."""
+        from hive.models import ActivityEvent, EventType, OAuthClient
+
+        tc, storage = client
+
+        owned_client = OAuthClient(client_name="my-agent", owner_user_id=_USER_ID)
+        storage.put_client(owned_client)
+        storage.log_event(
+            ActivityEvent(
+                event_type=EventType.memory_recalled,
+                client_id=owned_client.client_id,
+                metadata={"key": "test-key"},
+            )
+        )
+
+        resp = tc.get("/api/account/stats")
+        body = resp.json()
+
+        # activity_heatmap should carry a non-zero bucket for today.
+        today_bucket = next((b for b in body["activity_heatmap"] if b["count"] > 0), None)
+        assert today_bucket is not None
+
+        # client_contribution should surface the owned client's event.
+        contrib_clients = {c["client_id"] for c in body["client_contribution"]}
+        assert owned_client.client_id in contrib_clients
+
+    def test_memory_predating_window_counts_as_baseline(self, client):
+        """Exercises the pre-window baseline bump in memory_growth — needs
+        a memory whose created_at is before the window start."""
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import Memory
+
+        tc, storage = client
+
+        old = Memory(
+            key="ancient",
+            value="v",
+            tags=[],
+            owner_client_id=_USER_ID,
+            owner_user_id=_USER_ID,
+        )
+        # Force created_at well before the default 90-day window.
+        old.created_at = datetime.now(timezone.utc) - timedelta(days=365)
+        storage.put_memory(old)
+
+        resp = tc.get("/api/account/stats?window=30")
+        growth = resp.json()["memory_growth"]
+        # The ancient memory is counted as baseline, so every point in the
+        # 30-day window must already be at least 1 (plus the fixture's
+        # pre-seeded memory).
+        assert growth[0]["cumulative"] >= 1

@@ -542,6 +542,102 @@ class TestTokenStorage:
         assert fetched.revoked
 
 
+class TestAuthCodeAtomicRedemption:
+    """#584 — OAuth authorization codes are single-use (RFC 6749 §10.5).
+
+    `mark_auth_code_used` is the commit point of the redemption
+    pipeline; it uses a conditional UpdateItem so concurrent
+    redemptions of the same code can't both succeed.
+    """
+
+    def _create_code(self, storage) -> str:
+        auth_code = storage.create_auth_code(
+            client_id="c1",
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read",
+            code_challenge="challenge",
+        )
+        return auth_code.code
+
+    def test_first_redemption_flips_used(self, storage):
+        from hive.storage import AuthCodeAlreadyUsed
+
+        code = self._create_code(storage)
+        storage.mark_auth_code_used(code)
+
+        fetched = storage.get_auth_code(code)
+        assert fetched is not None
+        assert fetched.used is True
+
+        # Sequential second call raises — the conditional write rejects
+        # because `used = true` no longer matches the expected `false`.
+        with pytest.raises(AuthCodeAlreadyUsed):
+            storage.mark_auth_code_used(code)
+
+    def test_missing_code_raises_already_used(self, storage):
+        from hive.storage import AuthCodeAlreadyUsed
+
+        # `attribute_exists(PK)` in the ConditionExpression guards
+        # against forged codes — a caller cannot spin up new tokens
+        # by passing a code that was never issued.
+        with pytest.raises(AuthCodeAlreadyUsed):
+            storage.mark_auth_code_used("never-issued-code")
+
+    def test_update_uses_conditional_write_on_unused_state(self, storage):
+        """The TOCTOU fix hinges on the conditional write — two
+        redemptions that both read `used=False` can't both commit.
+
+        Rather than spawning threads (moto's mock backend isn't a
+        reliable concurrency harness), assert the wire-level contract:
+        `mark_auth_code_used` issues an `UpdateItem` whose
+        `ConditionExpression` requires `used = false` AND the item
+        exists. DynamoDB's server-side serialisation of conditional
+        writes is what actually enforces single-use; this test pins
+        the condition so a future refactor can't silently drop it.
+        """
+        from unittest.mock import MagicMock
+
+        code = self._create_code(storage)
+        captured: dict[str, object] = {}
+
+        original = storage.table.update_item
+
+        def _spy(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return original(**kwargs)
+
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.update_item.side_effect = _spy
+
+        storage.mark_auth_code_used(code)
+
+        assert "ConditionExpression" in captured
+        cond = captured["ConditionExpression"]
+        assert "attribute_exists(PK)" in cond
+        assert "#u = :f" in cond
+        assert captured["ExpressionAttributeNames"] == {"#u": "used"}
+        assert captured["ExpressionAttributeValues"] == {":t": True, ":f": False}
+
+    def test_unexpected_client_error_reraises(self, storage):
+        """Only ConditionalCheckFailedException is translated to
+        AuthCodeAlreadyUsed — every other ClientError bubbles up
+        verbatim so accidental swallowing can't mask genuine AWS
+        failures."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=throttled),
+            pytest.raises(ClientError),
+        ):
+            storage.mark_auth_code_used("any-code")
+
+
 # ---------------------------------------------------------------------------
 # Activity log tests
 # ---------------------------------------------------------------------------

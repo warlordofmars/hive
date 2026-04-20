@@ -82,6 +82,8 @@ export default defineConfig({
           { text: "list_memories", link: "/tools/list-memories" },
           { text: "search_memories", link: "/tools/search-memories" },
           { text: "summarize_context", link: "/tools/summarize-context" },
+          { text: "pack_context", link: "/tools/pack-context" },
+          { text: "Prompts (slash commands)", link: "/tools/prompts" },
         ],
       },
       {
@@ -99,6 +101,7 @@ export default defineConfig({
           { text: "Tags and organisation", link: "/concepts/tags" },
           { text: "Key naming conventions", link: "/concepts/key-conventions" },
           { text: "Quotas and rate limits", link: "/concepts/quotas" },
+          { text: "MCP Resources", link: "/concepts/resources" },
         ],
       },
       {
