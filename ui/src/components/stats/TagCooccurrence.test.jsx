@@ -84,8 +84,8 @@ describe("buildGraph", () => {
   });
 
   it("returns empty lists for missing / empty input", () => {
-    expect(buildGraph()).toEqual({ nodes: [], edges: [] });
-    expect(buildGraph([])).toEqual({ nodes: [], edges: [] });
+    expect(buildGraph()).toEqual({ nodes: [], edges: [], trimmed: false });
+    expect(buildGraph([])).toEqual({ nodes: [], edges: [], trimmed: false });
   });
 });
 
@@ -187,7 +187,21 @@ describe("TagCooccurrence", () => {
     );
     expect(small.textContent).not.toContain("Showing the top 15");
 
-    // Fill past the cap.
+    // Exactly 15 tags — should NOT read as trimmed, even though
+    // `nodes.length === TOP_K_TAGS` (15). Build 15 tags in a ring
+    // so each has at least one edge.
+    const exactly15 = [];
+    for (let i = 0; i < 15; i++) {
+      exactly15.push({
+        source: `t${i}`,
+        target: `t${(i + 1) % 15}`,
+        weight: 20 - i,
+      });
+    }
+    const { container: fifteen } = render(<TagCooccurrence data={exactly15} />);
+    expect(fifteen.textContent).not.toContain("Showing the top 15");
+
+    // Fill past the cap — 17 tags, TOP_K_TAGS trims to 15.
     const rows = [];
     for (let i = 0; i < 17; i++) {
       rows.push({ source: `t${i}`, target: `t${(i + 1) % 17}`, weight: 20 - i });

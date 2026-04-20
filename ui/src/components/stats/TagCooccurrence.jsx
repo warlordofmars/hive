@@ -67,7 +67,14 @@ export function buildGraph(data) {
         a.target.localeCompare(b.target),
     )
     .slice(0, TOP_K_EDGES);
-  return { nodes: topTags, edges };
+  // Surface whether we actually trimmed — the caption below mentions
+  // the top-15 cap, and that's only honest when the input had >15
+  // tags (exactly-15 should NOT read as "trimmed").
+  return {
+    nodes: topTags,
+    edges,
+    trimmed: nodeWeights.size > TOP_K_TAGS,
+  };
 }
 
 // Map weight → [1, 3] stroke width so heavy edges read as bolder
@@ -81,7 +88,7 @@ export function edgeStrokeWidth(weight, maxWeight) {
 
 export default function TagCooccurrence({ data }) {
   const [hovered, setHovered] = useState(null);
-  const { nodes, edges } = useMemo(() => buildGraph(data), [data]);
+  const { nodes, edges, trimmed } = useMemo(() => buildGraph(data), [data]);
 
   if (nodes.length < MIN_TAGS) {
     return (
@@ -196,7 +203,7 @@ export default function TagCooccurrence({ data }) {
       </svg>
       <div className="text-[10px] text-[var(--text-muted)] italic">
         Hover a tag to highlight its connections.
-        {nodes.length === TOP_K_TAGS && " Showing the top 15 tags by co-occurrence."}
+        {trimmed && ` Showing the top ${TOP_K_TAGS} tags by co-occurrence.`}
       </div>
     </div>
   );
