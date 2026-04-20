@@ -16,7 +16,7 @@ Hive exposes MCP tools that your AI agent can call during a conversation. You do
 
 ## Scopes
 
-Each OAuth token has one or both of the following scopes:
+OAuth tokens may carry `memories:read` and/or `memories:write`. Each scope grants the tools listed below; `ping` is the one tool that needs only a valid Bearer token.
 
 | Scope | Grants access to |
 | --- | --- |
