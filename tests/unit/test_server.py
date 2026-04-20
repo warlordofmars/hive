@@ -2033,16 +2033,59 @@ class TestMcpPrompts:
         # tags=... so the agent never forgets to pass the parameter.
         assert "tags=[]" in out
 
-    def test_forget_older_than_names_list_and_forget_tools(self):
+    def test_forget_older_than_names_feasible_tool_sequence(self):
         from hive.server import forget_older_than_prompt
 
         out = forget_older_than_prompt(30)
         assert "30 days" in out
-        assert "`list_memories`" in out
+        # Must call only tools Hive actually exposes — `list_memories`
+        # requires a `tag`, so the template walks the namespace via
+        # `list_tags` first, then filters on `last_accessed_at` (not
+        # `updated_at`, which the tool response doesn't surface).
+        assert "`list_tags`" in out
+        assert "`list_memories(tag)`" in out
         assert "`forget`" in out
+        assert "last_accessed_at" in out
+        assert "updated_at" not in out
         # Safety: the template must explicitly forbid bulk-delete
         # without user confirmation.
         assert "confirmation" in out.lower() or "confirm" in out.lower()
+
+    def test_prompts_escape_inputs_with_apostrophes(self):
+        """Regression for Copilot iter-1 on #606.
+
+        User input containing an apostrophe must render unambiguously —
+        ``topic='O'Reilly'`` is malformed; Python ``repr`` produces
+        ``topic="O'Reilly"`` which survives through Markdown-aware MCP
+        clients without breaking the pseudo-call signature.
+        """
+        from hive.server import (
+            recall_context_prompt,
+            remember_this_prompt,
+            what_do_you_know_about_prompt,
+        )
+
+        # Each template round-trips the apostrophe losslessly via `!r`;
+        # the rendered text contains the exact input, just safely quoted.
+        topic = "O'Reilly's stance"
+        assert "O'Reilly's stance" in recall_context_prompt(topic)
+
+        query = "Bob's query"
+        out = what_do_you_know_about_prompt(query)
+        # Confirm repr quoting — should render `"Bob's query"`, not
+        # `'Bob's query'` which would be a Python syntax error.
+        assert '"Bob\'s query"' in out
+
+        key = "note's-key"
+        value = 'a "double-quoted" value with \'apostrophes\''
+        out = remember_this_prompt(key, value)
+        # Both key + value must survive the boundary unambiguously.
+        assert "note's-key" in out
+        # Value escaping uses repr — apostrophes and double-quotes both
+        # present means repr wraps in whichever delimiter avoids most
+        # escaping; either is fine as long as the input is recoverable.
+        # Assert the raw substring is present in the rendered output.
+        assert '"double-quoted"' in out or '\\"double-quoted\\"' in out
 
     @pytest.mark.asyncio
     async def test_render_prompt_roundtrip_produces_user_message(self):

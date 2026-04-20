@@ -1401,9 +1401,13 @@ async def relate_memories(
 def recall_context_prompt(
     topic: Annotated[str, "Topic to summarise memories about"],
 ) -> str:
+    # `!r` renders the string as a Python repr so apostrophes, quotes,
+    # and newlines in the user input don't produce an ambiguous
+    # pseudo-call signature. The agent still interprets the instruction
+    # in prose — `!r` just keeps the argument boundaries unambiguous.
     return (
-        f"Use Hive to recall what I know about '{topic}'. Call the "
-        f"`summarize_context` tool with topic='{topic}', then treat the "
+        f"Use Hive to recall what I know about {topic!r}. Call the "
+        f"`summarize_context` tool with topic={topic!r}, then treat the "
         "result as foreground context for the rest of this conversation. "
         "If the summary is empty, say so and ask what I'd like to remember."
     )
@@ -1421,7 +1425,7 @@ def what_do_you_know_about_prompt(
     query: Annotated[str, "Free-text query to search memories for"],
 ) -> str:
     return (
-        f"Search Hive for '{query}'. Call `search_memories` with query='{query}' "
+        f"Search Hive for {query!r}. Call `search_memories` with query={query!r} "
         "and top_k=10. Read the highest-scoring results and incorporate them "
         "into your next response, citing each memory's key. If no memory "
         "scores above the default threshold, say so plainly."
@@ -1448,9 +1452,9 @@ def remember_this_prompt(
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
     tag_clause = f" tags={tag_list!r}" if tag_list else " tags=[]"
     return (
-        f"Store this in Hive. Call `remember` with key='{key}',{tag_clause}, "
-        f"and value set to: <<<{value}>>>. Confirm once the memory is "
-        "written, quoting the returned memory_id."
+        f"Store this in Hive. Call `remember` with key={key!r},{tag_clause}, "
+        f"and value={value!r}. Confirm once the memory is written, quoting "
+        "the returned memory_id."
     )
 
 
@@ -1464,14 +1468,19 @@ def remember_this_prompt(
     ),
 )
 def forget_older_than_prompt(
-    days: Annotated[int, "Drop memories last updated more than this many days ago"],
+    days: Annotated[int, "Drop memories whose last access is older than this many days"],
 ) -> str:
+    # Uses only tools Hive actually exposes: `list_memories` needs a
+    # tag, so iterate `list_tags()` → `list_memories(tag)` and compare
+    # each item's `last_accessed_at` (the closest proxy to
+    # last-touched). `updated_at` isn't surfaced through the MCP layer.
     return (
-        f"Help me prune old memories. Call `list_memories` (no tag filter) "
-        f"and identify any memory whose `updated_at` is more than {days} days "
-        "ago. For each, show me the key + last-updated timestamp and ask "
-        "'forget this?' — only call `forget` when I reply yes. Do not "
-        "batch-delete without confirmation."
+        f"Help me prune stale memories. Call `list_tags` to discover my tag "
+        f"namespace, then for each tag call `list_memories(tag)`. For every "
+        f"memory whose `last_accessed_at` is more than {days} days ago (or "
+        f"is null and whose implicit age exceeds {days} days), show me the "
+        "key + last-accessed timestamp and ask 'forget this?' — only call "
+        "`forget` when I reply yes. Do not batch-delete without confirmation."
     )
 
 
