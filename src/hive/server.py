@@ -1443,7 +1443,7 @@ def pack_memories_within_budget(
 
     Items larger than the remaining budget are skipped — we don't
     truncate individual memories because a half-quoted decision is
-    worse than a missing one. The caller can drop the budget lower or
+    worse than a missing one. The caller can raise the budget or
     adjust ordering to surface smaller candidates.
     """
     packed: list[Memory] = []
@@ -1462,18 +1462,25 @@ def _render_memory_entry(memory: Memory) -> str:
     return f"- **{memory.key}**: {memory.value}"
 
 
+def _memory_label(count: int) -> str:
+    """Return the correctly pluralised label for a memory count."""
+    return "memory" if count == 1 else "memories"
+
+
 def _render_packed_context(topic: str, packed: list[Memory], used_tokens: int) -> str:
     """Render the full packed-context string the tool returns.
 
     Separated from the tool body so the formatting is unit-testable
     without any storage or auth plumbing.
     """
+    count = len(packed)
+    label = _memory_label(count)
     if not packed:
         return (
-            f"## Context for {topic!r} (0 memories, ~0 tokens)\n\n"
+            f"## Context for {topic!r} (0 {label}, ~0 tokens)\n\n"
             "_No relevant memories fit within the token budget._"
         )
-    header = f"## Context for {topic!r} ({len(packed)} memories, ~{used_tokens} tokens)"
+    header = f"## Context for {topic!r} ({count} {label}, ~{used_tokens} tokens)"
     body = "\n".join(_render_memory_entry(m) for m in packed)
     return f"{header}\n\n{body}"
 
@@ -1540,7 +1547,16 @@ async def pack_context(
     # Sort descending by chosen score; `reverse=True` keeps the highest
     # scorer first for the greedy packer to fit first.
     scored.sort(key=lambda row: row[1], reverse=True)
-    packed, used_tokens = pack_memories_within_budget(scored, budget)
+    # Reserve budget for the header + trailing blank line so the total
+    # rendered tokens stay under the advertised `budget`. Use the most
+    # expensive possible header (assumes 5-digit `used_tokens` and
+    # 3-digit count) so we never under-reserve. Floor the effective
+    # budget at 1 so degenerate callers still get an empty block.
+    header_reserve = estimate_tokens(
+        f"## Context for {topic!r} (000 memories, ~00000 tokens)\n\n"
+    )
+    effective_budget = max(1, budget - header_reserve)
+    packed, used_tokens = pack_memories_within_budget(scored, effective_budget)
 
     _log(
         storage,

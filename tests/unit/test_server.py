@@ -2494,10 +2494,17 @@ class TestPackContextHelpers:
         from hive.models import Memory
         from hive.server import _render_packed_context
 
+        # Singular copy — `1 memory`, not the grammatically wrong
+        # "1 memories" the first draft would have shown.
         m = Memory(key="k", value="v", tags=[], owner_client_id="c1")
         out = _render_packed_context("ops", [m], 3)
-        assert out.startswith("## Context for 'ops' (1 memories, ~3 tokens)")
+        assert out.startswith("## Context for 'ops' (1 memory, ~3 tokens)")
         assert "- **k**: v" in out
+
+        # Plural copy — ≥2 memories → `memories`.
+        m2 = Memory(key="k2", value="v2", tags=[], owner_client_id="c1")
+        plural = _render_packed_context("ops", [m, m2], 6)
+        assert plural.startswith("## Context for 'ops' (2 memories, ~6 tokens)")
 
 
 class TestPackContext:
@@ -2567,11 +2574,14 @@ class TestPackContext:
         m_h = storage.get_memory_by_key("huge")
         mock_vs = _make_mock_vector_store([(m_s.memory_id, 0.9), (m_h.memory_id, 0.8)])
         with patch("hive.server._vector_store", return_value=mock_vs):
-            result = await pack_context("topic", budget_tokens=60, ctx=ctx)
+            # Each entry is ~54 tokens (13-char prefix + 200-char value).
+            # Budget 100 minus the ~14-token header reserve leaves ~86
+            # tokens — enough for one memory, but two would need ~108.
+            result = await pack_context("topic", budget_tokens=100, ctx=ctx)
         text = _text(result)
         # Only the first (higher-scoring) memory fits; the second is
         # skipped silently rather than truncated.
-        assert "1 memories" in text
+        assert "1 memory" in text
         assert "- **small**" in text
         assert "- **huge**" not in text
 
@@ -2663,4 +2673,4 @@ class TestPackContext:
             # silently falls back to the default blend. Agents that
             # typo "relevancy" should still get a usable response.
             result = await pack_context("content", ordering="nonsense", ctx=ctx)
-        assert "1 memories" in _text(result)
+        assert "1 memory" in _text(result)

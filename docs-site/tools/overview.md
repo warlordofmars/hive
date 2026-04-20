@@ -20,7 +20,7 @@ Each OAuth token has one or both of the following scopes:
 
 | Scope | Grants access to |
 | --- | --- |
-| `memories:read` | `recall`, `list_memories`, `search_memories`, `summarize_context` |
+| `memories:read` | `recall`, `list_memories`, `search_memories`, `summarize_context`, `pack_context` |
 | `memories:write` | `remember`, `forget` |
 
 Tokens issued through the standard OAuth flow get both scopes by default.
@@ -34,6 +34,7 @@ You typically don't need to tell your agent which tool to use — just give natu
 - *"List everything tagged..."* → `list_memories`
 - *"Forget the..."* → `forget`
 - *"Give me a summary of..."* → `summarize_context`
+- *"Fill my remaining context window with..."* → `pack_context`
 
 ## Progress notifications
 
