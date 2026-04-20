@@ -1437,23 +1437,30 @@ def pack_memories_within_budget(
 ) -> tuple[list[Memory], int]:
     """Greedily pack memories into a token budget, preserving input order.
 
-    ``memories`` is a pre-sorted list of (Memory, score) tuples; the
-    score is only carried for the header and ignored here. Returns the
-    subset that fits and the sum of their estimated tokens.
+    ``memories`` is a pre-sorted list of ``(Memory, score)`` tuples.
+    The function preserves the upstream ordering and ignores ``score``
+    itself — the caller is responsible for sorting. Returns the subset
+    that fits and the sum of their estimated tokens (including the
+    ``\\n`` separators that ``_render_packed_context`` inserts between
+    entries, so the returned token count matches the rendered block).
 
     Items larger than the remaining budget are skipped — we don't
     truncate individual memories because a half-quoted decision is
     worse than a missing one. The caller can raise the budget or
     adjust ordering to surface smaller candidates.
     """
+    separator_tokens = estimate_tokens("\n")
     packed: list[Memory] = []
     used = 0
     for memory, _score in memories:
         entry_tokens = estimate_tokens(_render_memory_entry(memory))
-        if used + entry_tokens > budget_tokens:
+        # First entry has no preceding separator; subsequent ones do,
+        # matching what `_render_packed_context` will actually emit.
+        additional = entry_tokens + (separator_tokens if packed else 0)
+        if used + additional > budget_tokens:
             continue
         packed.append(memory)
-        used += entry_tokens
+        used += additional
     return packed, used
 
 
@@ -1483,6 +1490,30 @@ def _render_packed_context(topic: str, packed: list[Memory], used_tokens: int) -
     header = f"## Context for {topic!r} ({count} {label}, ~{used_tokens} tokens)"
     body = "\n".join(_render_memory_entry(m) for m in packed)
     return f"{header}\n\n{body}"
+
+
+def _render_empty_within_budget(topic: str, budget_tokens: int) -> str:
+    """Render the best empty-state response that fits in the budget.
+
+    Tries the full ``_render_packed_context(topic, [], 0)`` first
+    (header + explanatory body). If that overshoots the budget, falls
+    back to progressively shorter strings so the advertised budget
+    contract holds even on the vector-error / no-index branches.
+    """
+    full = _render_packed_context(topic, [], 0)
+    if estimate_tokens(full) <= budget_tokens:
+        return full
+    # Drop the explanatory body; header alone is usually well under 20 tokens.
+    header_only = f"## Context for {topic!r} (0 memories, ~0 tokens)"
+    if estimate_tokens(header_only) <= budget_tokens:
+        return header_only
+    # Last-resort terse fallback for single-digit budgets. Agents asking
+    # for <5 tokens of context are doing something pathological, but we
+    # still honour the contract.
+    terse = "_no context_"
+    if estimate_tokens(terse) <= budget_tokens:
+        return terse
+    return ""
 
 
 @mcp.tool(
@@ -1522,10 +1553,10 @@ async def pack_context(
     try:
         pairs = _vector_store().search(topic, client_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
     except VectorIndexNotFoundError:
-        return _tool_result(_render_packed_context(topic, [], 0), storage, client_id)
+        return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
     except Exception:
         logger.warning("Vector search failed in pack_context (non-fatal)", exc_info=True)
-        return _tool_result(_render_packed_context(topic, [], 0), storage, client_id)
+        return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
 
     hydrated = storage.hydrate_memory_ids(pairs)
 

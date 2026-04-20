@@ -2451,9 +2451,10 @@ class TestPackContextHelpers:
             budget_tokens=25,
         )
         # `a` fits (13 tokens), `b` overflows and is skipped, `c` fits
-        # in the remaining budget (13 + 8 = 21 ≤ 25).
+        # in the remaining budget. Token count includes the `\n`
+        # separator between entries: 13 (a) + 1 (sep) + 8 (c) = 22.
         assert [m.key for m in packed] == ["a", "c"]
-        assert used == 21
+        assert used == 22
 
     def test_pack_memories_empty_when_budget_below_smallest(self):
         from hive.models import Memory
@@ -2489,6 +2490,37 @@ class TestPackContextHelpers:
         assert "0 memories" in out
         # Users should get a reason, not just an empty block.
         assert "No relevant memories" in out
+
+    def test_render_empty_within_budget_returns_full_when_it_fits(self):
+        from hive.server import _render_empty_within_budget
+
+        out = _render_empty_within_budget("ops", 1000)
+        assert "No relevant memories" in out
+
+    def test_render_empty_within_budget_drops_body_when_too_tight(self):
+        from hive.server import _render_empty_within_budget, estimate_tokens
+
+        # Budget between "header only" and "header + explanatory body".
+        out = _render_empty_within_budget("ops", 15)
+        # The explanatory body is gone but the header survives.
+        assert "No relevant memories" not in out
+        assert "## Context for 'ops'" in out
+        assert estimate_tokens(out) <= 15
+
+    def test_render_empty_within_budget_falls_back_to_terse(self):
+        from hive.server import _render_empty_within_budget
+
+        # 5-token budget is too tight for the header; falls back to the
+        # single-line terse message.
+        out = _render_empty_within_budget("ops", 5)
+        assert out == "_no context_"
+
+    def test_render_empty_within_budget_returns_empty_for_zero_budget(self):
+        from hive.server import _render_empty_within_budget
+
+        # 1-token budget can't fit even "_no context_" (3 tokens) so
+        # the tool returns an empty string rather than break contract.
+        assert _render_empty_within_budget("ops", 1) == ""
 
     def test_render_packed_context_formats_entries(self):
         from hive.models import Memory
