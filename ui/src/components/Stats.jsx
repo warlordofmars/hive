@@ -8,17 +8,17 @@ import ClientContribution from "./stats/ClientContribution.jsx";
 import FreshnessScatter from "./stats/FreshnessScatter.jsx";
 import MemoryGrowth from "./stats/MemoryGrowth.jsx";
 import QuotaGauge from "./stats/QuotaGauge.jsx";
+import TagCooccurrence from "./stats/TagCooccurrence.jsx";
 import TagDistribution from "./stats/TagDistribution.jsx";
 import TopRecalled from "./stats/TopRecalled.jsx";
 import { Card } from "./ui/card.jsx";
 
 // #535 — Stats tab scaffolding.
 //
-// Renders a grid of GraphCards backed by /api/account/stats. Seven
+// Renders a grid of GraphCards backed by /api/account/stats. All eight
 // cards are fully implemented (ActivityHeatmap, TopRecalled,
 // TagDistribution, MemoryGrowth, QuotaGauge, FreshnessScatter,
-// ClientContribution); the remaining one (TagCooccurrence) still shows
-// a JSON preview via RawPreview until #540 lands.
+// ClientContribution, TagCooccurrence).
 
 const WINDOWS = [
   { value: "30", label: "Last 30 days" },
@@ -56,27 +56,6 @@ GraphCard.propTypes = {
   data: PropTypes.oneOfType([PropTypes.array, PropTypes.object]),
   empty: PropTypes.string,
   children: PropTypes.node,
-};
-
-// Stub body shared by every graph until a sub-issue ships the real chart.
-// Shows a compact JSON preview so we can eyeball the aggregate shape on
-// the deployed page without waiting for all the chart work.
-function RawPreview({ value, take = 5 }) {
-  // Called with arrays only — the <GraphCard> parent suppresses us when
-  // its `data` prop is empty/missing, so non-array cases can't reach
-  // here.
-  const overflow = value.length > take ? `\n…(+${value.length - take} more)` : "";
-  return (
-    <pre className="text-[11px] leading-snug text-[var(--text-muted)] overflow-x-auto m-0">
-      {JSON.stringify(value.slice(0, take), null, 2)}
-      {overflow}
-    </pre>
-  );
-}
-
-RawPreview.propTypes = {
-  value: PropTypes.array,
-  take: PropTypes.number,
 };
 
 export default function Stats() {
@@ -230,7 +209,7 @@ export default function Stats() {
           data={data.tag_cooccurrence}
           empty="No co-tagged memories yet."
         >
-          <RawPreview value={data.tag_cooccurrence} />
+          <TagCooccurrence data={data.tag_cooccurrence} />
         </GraphCard>
       </div>
     </div>
