@@ -6,7 +6,48 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.23.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.24.0. Will be rolled into the next release._
+
+## v0.24.0 — 2026-04-20
+
+### Added
+
+#### Stats tab — six new analytics views
+
+- New **Stats** tab in the management UI, fed by a single `/api/account/stats` endpoint (#572). Each view rolls up the caller's memories without touching cross-tenant data, and gracefully degrades when the workspace is empty. Six views landed across the milestone:
+  - Top-recalled memories, tag distribution, memory-growth trend, and a quota gauge — the at-a-glance dashboard surfaces the most-used and least-used corners of the workspace (#581).
+  - 12-month activity heatmap (calendar grid keyed off `recall_count` / `created_at`) so usage patterns and dormant periods are visible at a glance (#579).
+  - Memory freshness scatter — plots `last_accessed_at` vs `created_at` so stale items are visually obvious (#600, post-merge cleanup in #603).
+  - Client contribution breakdown — per-client write counts, recall counts, and quota share (#604).
+  - Tag co-occurrence network — graph view of which tags appear together, useful for spotting taxonomy drift (#605).
+
+#### MCP surface
+
+- New `pack_context(topic, budget_tokens=2000, ordering="relevance+recency")` tool — token-budget-aware retrieval that returns as many relevant memories as fit in the caller's remaining context window, formatted as a markdown block. Same hybrid retrieval backbone as `search_memories`; greedy packer skips (rather than truncates) over-budget memories so a half-quoted decision can't slip through; redacted memories always excluded. Uses a 4-chars-per-token heuristic instead of `tiktoken` to keep the Lambda bundle slim. (#608, docs polish in #613)
+- Memories are now exposed as **MCP Resources** alongside tools, URI-addressable via `memory://_index` (the static index) and `memory://{key}` (templated). Resource handlers enforce `memories:read` scope and the same rate-limit / tenant-isolation as tools; redacted and expired items are filtered. The reserved `_index` namespace avoids collision with a memory whose key happens to be `index`. (#609)
+- New **MCP Prompts** — slash commands for common Hive workflows (`recall`, `summarize`, etc.), discoverable via `prompts/list` in supporting clients. (#606)
+
+#### Observability & ops
+
+- `RateLimitedRequests` CloudWatch metric (EMF) emitted on every 429 from the rate-limiter + a Dashboard card showing the rolling count, so quota exhaustion shows up before a customer reports it. (#571)
+
+#### Dev experience & CI
+
+- Autonomous Copilot review loop integrated into the §7.5 PR workflow — every agent-safe PR gets a Copilot review, with auto-merge deferred until the loop resolves; up to 5 fix-iterations before stopping for human review. Multiple iterations of process-tightening landed across the milestone after observed gaps: re-arm auto-merge after each Copilot-driven fix push, fix the `get_reviews` blind spot in the polling loop, require a reply on every thread before resolving, wait ~90s after the Agent check completes before polling for line-level comments, bump the iteration cap from 3 to 5. (#580, #582, #601, #603, #607, #612)
+
+### Fixed
+
+#### Security
+
+- **OAuth auth-code redemption is now atomic** — closes RFC 6749 §10.5 TOCTOU. Two concurrent `POST /oauth/token` requests with the same code used to both pass the `auth_code.used` pre-check before either could write back, both successfully exchanging for token pairs. `mark_auth_code_used` now uses a conditional `UpdateItem` guarded by `attribute_exists(PK) AND used = false`; the loser of the race gets a `ConditionalCheckFailedException`, translated to a new `AuthCodeAlreadyUsed` exception that the token endpoint maps to the same `400 "Invalid or already-used code"` response as the pre-check. The `attribute_exists(PK)` guard also closes a forged-code path: callers can no longer mint tokens by passing arbitrary strings. (#611)
+
+#### Reliability
+
+- Audit-log endpoint missed events that landed near midnight UTC — the date-range query was off-by-one in the hour-sharded `AUDIT#{date}#{hour}` partition lookup. Now the boundary hours are queried correctly so compliance trails stay complete. (#599)
+
+### Meta
+
+- CLAUDE.md §7.5 hardened across the milestone: every Copilot review thread now gets a reply before resolution; the loop polls for line-level comments after the Agent check completes (with a ~90s buffer) instead of relying on top-level reviews; iteration cap raised from 3 to 5; auto-merge re-armed after each Copilot-driven fix push so a downstream finding doesn't leave the PR un-merged. (#582, #607, #612)
 
 ## v0.23.0 — 2026-04-19
 
