@@ -796,7 +796,10 @@ git push -u origin <branch>
 git push --force-with-lease
 ```
 
-Create the PR and enable squash auto-merge immediately:
+Create the PR. **Do not enable auto-merge yet if the linked issue is
+labelled `agent-safe`** — step 7.5 owns that for the Copilot-review
+flow. Arming auto-merge at PR-create time means CI finishes, the PR
+squashes, and the Copilot step never runs (observed on #599).
 
 ```bash
 gh pr create --base development \
@@ -809,6 +812,7 @@ gh pr create --base development \
 ## Approach
 <any non-obvious decisions or interpretations of the issue>"
 
+# Only for PRs whose linked issue is NOT labelled `agent-safe`:
 gh pr merge --auto --squash --delete-branch
 ```
 
@@ -828,7 +832,9 @@ If any check fails:
 4. Get the new run ID: `gh run list --branch <branch> --limit 1`
 5. Return to watching
 
-Repeat until all checks pass. Auto-merge fires automatically once they do.
+Repeat until all checks pass. Auto-merge fires automatically once they
+do — except on `agent-safe` PRs, where step 7.5 arms auto-merge only
+after the Copilot loop completes.
 
 If the same check fails 3 times without a clear fix, stop and ask.
 
@@ -838,6 +844,10 @@ Runs **only** when the linked issue is labelled `agent-safe`. For every
 other PR, skip straight to step 8. The gate is intentional — Copilot
 review is opt-in via the label so the team can grow the surface
 gradually instead of flipping every autonomous PR onto it at once.
+
+Auto-merge is **not** armed yet at this point — step 6 deliberately
+skipped it so this review can run without racing the merge. Only
+enable auto-merge once the Copilot loop below completes.
 
 1. After CI is green, request a Copilot review on the PR via
    `mcp__github__request_copilot_review`.
@@ -860,9 +870,7 @@ gradually instead of flipping every autonomous PR onto it at once.
      safety gate — if it breaks, revert the fix and reply `This would
      introduce a regression; declining.`), push, reply on the thread
      with `Fixed in <SHA> — <one-line summary>`, resolve the thread,
-     re-enable auto-merge via `mcp__github__enable_pr_auto_merge`
-     (pushing to a PR with a pending `COMMENTED` review often disarms
-     it), then re-request Copilot review.
+     then re-request Copilot review.
    - **Pure style nit** (Tailwind class order, const-vs-let, naming
      preference, import sort) — reply with a short canned decline
      citing project conventions, then resolve the thread.
@@ -874,7 +882,9 @@ gradually instead of flipping every autonomous PR onto it at once.
 4. **Hard iteration cap: 3.** After the third Copilot review
    round-trip, stop and ask — prevents ping-pong where each fix
    surfaces a new finding.
-5. Once all threads resolved AND CI green, auto-merge fires.
+5. Once all threads are resolved, arm auto-merge via
+   `mcp__github__enable_pr_auto_merge` (squash). It fires when CI
+   is green.
 
 Apply fixes to real findings even if they're small — Copilot's value
 is catching the subtle correctness issues the test suite won't.
