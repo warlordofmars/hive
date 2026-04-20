@@ -838,16 +838,21 @@ after the Copilot loop completes.
 
 If the same check fails 3 times without a clear fix, stop and ask.
 
-#### 7.5 Request Copilot review (only for `agent-safe` PRs)
+#### 7.5 Request Copilot review
 
-Runs **only** when the linked issue is labelled `agent-safe`. For every
-other PR, skip straight to step 8. The gate is intentional — Copilot
-review is opt-in via the label so the team can grow the surface
-gradually instead of flipping every autonomous PR onto it at once.
+Runs on **every** agent-created PR — `agent-safe` or not. The label
+no longer gates whether the review runs; it only gates whether the
+agent *merges* autonomously after the review completes. Every PR
+gets a second opinion.
+
+For non-`agent-safe` PRs, running Copilot review still benefits the
+human who will merge — they inherit a cleaner PR where small
+correctness / clarity findings have already been addressed.
 
 Auto-merge is **not** armed yet at this point — step 6 deliberately
-skipped it so this review can run without racing the merge. Only
-enable auto-merge once the Copilot loop below completes.
+skipped it so this review can run without racing the merge. For
+`agent-safe` PRs, auto-merge is armed at the end of this step. For
+non-`agent-safe` PRs, the human merges once they're satisfied.
 
 1. After CI is green, request a Copilot review on the PR via
    `mcp__github__request_copilot_review`.
@@ -885,12 +890,24 @@ enable auto-merge once the Copilot loop below completes.
      `HUMAN_INPUT_REQUIRED: Copilot flagged X on #NNN — unclear call`
      and stop. Do **not** resolve the thread — leave it open so the
      human reviewer sees exactly what was flagged.
-4. **Hard iteration cap: 3.** After the third Copilot review
-   round-trip, stop and ask — prevents ping-pong where each fix
-   surfaces a new finding.
-5. Once all threads are resolved, arm auto-merge via
+4. **Hard iteration cap: 5, with early-exit on convergence.** Stop
+   the review loop when either:
+   - 5 round-trips have completed, OR
+   - Two consecutive iterations produce no new actionable findings
+     (style-only comments don't count as actionable).
+
+   If unresolved findings remain at the stop point, emit
+   `HUMAN_INPUT_REQUIRED: Copilot loop ended with open findings on
+   #NNN` and stop. Leave those threads unresolved so the human sees
+   them. Otherwise continue to step 5.
+5. **Agent-safe PRs**: arm auto-merge via
    `mcp__github__enable_pr_auto_merge` (squash). It fires when CI
    is green.
+
+   **Non-agent-safe PRs**: emit
+   `HUMAN_INPUT_REQUIRED: PR #NNN ready for human review + merge`
+   and stop. Do not arm auto-merge and do not move to the next
+   issue until the human merges.
 
 Apply fixes to real findings even if they're small — Copilot's value
 is catching the subtle correctness issues the test suite won't.
@@ -1060,13 +1077,14 @@ queue trustworthy.
 
 - `epic` — tracking issue with sub-issue checklist; never queue-eligible
 - `bug` / `enhancement` / `chore` — issue type
-- `agent-safe` — PR from this issue runs through the autonomous-flow
-  Copilot review step (§Autonomous issue workflow §7.5). Apply when
-  the work is low-risk enough that an LLM reviewer's feedback is
-  actionable without human judgement: `priority:p2` / `p3`,
+- `agent-safe` — PR from this issue can be merged **autonomously by
+  the agent** after the §7.5 Copilot review + CI pass. Apply when the
+  work is low-risk enough that an LLM reviewer's feedback is
+  sufficient without a human final look: `priority:p2` / `p3`,
   `size:xs` / `s` / `m`, and not touching `infra/stacks/hive_stack.py`,
-  `.github/workflows/`, or any auth / token-issuance path. Leave off
-  anything that warrants full human review.
+  `.github/workflows/`, or any auth / token-issuance path. Without
+  this label, the agent still runs Copilot review (everyone benefits
+  from a second opinion) but then stops for human merge.
 
 ### Issue creation rules
 
