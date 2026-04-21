@@ -21,6 +21,7 @@ import LoginPage from "./components/LoginPage.jsx";
 import McpClientsPage from "./components/McpClientsPage.jsx";
 import OnboardingTour from "./components/OnboardingTour.jsx";
 import PricingPage from "./components/PricingPage.jsx";
+import RoadmapPage from "./components/RoadmapPage.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import UseCasesPage from "./components/UseCasesPage.jsx";
 import ApiKeysPanel from "./components/ApiKeysPanel.jsx";
@@ -277,6 +278,7 @@ export default function App() {
           <Route path="/use-cases" element={<UseCasesPage />} />
           <Route path="/clients" element={<McpClientsPage />} />
           <Route path="/changelog" element={<ChangelogPage />} />
+          <Route path="/roadmap" element={<RoadmapPage />} />
           <Route path="/status" element={<StatusPage />} />
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
