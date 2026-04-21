@@ -4,6 +4,7 @@ import PropTypes from "prop-types";
 import { X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import { toast } from "sonner";
 import { AlertDialog } from "./ui/alert-dialog.jsx";
 import { Badge } from "./ui/badge.jsx";
 import { Button } from "./ui/button.jsx";
@@ -219,9 +220,13 @@ export default function MemoryBrowser() {
     setQuotaError(null);
   }
 
-  function goToUsage() {
+  function openSetup() {
     setQuotaError(null);
     globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "setup" }));
+  }
+
+  function goToUsage() {
+    openSetup();
     // Setup tab mounts asynchronously after the switch — defer the
     // scroll so the #usage anchor exists by the time we look it up.
     globalThis.setTimeout(function scrollToUsage() {
@@ -349,6 +354,62 @@ export default function MemoryBrowser() {
       await api.createMemory(body);
       setCreating(false);
       setForm({ key: "", value: "", tags: "", ttl: "" });
+      // First-memory celebration. Two gates so the toast only fires
+      // for the genuine first-ever memory in the workspace:
+      //   1. Per-browser localStorage flag (don't repeat on later
+      //      creates from this browser).
+      //   2. Server-side check that the unfiltered store now has
+      //      exactly this one item (so an existing user with
+      //      memories from another browser / agent doesn't get a
+      //      misleading "first memory" toast).
+      // Wrapped in try/catch so a transient list failure doesn't
+      // make a successful create look like it failed — the caller
+      // still falls through to the normal refresh path. We also
+      // only reuse the unfiltered fetch as the visible list when
+      // the user isn't currently filtered (search / tag) — otherwise
+      // we'd silently jump them out of their current view.
+      // Two flags so we don't pay for the probe on every create:
+      //   hive_first_memory=1 — we already celebrated; skip.
+      //   hive_first_memory_skipped=1 — the workspace already had
+      //     other memories the first time we checked, so a "first
+      //     memory in store" can't happen here without a wipe;
+      //     skip until the user clears it.
+      if (
+        !localStorage.getItem("hive_first_memory") &&
+        !localStorage.getItem("hive_first_memory_skipped")
+      ) {
+        try {
+          const fresh = await api.listMemories(undefined);
+          const isFirstInStore =
+            (fresh.items?.length ?? 0) === 1 && (fresh.next_cursor ?? null) === null;
+          if (isFirstInStore) {
+            localStorage.setItem("hive_first_memory", "1");
+            toast.success("First memory saved", {
+              description: "Your agent can now recall it across sessions.",
+            });
+          } else {
+            // Cache the negative result so we don't re-probe on
+            // every subsequent create.
+            localStorage.setItem("hive_first_memory_skipped", "1");
+          }
+          if (!tagFilter && !isSearchMode) {
+            setMemories(fresh.items ?? []);
+            setNextCursor(fresh.next_cursor ?? null);
+            // load() normally clears `error` via setError("") on
+            // its happy path. We're skipping load() here, so do the
+            // clear explicitly — otherwise a stale error from an
+            // earlier failed mutation can stay visible after a
+            // successful create.
+            setError("");
+            return;
+          }
+          // Filtered view — fall through to load() so we re-fetch
+          // the user's current slice instead of clobbering it.
+        } catch {
+          // Transient list failure shouldn't surface as a create
+          // error since the create itself succeeded.
+        }
+      }
       load();
     } catch (err) {
       handleMutationError(err);
@@ -521,8 +582,19 @@ export default function MemoryBrowser() {
             <EmptyState
               variant="memories"
               title="No memories yet"
-              description="Use the remember tool in your MCP client to store your first memory."
-              action={<Button onClick={openCreate}>+ New Memory</Button>}
+              description="Connect an MCP client from the Setup tab — once your agent calls the remember tool, memories show up here. You can also create one by hand below."
+              action={
+                <div className="flex flex-col sm:flex-row gap-3 items-center">
+                  <Button onClick={openCreate}>+ New Memory</Button>
+                  <button
+                    type="button"
+                    onClick={openSetup}
+                    className="text-[var(--accent)] underline cursor-pointer bg-transparent border-0 p-0 text-sm font-inherit"
+                  >
+                    Open Setup
+                  </button>
+                </div>
+              }
             />
           </Card>
         )}

@@ -1,5 +1,5 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MemoryBrowser, { TagPicker } from "./MemoryBrowser.jsx";
 
@@ -247,6 +247,13 @@ describe("TagPicker", () => {
 describe("MemoryBrowser", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Clear localStorage flags between tests so the
+    // first-memory celebration toast fires for the test that
+    // expects it (otherwise a previous test's create leaves the
+    // flag set and the toast suppresses).
+    localStorage.removeItem("hive_first_memory");
+    localStorage.removeItem("hive_first_memory_skipped");
+    localStorage.removeItem("hive_tour_dismissed");
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
     api.searchMemories.mockResolvedValue({ items: [], count: 0 });
     // Default to a shape without `items` so the `?? []` fallback is exercised.
@@ -255,6 +262,9 @@ describe("MemoryBrowser", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    localStorage.removeItem("hive_first_memory");
+    localStorage.removeItem("hive_first_memory_skipped");
+    localStorage.removeItem("hive_tour_dismissed");
   });
 
   // Helpers
@@ -284,6 +294,18 @@ describe("MemoryBrowser", () => {
   it("renders empty state after load", async () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => expect(screen.getByText("No memories yet")).toBeTruthy());
+  });
+
+  it("empty-state Open Setup CTA dispatches the tab-switch event", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => expect(screen.getByText("No memories yet")).toBeTruthy());
+    const dispatchSpy = vi.spyOn(globalThis, "dispatchEvent");
+    fireEvent.click(screen.getByRole("button", { name: "Open Setup" }));
+    const switchEvents = dispatchSpy.mock.calls
+      .map((call) => call[0])
+      .filter((evt) => evt && evt.type === "hive:switch-tab");
+    expect(switchEvents.at(-1).detail).toBe("setup");
+    dispatchSpy.mockRestore();
   });
 
   it("renders loaded memories", async () => {
@@ -436,6 +458,244 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(screen.queryByText("New Memory")).toBeNull());
   });
 
+  it("first successful create fires the celebration toast and sets the localStorage flag", async () => {
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // Post-create reload returns the single new memory — that's the
+    // server-side "first in store" signal the toast gates on.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).toHaveBeenCalledWith(
+      "First memory saved",
+      expect.objectContaining({ description: expect.any(String) }),
+    );
+    expect(localStorage.getItem("hive_first_memory")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("does not fire the celebration toast when the store already has other memories", async () => {
+    // Existing user / multi-browser case: localStorage flag isn't
+    // set yet (this browser is fresh), but the workspace already
+    // has more than one memory. The toast must stay silent — and
+    // the flag should still flip so we don't keep re-checking.
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory(), makeMemory()], next_cursor: null })
+      .mockResolvedValueOnce({
+        items: [makeMemory(), makeMemory(), makeMemory()],
+        next_cursor: null,
+      });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // Celebration flag must NOT flip — that would suppress a real
+    // future first-memory celebration if the workspace ever drops
+    // back to a single item.
+    expect(localStorage.getItem("hive_first_memory")).toBeNull();
+    // But the "skipped" flag MUST flip so subsequent creates don't
+    // re-probe the unfiltered list on every save.
+    expect(localStorage.getItem("hive_first_memory_skipped")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("respects the cached 'skipped' flag and doesn't re-probe on later creates", async () => {
+    // Iter-3 fix: existing-workspace users used to pay for an
+    // unfiltered listMemories on every create. The skipped flag
+    // suppresses the probe entirely until they clear it.
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    localStorage.setItem("hive_first_memory_skipped", "1");
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    api.listMemories.mockClear(); // ignore the initial mount fetch
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // Only the load() refresh should fire — no probe call.
+    expect(api.listMemories).toHaveBeenCalledTimes(1);
+    toastSuccess.mockRestore();
+  });
+
+  it("does not surface a create error when the post-create first-memory check fails", async () => {
+    // Iter-2 fix: the post-create listMemories was throwing as a
+    // create failure — wrap the first-memory probe in its own
+    // try/catch and fall back to the normal refresh path.
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // First listMemories (mount) succeeds with empty page; second
+    // call (the first-memory probe) blows up; load() is then called
+    // and we let it succeed.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockRejectedValueOnce(new Error("transient list failure"))
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // No "transient list failure" surfaced as an error — the create
+    // succeeded and the form closed.
+    expect(screen.queryByText("transient list failure")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("New Memory")).toBeNull());
+  });
+
+  it("first-memory probe doesn't clobber the user's filtered view", async () => {
+    // Iter-2 fix: when a tag filter is active, the post-create
+    // probe must not call setMemories(fresh.items) — that would
+    // jump the user out of their filter back to the unfiltered
+    // first page. Instead the path falls through to load() which
+    // re-fetches the current slice.
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // mount: filter "alpha" returns one memory.
+    // probe: unfiltered fetch returns 5 memories (some from other tags).
+    // post-create load: filter "alpha" returns the new + one existing.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory({ tags: ["alpha"] })], next_cursor: null })
+      .mockResolvedValueOnce({
+        items: [
+          makeMemory({ tags: ["alpha"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+        ],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        items: [makeMemory({ tags: ["alpha"] }), makeMemory({ tags: ["alpha"] })],
+        next_cursor: null,
+      });
+
+    await act(async () => render(<MemoryBrowser />));
+    // Apply the alpha tag filter via the existing TagPicker — but
+    // we can also simulate it by dispatching the hive:memory-browser
+    // event the component listens for in production. For test
+    // simplicity, mount with a known tag filter via the event.
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("hive:memory-browser", { detail: { tag: "alpha" } }),
+      );
+    });
+
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // The third call (load() with filter) was made — listMemories
+    // received the "alpha" tag, not undefined.
+    const lastListCall = api.listMemories.mock.calls.at(-1);
+    expect(lastListCall[0]).toBe("alpha");
+  });
+
+  it("handles a probe response with missing items/next_cursor via the nullish fallbacks", async () => {
+    // Defensive — covers the `?? 0` / `?? null` branches on line 384
+    // when the server returns a sparse payload (older API version,
+    // or a proxy that strips fields).
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValueOnce({}); // no items, no next_cursor
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // items undefined → items?.length === undefined → ?? 0 →
+    // 0 === 1 is false, so isFirstInStore is false and the toast
+    // does NOT fire.
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(localStorage.getItem("hive_first_memory_skipped")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("subsequent creates don't re-fire the celebration toast once the flag is set", async () => {
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    localStorage.setItem("hive_first_memory", "1");
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    toastSuccess.mockRestore();
+    localStorage.removeItem("hive_first_memory");
+  });
+
   it("shows error when createMemory fails", async () => {
     api.createMemory.mockRejectedValue(new Error("Create error"));
     await act(async () => render(<MemoryBrowser />));
@@ -479,8 +739,9 @@ describe("MemoryBrowser", () => {
 
     // Clicking "Open Setup" dispatches the tab-switch event the App
     // shell listens for; banner should clear so it doesn't stick on
-    // the new tab.
-    fireEvent.click(screen.getByText("Open Setup"));
+    // the new tab. Scope to the banner because the empty-state CTA
+    // also has an "Open Setup" link when no memories exist.
+    fireEvent.click(within(banner).getByText("Open Setup"));
     const switchEvents = dispatchSpy.mock.calls
       .map((call) => call[0])
       .filter((evt) => evt && evt.type === "hive:switch-tab");
@@ -521,9 +782,9 @@ describe("MemoryBrowser", () => {
       await act(async () => {
         fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form"));
       });
-      await screen.findByTestId("quota-banner");
+      const banner = await screen.findByTestId("quota-banner");
 
-      fireEvent.click(screen.getByText("Open Setup"));
+      fireEvent.click(within(banner).getByText("Open Setup"));
       // Real setTimeout(0) — flush the macrotask queue.
       await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
 
@@ -556,8 +817,8 @@ describe("MemoryBrowser", () => {
     await act(async () => {
       fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form"));
     });
-    await screen.findByTestId("quota-banner");
-    fireEvent.click(screen.getByText("Open Setup"));
+    const banner = await screen.findByTestId("quota-banner");
+    fireEvent.click(within(banner).getByText("Open Setup"));
     // Flush the macrotask queue — the deferred `if (target)` branch
     // must no-op without throwing when #usage doesn't exist.
     await new Promise((resolve) => globalThis.setTimeout(resolve, 0));

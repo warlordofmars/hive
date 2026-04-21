@@ -19,6 +19,7 @@ import SubprocessorsPage from "./components/SubprocessorsPage.jsx";
 import TermsPage from "./components/TermsPage.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import McpClientsPage from "./components/McpClientsPage.jsx";
+import OnboardingTour from "./components/OnboardingTour.jsx";
 import PricingPage from "./components/PricingPage.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import UseCasesPage from "./components/UseCasesPage.jsx";
@@ -91,7 +92,13 @@ function AppShell() {
     if (!authenticated) return;
     api.listClients()
       .then((data) => {
-        if (data?.items.length === 0) setTab("setup");
+        // Skip the auto-switch when the OnboardingTour is still
+        // active — otherwise step 1 spotlights "Memories" while
+        // the underlying content silently jumps to Setup, leaving
+        // the spotlight pointing at a tab that's no longer the
+        // active panel.
+        const tourActive = !localStorage.getItem("hive_tour_dismissed");
+        if (data?.items.length === 0 && !tourActive) setTab("setup");
       })
       .catch(() => {});
   }, [authenticated]);
@@ -122,11 +129,14 @@ function AppShell() {
           <span className="font-bold text-xl tracking-wide">Hive</span>
         </button>
 
-        {/* Desktop tab nav — hidden on mobile */}
+        {/* Desktop tab nav — hidden on mobile. Each button carries
+            data-tab-id so the OnboardingTour can spotlight it
+            without prop-drilling refs through. */}
         <nav className="hidden md:flex gap-1 flex-1">
           {tabs.map((t) => (
             <Button
               key={t.id}
+              data-tab-id={t.id}
               variant="ghost"
               size="sm"
               onClick={() => switchTab(t.id)}
@@ -187,6 +197,7 @@ function AppShell() {
             {tabs.map((t) => (
               <button
                 key={t.id}
+                data-tab-id={t.id}
                 type="button"
                 className={`w-full text-left px-6 py-3 text-sm text-white bg-transparent cursor-pointer font-[inherit] min-h-[44px] hover:bg-white/5 border-l-2 ${
                   tab === t.id
@@ -226,6 +237,7 @@ function AppShell() {
       )}
 
       <Toaster />
+      <OnboardingTour isAdmin={isAdmin} />
     </div>
   );
 }
