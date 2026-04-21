@@ -4,9 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import OnboardingTour from "./OnboardingTour.jsx";
 
 function setupTabAnchors() {
-  // The tour spotlights real tab buttons via [data-tab-id]. Render
-  // a stand-in nav into the document body so getBoundingClientRect
-  // returns a real DOMRect instead of zeroes.
+  // The tour spotlights tab buttons via [data-tab-id]. In jsdom,
+  // appending stand-in buttons ensures those anchors exist in the
+  // document for the component to find via querySelector. jsdom
+  // still returns a zero-rect from getBoundingClientRect, so the
+  // tooltip ends up positioned at top:8 left:-4 — fine for asserting
+  // logic; visual positioning is only meaningful in a real browser.
   for (const id of ["memories", "setup", "activity", "clients", "dashboard"]) {
     const btn = document.createElement("button");
     btn.setAttribute("data-tab-id", id);
@@ -98,6 +101,26 @@ describe("OnboardingTour", () => {
     // regression that changes the fallback origin breaks the test.
     expect(card.style.top).toBe("80px");
     expect(card.style.left).toBe("16px");
+  });
+
+  it("dispatches hive:switch-tab on each step so the underlying tab matches the spotlight", async () => {
+    const dispatched = [];
+    const realDispatch = globalThis.dispatchEvent.bind(globalThis);
+    vi.spyOn(globalThis, "dispatchEvent").mockImplementation((evt) => {
+      if (evt && evt.type === "hive:switch-tab") dispatched.push(evt.detail);
+      return realDispatch(evt);
+    });
+
+    await act(async () => render(<OnboardingTour />));
+    expect(dispatched.at(-1)).toBe("memories");
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(dispatched.at(-1)).toBe("setup");
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(dispatched.at(-1)).toBe("activity");
+
+    vi.restoreAllMocks();
   });
 
   it("re-measures the spotlight rect on window resize", async () => {

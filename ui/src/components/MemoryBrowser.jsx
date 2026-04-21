@@ -354,13 +354,29 @@ export default function MemoryBrowser() {
       await api.createMemory(body);
       setCreating(false);
       setForm({ key: "", value: "", tags: "", ttl: "" });
-      // First-memory celebration. Fire once per user (localStorage
-      // flag) so subsequent creates don't spam the toast.
+      // First-memory celebration. Two gates so the toast only fires
+      // for the genuine first-ever memory in the workspace:
+      //   1. Per-browser localStorage flag (don't repeat on later
+      //      creates from this browser).
+      //   2. Server-side check that the unfiltered store now has
+      //      exactly this one item (so an existing user with
+      //      memories from another browser / agent doesn't get a
+      //      misleading "first memory" toast).
       if (!localStorage.getItem("hive_first_memory")) {
-        localStorage.setItem("hive_first_memory", "1");
-        toast.success("First memory saved", {
-          description: "Your agent can now recall it across sessions.",
-        });
+        const fresh = await api.listMemories(undefined);
+        const isFirstInStore =
+          (fresh.items?.length ?? 0) === 1 && (fresh.next_cursor ?? null) === null;
+        if (isFirstInStore) {
+          localStorage.setItem("hive_first_memory", "1");
+          toast.success("First memory saved", {
+            description: "Your agent can now recall it across sessions.",
+          });
+        }
+        // We refreshed the list above; reuse it instead of calling
+        // load() (which would re-fetch immediately).
+        setMemories(fresh.items);
+        setNextCursor(fresh.next_cursor ?? null);
+        return;
       }
       load();
     } catch (err) {

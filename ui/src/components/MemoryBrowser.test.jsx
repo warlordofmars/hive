@@ -460,7 +460,11 @@ describe("MemoryBrowser", () => {
     const sonner = await import("sonner");
     const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
     api.createMemory.mockResolvedValue({ memory_id: "new" });
-    api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
+    // Post-create reload returns the single new memory — that's the
+    // server-side "first in store" signal the toast gates on.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null });
 
     await act(async () => render(<MemoryBrowser />));
     fireEvent.click(screen.getByText("+ New"));
@@ -479,6 +483,40 @@ describe("MemoryBrowser", () => {
       expect.objectContaining({ description: expect.any(String) }),
     );
     expect(localStorage.getItem("hive_first_memory")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("does not fire the celebration toast when the store already has other memories", async () => {
+    // Existing user / multi-browser case: localStorage flag isn't
+    // set yet (this browser is fresh), but the workspace already
+    // has more than one memory. The toast must stay silent — and
+    // the flag should still flip so we don't keep re-checking.
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory(), makeMemory()], next_cursor: null })
+      .mockResolvedValueOnce({
+        items: [makeMemory(), makeMemory(), makeMemory()],
+        next_cursor: null,
+      });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // Flag must NOT flip — otherwise a real future first-memory in
+    // a freshly-purged workspace would never celebrate.
+    expect(localStorage.getItem("hive_first_memory")).toBeNull();
     toastSuccess.mockRestore();
   });
 

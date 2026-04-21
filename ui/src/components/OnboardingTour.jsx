@@ -59,10 +59,21 @@ export default function OnboardingTour({ isAdmin = false }) {
     return () => globalThis.removeEventListener("resize", onResize);
   }, [dismissed]);
 
-  if (dismissed) return null;
-
   const steps = isAdmin ? [...BASE_STEPS, ADMIN_STEP] : BASE_STEPS;
   const step = steps[stepIndex];
+
+  // Switch the underlying tab so the page content matches what the
+  // current step describes — otherwise the user reads "Connect your
+  // first agent" while still staring at the empty Memories list.
+  // Fires on every stepIndex change including initial mount.
+  useEffect(() => {
+    if (dismissed || !step) return;
+    globalThis.dispatchEvent(
+      new CustomEvent("hive:switch-tab", { detail: step.tabId }),
+    );
+  }, [dismissed, step]);
+
+  if (dismissed) return null;
   // `tick` is read here to keep the dependency array honest — the
   // resize listener bumps it to force a re-measure.
   void tick;
@@ -100,12 +111,19 @@ export default function OnboardingTour({ isAdmin = false }) {
       data-testid="onboarding-tour"
       className="fixed inset-0 z-[60] pointer-events-none"
     >
-      {/* Backdrop — click anywhere outside the tooltip to dismiss. */}
+      {/* Backdrop — click anywhere outside the tooltip to dismiss.
+          Transparent when the spotlight is rendering its own dimming
+          via box-shadow (avoids stacking two dim layers and
+          double-darkening the page). When `rect` is missing the
+          backdrop carries the dim itself so the user still sees a
+          tour overlay. */}
       <button
         type="button"
         aria-label="Dismiss onboarding tour"
         onClick={dismiss}
-        className="absolute inset-0 bg-black/40 pointer-events-auto cursor-pointer border-0 p-0"
+        className={`absolute inset-0 pointer-events-auto cursor-pointer border-0 p-0 ${
+          rect ? "bg-transparent" : "bg-black/40"
+        }`}
       />
       {/* Spotlight outline around the highlighted tab. */}
       {rect && (

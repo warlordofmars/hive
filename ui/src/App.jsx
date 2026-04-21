@@ -191,6 +191,7 @@ function AppShell() {
             {tabs.map((t) => (
               <button
                 key={t.id}
+                data-tab-id={t.id}
                 type="button"
                 className={`w-full text-left px-6 py-3 text-sm text-white bg-transparent cursor-pointer font-[inherit] min-h-[44px] hover:bg-white/5 border-l-2 ${
                   tab === t.id
