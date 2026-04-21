@@ -27,7 +27,16 @@ def browser_page():
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        context = browser.new_context()
+
+        # #619 shipped an OnboardingTour that renders a full-viewport
+        # backdrop with pointer-events-auto on first visit — its
+        # "click outside to dismiss" behaviour intercepts every
+        # nav-tab click until it's dismissed. An `add_init_script`
+        # pre-sets the dismissed flag on every page that loads in
+        # this context so e2e tests never see the overlay.
+        context.add_init_script("localStorage.setItem('hive_tour_dismissed', '1');")
+        page = context.new_page()
 
         # Navigate to the bypass login endpoint via CloudFront (same origin as
         # the UI) so the mgmt JWT lands in the correct localStorage origin.
@@ -45,6 +54,7 @@ def browser_page():
         page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
 
         yield page
+        context.close()
         browser.close()
 
 

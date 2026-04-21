@@ -1086,6 +1086,39 @@ queue trustworthy.
   this label, the agent still runs Copilot review (everyone benefits
   from a second opinion) but then stops for human merge.
 
+### Public roadmap labels
+
+Orthogonal to the backlog-workflow `status:*` labels — an issue can
+carry one of each without conflict. These control what surfaces on
+the public-facing `/roadmap` page (rendered by `RoadmapPage.jsx`,
+fetching from GitHub's public REST API at render time):
+
+- `public-roadmap` — gate label. Without it, the issue never appears
+  on the roadmap regardless of other labels.
+- `roadmap:now` — **Now** column — in-progress, landing soon
+- `roadmap:next` — **Next** column — planned for the next release or two
+- `roadmap:later` — **Later** column — accepted, no committed date
+
+Issues with `public-roadmap` but no `roadmap:*` label are
+intentionally omitted — the roadmap is curated, not a dump.
+
+The **Shipped** column auto-populates from closed `public-roadmap`
+issues (time-ordered, capped to the 8 most-recent) — no label flip
+needed when work lands.
+
+Deliberately a separate namespace from `status:*` because
+`label-check.yml` already treats `status:*` as the required
+backlog-workflow status (`status:ready` / `blocked` /
+`design-needed` / `needs-info`). Using `roadmap:*` avoids cross-purpose
+confusion.
+
+Principle: the roadmap communicates to users what we've chosen to
+tell them — not every tagged issue. Prefer fewer, clearer cards over
+exhaustive coverage. Skip bugs, infra/CI chores, internal security
+fixes, design spikes that don't read as user-visible capability, and
+anything that would confuse or worry users (e.g. cross-tenant leak
+investigations).
+
 ### Issue creation rules
 
 When filing a new issue:

@@ -1,5 +1,5 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MemoryBrowser, { TagPicker } from "./MemoryBrowser.jsx";
 
@@ -247,6 +247,13 @@ describe("TagPicker", () => {
 describe("MemoryBrowser", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Clear localStorage flags between tests so the
+    // first-memory celebration toast fires for the test that
+    // expects it (otherwise a previous test's create leaves the
+    // flag set and the toast suppresses).
+    localStorage.removeItem("hive_first_memory");
+    localStorage.removeItem("hive_first_memory_skipped");
+    localStorage.removeItem("hive_tour_dismissed");
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
     api.searchMemories.mockResolvedValue({ items: [], count: 0 });
     // Default to a shape without `items` so the `?? []` fallback is exercised.
@@ -255,6 +262,9 @@ describe("MemoryBrowser", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    localStorage.removeItem("hive_first_memory");
+    localStorage.removeItem("hive_first_memory_skipped");
+    localStorage.removeItem("hive_tour_dismissed");
   });
 
   // Helpers
@@ -284,6 +294,18 @@ describe("MemoryBrowser", () => {
   it("renders empty state after load", async () => {
     await act(async () => render(<MemoryBrowser />));
     await waitFor(() => expect(screen.getByText("No memories yet")).toBeTruthy());
+  });
+
+  it("empty-state Open Setup CTA dispatches the tab-switch event", async () => {
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => expect(screen.getByText("No memories yet")).toBeTruthy());
+    const dispatchSpy = vi.spyOn(globalThis, "dispatchEvent");
+    fireEvent.click(screen.getByRole("button", { name: "Open Setup" }));
+    const switchEvents = dispatchSpy.mock.calls
+      .map((call) => call[0])
+      .filter((evt) => evt && evt.type === "hive:switch-tab");
+    expect(switchEvents.at(-1).detail).toBe("setup");
+    dispatchSpy.mockRestore();
   });
 
   it("renders loaded memories", async () => {
@@ -436,6 +458,244 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(screen.queryByText("New Memory")).toBeNull());
   });
 
+  it("first successful create fires the celebration toast and sets the localStorage flag", async () => {
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // Post-create reload returns the single new memory — that's the
+    // server-side "first in store" signal the toast gates on.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).toHaveBeenCalledWith(
+      "First memory saved",
+      expect.objectContaining({ description: expect.any(String) }),
+    );
+    expect(localStorage.getItem("hive_first_memory")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("does not fire the celebration toast when the store already has other memories", async () => {
+    // Existing user / multi-browser case: localStorage flag isn't
+    // set yet (this browser is fresh), but the workspace already
+    // has more than one memory. The toast must stay silent — and
+    // the flag should still flip so we don't keep re-checking.
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory(), makeMemory()], next_cursor: null })
+      .mockResolvedValueOnce({
+        items: [makeMemory(), makeMemory(), makeMemory()],
+        next_cursor: null,
+      });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // Celebration flag must NOT flip — that would suppress a real
+    // future first-memory celebration if the workspace ever drops
+    // back to a single item.
+    expect(localStorage.getItem("hive_first_memory")).toBeNull();
+    // But the "skipped" flag MUST flip so subsequent creates don't
+    // re-probe the unfiltered list on every save.
+    expect(localStorage.getItem("hive_first_memory_skipped")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("respects the cached 'skipped' flag and doesn't re-probe on later creates", async () => {
+    // Iter-3 fix: existing-workspace users used to pay for an
+    // unfiltered listMemories on every create. The skipped flag
+    // suppresses the probe entirely until they clear it.
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    localStorage.setItem("hive_first_memory_skipped", "1");
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    api.listMemories.mockClear(); // ignore the initial mount fetch
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // Only the load() refresh should fire — no probe call.
+    expect(api.listMemories).toHaveBeenCalledTimes(1);
+    toastSuccess.mockRestore();
+  });
+
+  it("does not surface a create error when the post-create first-memory check fails", async () => {
+    // Iter-2 fix: the post-create listMemories was throwing as a
+    // create failure — wrap the first-memory probe in its own
+    // try/catch and fall back to the normal refresh path.
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // First listMemories (mount) succeeds with empty page; second
+    // call (the first-memory probe) blows up; load() is then called
+    // and we let it succeed.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockRejectedValueOnce(new Error("transient list failure"))
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // No "transient list failure" surfaced as an error — the create
+    // succeeded and the form closed.
+    expect(screen.queryByText("transient list failure")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("New Memory")).toBeNull());
+  });
+
+  it("first-memory probe doesn't clobber the user's filtered view", async () => {
+    // Iter-2 fix: when a tag filter is active, the post-create
+    // probe must not call setMemories(fresh.items) — that would
+    // jump the user out of their filter back to the unfiltered
+    // first page. Instead the path falls through to load() which
+    // re-fetches the current slice.
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // mount: filter "alpha" returns one memory.
+    // probe: unfiltered fetch returns 5 memories (some from other tags).
+    // post-create load: filter "alpha" returns the new + one existing.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory({ tags: ["alpha"] })], next_cursor: null })
+      .mockResolvedValueOnce({
+        items: [
+          makeMemory({ tags: ["alpha"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+        ],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        items: [makeMemory({ tags: ["alpha"] }), makeMemory({ tags: ["alpha"] })],
+        next_cursor: null,
+      });
+
+    await act(async () => render(<MemoryBrowser />));
+    // Apply the alpha tag filter via the existing TagPicker — but
+    // we can also simulate it by dispatching the hive:memory-browser
+    // event the component listens for in production. For test
+    // simplicity, mount with a known tag filter via the event.
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("hive:memory-browser", { detail: { tag: "alpha" } }),
+      );
+    });
+
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // The third call (load() with filter) was made — listMemories
+    // received the "alpha" tag, not undefined.
+    const lastListCall = api.listMemories.mock.calls.at(-1);
+    expect(lastListCall[0]).toBe("alpha");
+  });
+
+  it("handles a probe response with missing items/next_cursor via the nullish fallbacks", async () => {
+    // Defensive — covers the `?? 0` / `?? null` branches on line 384
+    // when the server returns a sparse payload (older API version,
+    // or a proxy that strips fields).
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValueOnce({}); // no items, no next_cursor
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // items undefined → items?.length === undefined → ?? 0 →
+    // 0 === 1 is false, so isFirstInStore is false and the toast
+    // does NOT fire.
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(localStorage.getItem("hive_first_memory_skipped")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("subsequent creates don't re-fire the celebration toast once the flag is set", async () => {
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    localStorage.setItem("hive_first_memory", "1");
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    toastSuccess.mockRestore();
+    localStorage.removeItem("hive_first_memory");
+  });
+
   it("shows error when createMemory fails", async () => {
     api.createMemory.mockRejectedValue(new Error("Create error"));
     await act(async () => render(<MemoryBrowser />));
@@ -450,6 +710,197 @@ describe("MemoryBrowser", () => {
       fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
     );
     await waitFor(() => expect(screen.getByText("Create error")).toBeTruthy());
+  });
+
+  it("surfaces a quota banner with a Setup link when createMemory returns 429", async () => {
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+    const dispatchSpy = vi.spyOn(globalThis, "dispatchEvent");
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    const banner = await screen.findByTestId("quota-banner");
+    expect(banner.textContent).toContain("Quota or rate limit reached");
+    expect(banner.textContent).toContain("Memory quota of 500 reached.");
+    expect(banner.textContent).toContain("Try again later");
+    // Generic error text MUST NOT also surface — banner replaces it.
+    expect(screen.queryByText("Memory quota of 500 reached.", { selector: "p" })).toBeNull();
+
+    // Clicking "Open Setup" dispatches the tab-switch event the App
+    // shell listens for; banner should clear so it doesn't stick on
+    // the new tab. Scope to the banner because the empty-state CTA
+    // also has an "Open Setup" link when no memories exist.
+    fireEvent.click(within(banner).getByText("Open Setup"));
+    const switchEvents = dispatchSpy.mock.calls
+      .map((call) => call[0])
+      .filter((evt) => evt && evt.type === "hive:switch-tab");
+    expect(switchEvents.length).toBeGreaterThan(0);
+    expect(switchEvents.at(-1).detail).toBe("setup");
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
+    dispatchSpy.mockRestore();
+  });
+
+  it("scrolls the #usage anchor into view after switching to Setup", async () => {
+    // Banner copy points users at "open Setup to review your current
+    // usage" — verify the click actually deep-links to the anchor,
+    // not just the tab. Use a real timeout (setTimeout delay of 0)
+    // instead of fake timers because fake timers + initial React
+    // effects don't mix (see §UI conventions in CLAUDE.md).
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+
+    const scrollIntoView = vi.fn();
+    const realGetElementById = document.getElementById.bind(document);
+    const getByIdSpy = vi
+      .spyOn(document, "getElementById")
+      .mockImplementation((id) => {
+        if (id === "usage") return { scrollIntoView };
+        return realGetElementById(id);
+      });
+
+    try {
+      await act(async () => render(<MemoryBrowser />));
+      fireEvent.click(screen.getByText("+ New"));
+      fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+        target: { value: "k" },
+      });
+      fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+        target: { value: "v" },
+      });
+      await act(async () => {
+        fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form"));
+      });
+      const banner = await screen.findByTestId("quota-banner");
+
+      fireEvent.click(within(banner).getByText("Open Setup"));
+      // Real setTimeout(0) — flush the macrotask queue.
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "start",
+      });
+    } finally {
+      getByIdSpy.mockRestore();
+    }
+  });
+
+  it("no-ops scroll when the #usage anchor isn't present", async () => {
+    // Defensive — covers the `if (target)` guard so the timer
+    // callback can't NPE when SetupPanel hasn't mounted. The test
+    // DOM has no #usage element (SetupPanel isn't mounted), so the
+    // deferred scrollIntoView must short-circuit cleanly.
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form"));
+    });
+    const banner = await screen.findByTestId("quota-banner");
+    fireEvent.click(within(banner).getByText("Open Setup"));
+    // Flush the macrotask queue — the deferred `if (target)` branch
+    // must no-op without throwing when #usage doesn't exist.
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    // Banner cleared on tab-switch click, confirming the click
+    // handler still ran even without a scroll target.
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
+  });
+
+  it("clears stale generic error when a follow-up 429 fires", async () => {
+    // Sequence: first create fails generically, then a retry hits the
+    // quota wall. The banner must take over and the inline error
+    // paragraph must clear so the two never render together.
+    const genericErr = new Error("Server hiccup");
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValueOnce(genericErr).mockRejectedValueOnce(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+    await waitFor(() => expect(screen.getByText("Server hiccup")).toBeTruthy());
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    await screen.findByTestId("quota-banner");
+    expect(screen.queryByText("Server hiccup")).toBeNull();
+  });
+
+  it("clears stale quota banner when a follow-up generic error fires", async () => {
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    const genericErr = new Error("Server hiccup");
+    api.createMemory.mockRejectedValueOnce(quotaErr).mockRejectedValueOnce(genericErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+    await screen.findByTestId("quota-banner");
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    await waitFor(() => expect(screen.getByText("Server hiccup")).toBeTruthy());
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
+  });
+
+  it("falls back to a generic message on 429 with no detail body", async () => {
+    const quotaErr = new Error("");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    const banner = await screen.findByTestId("quota-banner");
+    expect(banner.textContent).toContain("Quota or rate limit reached.");
   });
 
   // ---------------------------------------------------------------------------
@@ -698,9 +1149,58 @@ describe("MemoryBrowser", () => {
     await act(async () =>
       fireEvent.change(searchInput, { target: { value: "semantic" } }),
     );
-    await waitFor(() => expect(api.searchMemories).toHaveBeenCalledWith("semantic"), {
-      timeout: 1000,
-    });
+    await waitFor(
+      () =>
+        expect(api.searchMemories).toHaveBeenCalledWith("semantic", { limit: 50 }),
+      { timeout: 1000 },
+    );
+  });
+
+  it("exposes a Top-K slider only when search mode is active", async () => {
+    api.searchMemories.mockResolvedValue({ items: [], count: 0 });
+
+    await act(async () => render(<MemoryBrowser />));
+    // No search query typed yet → slider hidden.
+    expect(screen.queryByTestId("search-topk-control")).toBeNull();
+
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () => fireEvent.change(searchInput, { target: { value: "q" } }));
+
+    expect(screen.getByTestId("search-topk-control")).toBeTruthy();
+    expect(screen.getByLabelText("Maximum number of search results")).toBeTruthy();
+  });
+
+  it("updating the Top-K slider re-runs search with the new limit", async () => {
+    api.searchMemories.mockResolvedValue({ items: [], count: 0 });
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () => fireEvent.change(searchInput, { target: { value: "q" } }));
+    await waitFor(() =>
+      expect(api.searchMemories).toHaveBeenCalledWith("q", { limit: 50 }),
+    );
+
+    const slider = screen.getByLabelText("Maximum number of search results");
+    await act(async () => fireEvent.change(slider, { target: { value: "20" } }));
+
+    await waitFor(
+      () => expect(api.searchMemories).toHaveBeenCalledWith("q", { limit: 20 }),
+      { timeout: 1000 },
+    );
+  });
+
+  it("slider clamp: value displayed matches the current Top-K", async () => {
+    api.searchMemories.mockResolvedValue({ items: [], count: 0 });
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () => fireEvent.change(searchInput, { target: { value: "q" } }));
+
+    // Default K=50 rendered in the live region.
+    const control = screen.getByTestId("search-topk-control");
+    expect(within(control).getByText("50")).toBeTruthy();
+
+    const slider = screen.getByLabelText("Maximum number of search results");
+    await act(async () => fireEvent.change(slider, { target: { value: "7" } }));
+    expect(within(control).getByText("7")).toBeTruthy();
   });
 
   it("renders score badge on search results", async () => {
@@ -937,6 +1437,78 @@ describe("MemoryBrowser", () => {
     // Long value gets truncated with ellipsis
     expect(screen.getByText(/x{120}…/)).toBeTruthy();
     expect(screen.getAllByText("Restore")).toHaveLength(2);
+  });
+
+  it("toggles the diff view when 'Show diff' is clicked", async () => {
+    // #383: each history row gets a diff toggle that compares the
+    // version against the current live value. Toggle on → replaces
+    // the truncated value with a diff; toggle off → back to the
+    // truncated summary.
+    const version = {
+      version_timestamp: "20260412T120000000000",
+      value: "hello old world",
+      tags: [],
+      recorded_at: "2026-04-12T12:00:00.000Z",
+    };
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ value: "hello new world" })],
+      next_cursor: null,
+    });
+    api.listMemoryVersions.mockResolvedValue([version]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Show diff"));
+
+    // Initially truncated value is visible, diff testid is not.
+    expect(screen.getByText("hello old world")).toBeTruthy();
+    expect(screen.queryByTestId("memory-diff")).toBeNull();
+
+    fireEvent.click(screen.getByText("Show diff"));
+    expect(screen.getByTestId("memory-diff")).toBeTruthy();
+    // Toggle button flips label.
+    expect(screen.getByText("Hide diff")).toBeTruthy();
+
+    // Diff renders the before→after words via <ins>/<del>.
+    const diff = screen.getByTestId("memory-diff");
+    expect(diff.querySelector("ins").textContent).toContain("new");
+    expect(diff.querySelector("del").textContent).toContain("old");
+
+    fireEvent.click(screen.getByText("Hide diff"));
+    expect(screen.queryByTestId("memory-diff")).toBeNull();
+  });
+
+  it("closing history clears the expanded diff state", async () => {
+    // Defensive — expandedVersion must reset when the panel
+    // closes, otherwise reopening history would land in diff mode
+    // even though the user dismissed it.
+    const version = {
+      version_timestamp: "20260412T120000000000",
+      value: "hello old world",
+      tags: [],
+      recorded_at: "2026-04-12T12:00:00.000Z",
+    };
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ value: "hello new world" })],
+      next_cursor: null,
+    });
+    api.listMemoryVersions.mockResolvedValue([version]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Show diff"));
+    fireEvent.click(screen.getByText("Show diff"));
+    expect(screen.getByTestId("memory-diff")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Close"));
+    await waitFor(() => expect(screen.queryByText("History: test-key")).toBeNull());
+    // Re-open: should land on the truncated list view, not stay in
+    // diff mode from the previous session.
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Show diff"));
+    expect(screen.queryByTestId("memory-diff")).toBeNull();
   });
 
   it("restores a version and closes history panel", async () => {

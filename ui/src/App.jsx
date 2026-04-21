@@ -8,16 +8,20 @@ import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import Dashboard from "./components/Dashboard.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import LogViewer from "./components/LogViewer.jsx";
 import ChangelogPage from "./components/ChangelogPage.jsx";
 import FaqPage from "./components/FaqPage.jsx";
 import HomePage from "./components/HomePage.jsx";
+import NotFoundPage from "./components/NotFoundPage.jsx";
 import PrivacyPage from "./components/PrivacyPage.jsx";
 import SubprocessorsPage from "./components/SubprocessorsPage.jsx";
 import TermsPage from "./components/TermsPage.jsx";
 import LoginPage from "./components/LoginPage.jsx";
 import McpClientsPage from "./components/McpClientsPage.jsx";
+import OnboardingTour from "./components/OnboardingTour.jsx";
 import PricingPage from "./components/PricingPage.jsx";
+import RoadmapPage from "./components/RoadmapPage.jsx";
 import StatusPage from "./components/StatusPage.jsx";
 import UseCasesPage from "./components/UseCasesPage.jsx";
 import ApiKeysPanel from "./components/ApiKeysPanel.jsx";
@@ -89,7 +93,13 @@ function AppShell() {
     if (!authenticated) return;
     api.listClients()
       .then((data) => {
-        if (data?.items.length === 0) setTab("setup");
+        // Skip the auto-switch when the OnboardingTour is still
+        // active — otherwise step 1 spotlights "Memories" while
+        // the underlying content silently jumps to Setup, leaving
+        // the spotlight pointing at a tab that's no longer the
+        // active panel.
+        const tourActive = !localStorage.getItem("hive_tour_dismissed");
+        if (data?.items.length === 0 && !tourActive) setTab("setup");
       })
       .catch(() => {});
   }, [authenticated]);
@@ -120,11 +130,14 @@ function AppShell() {
           <span className="font-bold text-xl tracking-wide">Hive</span>
         </button>
 
-        {/* Desktop tab nav — hidden on mobile */}
+        {/* Desktop tab nav — hidden on mobile. Each button carries
+            data-tab-id so the OnboardingTour can spotlight it
+            without prop-drilling refs through. */}
         <nav className="hidden md:flex gap-1 flex-1">
           {tabs.map((t) => (
             <Button
               key={t.id}
+              data-tab-id={t.id}
               variant="ghost"
               size="sm"
               onClick={() => switchTab(t.id)}
@@ -185,6 +198,7 @@ function AppShell() {
             {tabs.map((t) => (
               <button
                 key={t.id}
+                data-tab-id={t.id}
                 type="button"
                 className={`w-full text-left px-6 py-3 text-sm text-white bg-transparent cursor-pointer font-[inherit] min-h-[44px] hover:bg-white/5 border-l-2 ${
                   tab === t.id
@@ -224,6 +238,7 @@ function AppShell() {
       )}
 
       <Toaster />
+      <OnboardingTour isAdmin={isAdmin} />
     </div>
   );
 }
@@ -246,24 +261,33 @@ function RouteTracker() {
 
 export default function App() {
   useTheme(); // apply data-theme to <html> for all routes
+  // ErrorBoundary wraps the entire route tree so a thrown render
+  // exception in any page lands on the friendly fallback instead of
+  // a blank tab. Catch-all `*` route renders the branded 404 page —
+  // CloudFront already serves index.html for unknown paths (with a
+  // 200 so the SPA can route), so hitting `*` is the React Router
+  // signal that no route matched.
   return (
-    <BrowserRouter>
-      <RouteTracker />
-      <Routes>
-        <Route path="/" element={<HomeRoute />} />
-        <Route path="/pricing" element={<PricingPage />} />
-        <Route path="/faq" element={<FaqPage />} />
-        <Route path="/use-cases" element={<UseCasesPage />} />
-        <Route path="/clients" element={<McpClientsPage />} />
-        <Route path="/changelog" element={<ChangelogPage />} />
-        <Route path="/status" element={<StatusPage />} />
-        <Route path="/terms" element={<TermsPage />} />
-        <Route path="/privacy" element={<PrivacyPage />} />
-        <Route path="/subprocessors" element={<SubprocessorsPage />} />
-        <Route path="/app" element={<AppShell />} />
-        <Route path="/oauth/callback" element={<AuthCallback />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <RouteTracker />
+        <Routes>
+          <Route path="/" element={<HomeRoute />} />
+          <Route path="/pricing" element={<PricingPage />} />
+          <Route path="/faq" element={<FaqPage />} />
+          <Route path="/use-cases" element={<UseCasesPage />} />
+          <Route path="/clients" element={<McpClientsPage />} />
+          <Route path="/changelog" element={<ChangelogPage />} />
+          <Route path="/roadmap" element={<RoadmapPage />} />
+          <Route path="/status" element={<StatusPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/subprocessors" element={<SubprocessorsPage />} />
+          <Route path="/app" element={<AppShell />} />
+          <Route path="/oauth/callback" element={<AuthCallback />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

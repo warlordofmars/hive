@@ -4,6 +4,8 @@ import PropTypes from "prop-types";
 import { X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import MemoryDiff from "./MemoryDiff.jsx";
+import { toast } from "sonner";
 import { AlertDialog } from "./ui/alert-dialog.jsx";
 import { Badge } from "./ui/badge.jsx";
 import { Button } from "./ui/button.jsx";
@@ -176,15 +178,23 @@ export default function MemoryBrowser() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [quotaError, setQuotaError] = useState(null);
   const [tagFilter, setTagFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchMode, setIsSearchMode] = useState(false);
+  // Top-K slider for the semantic search playground (#384). Default
+  // matches the API default (50); clamped 1–100.
+  const [searchTopK, setSearchTopK] = useState(50);
   const [editing, setEditing] = useState(null); // memory object or null
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ key: "", value: "", tags: "", ttl: "" });
   const [viewingHistory, setViewingHistory] = useState(null); // memory object or null
   const [versions, setVersions] = useState([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+  // Which previous version is currently expanded into the diff view.
+  // null = the list-only mode; a timestamp = that version diffed
+  // against the live current value.
+  const [expandedVersion, setExpandedVersion] = useState(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [clientNameById, setClientNameById] = useState({});
@@ -203,6 +213,36 @@ export default function MemoryBrowser() {
   const searchDebounceRef = useRef(null);
   const listRef = useRef(null);
 
+  // Quota / rate-limit hits get a richer banner that points back to
+  // the Setup tab's Usage section, instead of the bare server detail
+  // string. Generic errors still go through `setError`. Each branch
+  // clears the other state slot so the banner and the inline error
+  // can never render together.
+  function handleMutationError(err) {
+    if (err && err.status === 429) {
+      setQuotaError(err.message || "Quota or rate limit reached.");
+      setError("");
+      return;
+    }
+    setError(err.message);
+    setQuotaError(null);
+  }
+
+  function openSetup() {
+    setQuotaError(null);
+    globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "setup" }));
+  }
+
+  function goToUsage() {
+    openSetup();
+    // Setup tab mounts asynchronously after the switch — defer the
+    // scroll so the #usage anchor exists by the time we look it up.
+    globalThis.setTimeout(function scrollToUsage() {
+      const target = globalThis.document?.getElementById("usage");
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -218,12 +258,12 @@ export default function MemoryBrowser() {
     }
   }, [tagFilter]);
 
-  const runSearch = useCallback(async (query) => {
+  const runSearch = useCallback(async (query, topK) => {
     setLoading(true);
     setError("");
     setNextCursor(null);
     try {
-      const data = await api.searchMemories(query);
+      const data = await api.searchMemories(query, { limit: topK });
       setMemories(data.items);
     } catch (e) {
       setError(e.message);
@@ -237,15 +277,16 @@ export default function MemoryBrowser() {
     if (!isSearchMode) load();
   }, [load, isSearchMode]);
 
-  // Debounce search input
+  // Debounce search input. Re-runs when topK changes too so the
+  // playground reacts to slider tweaks without a page reload.
   useEffect(() => {
     if (!searchQuery) return;
     clearTimeout(searchDebounceRef.current);
     searchDebounceRef.current = setTimeout(() => {
-      runSearch(searchQuery);
+      runSearch(searchQuery, searchTopK);
     }, 400);
     return () => clearTimeout(searchDebounceRef.current);
-  }, [searchQuery, runSearch]);
+  }, [searchQuery, searchTopK, runSearch]);
 
   // #537 — Stats charts click-through: the Stats tab dispatches a
   // `hive:memory-browser` CustomEvent with `{ tag }` or `{ search }` to
@@ -322,9 +363,65 @@ export default function MemoryBrowser() {
       await api.createMemory(body);
       setCreating(false);
       setForm({ key: "", value: "", tags: "", ttl: "" });
+      // First-memory celebration. Two gates so the toast only fires
+      // for the genuine first-ever memory in the workspace:
+      //   1. Per-browser localStorage flag (don't repeat on later
+      //      creates from this browser).
+      //   2. Server-side check that the unfiltered store now has
+      //      exactly this one item (so an existing user with
+      //      memories from another browser / agent doesn't get a
+      //      misleading "first memory" toast).
+      // Wrapped in try/catch so a transient list failure doesn't
+      // make a successful create look like it failed — the caller
+      // still falls through to the normal refresh path. We also
+      // only reuse the unfiltered fetch as the visible list when
+      // the user isn't currently filtered (search / tag) — otherwise
+      // we'd silently jump them out of their current view.
+      // Two flags so we don't pay for the probe on every create:
+      //   hive_first_memory=1 — we already celebrated; skip.
+      //   hive_first_memory_skipped=1 — the workspace already had
+      //     other memories the first time we checked, so a "first
+      //     memory in store" can't happen here without a wipe;
+      //     skip until the user clears it.
+      if (
+        !localStorage.getItem("hive_first_memory") &&
+        !localStorage.getItem("hive_first_memory_skipped")
+      ) {
+        try {
+          const fresh = await api.listMemories(undefined);
+          const isFirstInStore =
+            (fresh.items?.length ?? 0) === 1 && (fresh.next_cursor ?? null) === null;
+          if (isFirstInStore) {
+            localStorage.setItem("hive_first_memory", "1");
+            toast.success("First memory saved", {
+              description: "Your agent can now recall it across sessions.",
+            });
+          } else {
+            // Cache the negative result so we don't re-probe on
+            // every subsequent create.
+            localStorage.setItem("hive_first_memory_skipped", "1");
+          }
+          if (!tagFilter && !isSearchMode) {
+            setMemories(fresh.items ?? []);
+            setNextCursor(fresh.next_cursor ?? null);
+            // load() normally clears `error` via setError("") on
+            // its happy path. We're skipping load() here, so do the
+            // clear explicitly — otherwise a stale error from an
+            // earlier failed mutation can stay visible after a
+            // successful create.
+            setError("");
+            return;
+          }
+          // Filtered view — fall through to load() so we re-fetch
+          // the user's current slice instead of clobbering it.
+        } catch {
+          // Transient list failure shouldn't surface as a create
+          // error since the create itself succeeded.
+        }
+      }
       load();
     } catch (err) {
-      setError(err.message);
+      handleMutationError(err);
     }
   }
 
@@ -383,6 +480,7 @@ export default function MemoryBrowser() {
     setViewingHistory(m);
     setEditing(null);
     setCreating(false);
+    setExpandedVersion(null);
     setVersionsLoading(true);
     try {
       const vs = await api.listMemoryVersions(m.memory_id);
@@ -397,6 +495,13 @@ export default function MemoryBrowser() {
   function closeHistory() {
     setViewingHistory(null);
     setVersions([]);
+    setExpandedVersion(null);
+  }
+
+  function toggleDiff(versionTimestamp) {
+    setExpandedVersion((prev) =>
+      prev === versionTimestamp ? null : versionTimestamp,
+    );
   }
 
   async function handleRestore(versionTimestamp) {
@@ -458,7 +563,66 @@ export default function MemoryBrowser() {
           <TagPicker knownTags={knownTags} value={tagFilter} onSelect={handleTagSelect} />
           <Button onClick={openCreate}>+ New</Button>
         </div>
+        {isSearchMode && (
+          <div
+            data-testid="search-topk-control"
+            className="flex items-center gap-3 mb-4 text-[13px] text-[var(--text-muted)]"
+          >
+            <Label htmlFor="search-topk" className="whitespace-nowrap">
+              Top K
+            </Label>
+            <input
+              id="search-topk"
+              type="range"
+              min={1}
+              max={100}
+              value={searchTopK}
+              onChange={(e) => setSearchTopK(Number(e.target.value))}
+              className="flex-1 max-w-[200px] cursor-pointer"
+              aria-valuemin={1}
+              aria-valuemax={100}
+              aria-valuenow={searchTopK}
+              aria-label="Maximum number of search results"
+            />
+            <span
+              className="font-semibold text-[var(--text)] min-w-[2ch] text-right"
+              aria-live="polite"
+            >
+              {searchTopK}
+            </span>
+            <span className="text-[11px] text-[var(--text-muted)] hidden sm:inline">
+              results
+            </span>
+          </div>
+        )}
 
+        {quotaError && (
+          <div
+            role="alert"
+            data-testid="quota-banner"
+            className="mb-3 rounded border p-3 text-[13px]"
+            style={{ borderColor: "var(--danger)", color: "var(--danger)" }}
+          >
+            <strong>Quota or rate limit reached.</strong>{" "}
+            <span className="text-[var(--text-muted)]">
+              {quotaError} Try again later, or open Setup to review your
+              current usage and request more capacity.
+            </span>{" "}
+            <button
+              type="button"
+              onClick={goToUsage}
+              className="underline cursor-pointer p-0 m-0 font-inherit text-inherit leading-inherit"
+              style={{
+                color: "var(--danger)",
+                background: "transparent",
+                border: 0,
+                font: "inherit",
+              }}
+            >
+              Open Setup
+            </button>
+          </div>
+        )}
         {error && <p className="text-[var(--danger)] mb-3">{error}</p>}
         {loading && <p className="text-[var(--text-muted)]">Loading…</p>}
 
@@ -467,8 +631,19 @@ export default function MemoryBrowser() {
             <EmptyState
               variant="memories"
               title="No memories yet"
-              description="Use the remember tool in your MCP client to store your first memory."
-              action={<Button onClick={openCreate}>+ New Memory</Button>}
+              description="Connect an MCP client from the Setup tab — once your agent calls the remember tool, memories show up here. You can also create one by hand below."
+              action={
+                <div className="flex flex-col sm:flex-row gap-3 items-center">
+                  <Button onClick={openCreate}>+ New Memory</Button>
+                  <button
+                    type="button"
+                    onClick={openSetup}
+                    className="text-[var(--accent)] underline cursor-pointer bg-transparent border-0 p-0 text-sm font-inherit"
+                  >
+                    Open Setup
+                  </button>
+                </div>
+              }
             />
           </Card>
         )}
@@ -603,7 +778,7 @@ export default function MemoryBrowser() {
 
       {/* Version history panel */}
       {viewingHistory && (
-        <div className="w-full md:w-[360px]">
+        <div className="w-full md:w-[420px]">
           <Card>
             <h3 className="mb-4 text-base font-semibold">History: {viewingHistory.key}</h3>
             {versionsLoading && <p className="text-[var(--text-muted)]">Loading…</p>}
@@ -611,23 +786,58 @@ export default function MemoryBrowser() {
               <p className="text-[var(--text-muted)] text-sm">No previous versions.</p>
             )}
             <ul className="flex flex-col gap-3 list-none m-0 p-0">
-              {versions.map((v) => (
-                <li key={v.version_timestamp} className="border border-[var(--border)] rounded-[var(--radius)] p-3">
-                  <div className="text-[11px] text-[var(--text-muted)] mb-1">
-                    {new Date(v.recorded_at).toLocaleString()}
-                  </div>
-                  <p className="text-[13px] whitespace-pre-wrap mb-2">
-                    {v.value.length > 120 ? v.value.slice(0, 120) + "…" : v.value}
-                  </p>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => handleRestore(v.version_timestamp)}
+              {versions.map((v) => {
+                const isOpen = expandedVersion === v.version_timestamp;
+                const truncated =
+                  v.value.length > 120 ? v.value.slice(0, 120) + "…" : v.value;
+                return (
+                  <li
+                    key={v.version_timestamp}
+                    className="border border-[var(--border)] rounded-[var(--radius)] p-3"
                   >
-                    Restore
-                  </Button>
-                </li>
-              ))}
+                    <div className="text-[11px] text-[var(--text-muted)] mb-1">
+                      {new Date(v.recorded_at).toLocaleString()}
+                    </div>
+                    {isOpen ? (
+                      <div className="mb-2">
+                        <p className="text-[11px] text-[var(--text-muted)] mb-1">
+                          Changes vs current
+                        </p>
+                        <MemoryDiff
+                          before={v.value}
+                          after={viewingHistory.value}
+                        />
+                      </div>
+                    ) : (
+                      <p className="text-[13px] whitespace-pre-wrap mb-2">
+                        {truncated}
+                      </p>
+                    )}
+                    <div className="flex gap-2 flex-wrap">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => toggleDiff(v.version_timestamp)}
+                        aria-expanded={isOpen}
+                        aria-label={
+                          isOpen
+                            ? "Hide diff against current"
+                            : "Show diff against current"
+                        }
+                      >
+                        {isOpen ? "Hide diff" : "Show diff"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleRestore(v.version_timestamp)}
+                      >
+                        Restore
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
             <div className="mt-4">
               <Button variant="secondary" onClick={closeHistory}>Close</Button>

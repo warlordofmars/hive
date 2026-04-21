@@ -106,10 +106,14 @@ describe("App routing", () => {
     window.history.pushState({}, "", "/");
   });
 
-  it("redirects unknown routes to /", async () => {
+  it("renders the branded NotFoundPage on unknown routes", async () => {
+    // Catch-all `*` route now lands on a real 404 instead of
+    // silently redirecting home — gives the user a path forward
+    // (Home / Docs / Contact) instead of a confusing reset.
     window.history.pushState({}, "", "/unknown-path");
     await act(async () => render(<App />));
-    expect(screen.getByTestId("home-page")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Page not found" })).toBeTruthy();
+    expect(screen.queryByTestId("home-page")).toBeNull();
     window.history.pushState({}, "", "/");
   });
 });
@@ -169,11 +173,26 @@ describe("AppShell", () => {
     expect(screen.queryByTestId("setup-panel")).toBeNull();
   });
 
-  it("defaults to Setup tab on first load when no clients registered", async () => {
+  it("defaults to Setup tab on first load when no clients registered (tour dismissed)", async () => {
+    // The auto-switch only fires once the OnboardingTour has been
+    // dismissed — otherwise step 1's "Memories" spotlight would
+    // point at a tab that's no longer the active panel.
+    _storage["hive_tour_dismissed"] = "1";
     vi.stubGlobal("fetch", makeFetch({ clients: [] }));
     await act(async () => render(<App />));
     await waitFor(() => expect(screen.getByTestId("setup-panel")).toBeTruthy());
     expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("suppresses auto-switch to Setup while the OnboardingTour is still active", async () => {
+    // Tour dismissed flag is NOT set — the empty-clients
+    // auto-switch must hold so the spotlight on step 1 ("Memories")
+    // matches the active tab.
+    vi.stubGlobal("fetch", makeFetch({ clients: [] }));
+    await act(async () => render(<App />));
+    // Settle the listClients promise.
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    expect(screen.queryByTestId("setup-panel")).toBeNull();
   });
 
   it("does not switch to Setup when listClients returns null", async () => {
