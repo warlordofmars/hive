@@ -8,10 +8,12 @@ import ActivityLog from "./components/ActivityLog.jsx";
 import AuthCallback from "./components/AuthCallback.jsx";
 import ClientManager from "./components/ClientManager.jsx";
 import Dashboard from "./components/Dashboard.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import LogViewer from "./components/LogViewer.jsx";
 import ChangelogPage from "./components/ChangelogPage.jsx";
 import FaqPage from "./components/FaqPage.jsx";
 import HomePage from "./components/HomePage.jsx";
+import NotFoundPage from "./components/NotFoundPage.jsx";
 import PrivacyPage from "./components/PrivacyPage.jsx";
 import SubprocessorsPage from "./components/SubprocessorsPage.jsx";
 import TermsPage from "./components/TermsPage.jsx";
@@ -246,24 +248,32 @@ function RouteTracker() {
 
 export default function App() {
   useTheme(); // apply data-theme to <html> for all routes
+  // ErrorBoundary wraps the entire route tree so a thrown render
+  // exception in any page lands on the friendly fallback instead of
+  // a blank tab. Catch-all `*` route renders the branded 404 page —
+  // CloudFront already serves index.html for unknown paths (with a
+  // 200 so the SPA can route), so hitting `*` is the React Router
+  // signal that no route matched.
   return (
-    <BrowserRouter>
-      <RouteTracker />
-      <Routes>
-        <Route path="/" element={<HomeRoute />} />
-        <Route path="/pricing" element={<PricingPage />} />
-        <Route path="/faq" element={<FaqPage />} />
-        <Route path="/use-cases" element={<UseCasesPage />} />
-        <Route path="/clients" element={<McpClientsPage />} />
-        <Route path="/changelog" element={<ChangelogPage />} />
-        <Route path="/status" element={<StatusPage />} />
-        <Route path="/terms" element={<TermsPage />} />
-        <Route path="/privacy" element={<PrivacyPage />} />
-        <Route path="/subprocessors" element={<SubprocessorsPage />} />
-        <Route path="/app" element={<AppShell />} />
-        <Route path="/oauth/callback" element={<AuthCallback />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <RouteTracker />
+        <Routes>
+          <Route path="/" element={<HomeRoute />} />
+          <Route path="/pricing" element={<PricingPage />} />
+          <Route path="/faq" element={<FaqPage />} />
+          <Route path="/use-cases" element={<UseCasesPage />} />
+          <Route path="/clients" element={<McpClientsPage />} />
+          <Route path="/changelog" element={<ChangelogPage />} />
+          <Route path="/status" element={<StatusPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/subprocessors" element={<SubprocessorsPage />} />
+          <Route path="/app" element={<AppShell />} />
+          <Route path="/oauth/callback" element={<AuthCallback />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
