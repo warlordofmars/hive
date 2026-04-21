@@ -1149,9 +1149,58 @@ describe("MemoryBrowser", () => {
     await act(async () =>
       fireEvent.change(searchInput, { target: { value: "semantic" } }),
     );
-    await waitFor(() => expect(api.searchMemories).toHaveBeenCalledWith("semantic"), {
-      timeout: 1000,
-    });
+    await waitFor(
+      () =>
+        expect(api.searchMemories).toHaveBeenCalledWith("semantic", { limit: 50 }),
+      { timeout: 1000 },
+    );
+  });
+
+  it("exposes a Top-K slider only when search mode is active", async () => {
+    api.searchMemories.mockResolvedValue({ items: [], count: 0 });
+
+    await act(async () => render(<MemoryBrowser />));
+    // No search query typed yet → slider hidden.
+    expect(screen.queryByTestId("search-topk-control")).toBeNull();
+
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () => fireEvent.change(searchInput, { target: { value: "q" } }));
+
+    expect(screen.getByTestId("search-topk-control")).toBeTruthy();
+    expect(screen.getByLabelText("Maximum number of search results")).toBeTruthy();
+  });
+
+  it("updating the Top-K slider re-runs search with the new limit", async () => {
+    api.searchMemories.mockResolvedValue({ items: [], count: 0 });
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () => fireEvent.change(searchInput, { target: { value: "q" } }));
+    await waitFor(() =>
+      expect(api.searchMemories).toHaveBeenCalledWith("q", { limit: 50 }),
+    );
+
+    const slider = screen.getByLabelText("Maximum number of search results");
+    await act(async () => fireEvent.change(slider, { target: { value: "20" } }));
+
+    await waitFor(
+      () => expect(api.searchMemories).toHaveBeenCalledWith("q", { limit: 20 }),
+      { timeout: 1000 },
+    );
+  });
+
+  it("slider clamp: value displayed matches the current Top-K", async () => {
+    api.searchMemories.mockResolvedValue({ items: [], count: 0 });
+    await act(async () => render(<MemoryBrowser />));
+    const searchInput = screen.getByPlaceholderText("Search by meaning…");
+    await act(async () => fireEvent.change(searchInput, { target: { value: "q" } }));
+
+    // Default K=50 rendered in the live region.
+    const control = screen.getByTestId("search-topk-control");
+    expect(within(control).getByText("50")).toBeTruthy();
+
+    const slider = screen.getByLabelText("Maximum number of search results");
+    await act(async () => fireEvent.change(slider, { target: { value: "7" } }));
+    expect(within(control).getByText("7")).toBeTruthy();
   });
 
   it("renders score badge on search results", async () => {
