@@ -4,6 +4,7 @@ import PropTypes from "prop-types";
 import { X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import { toast } from "sonner";
 import { AlertDialog } from "./ui/alert-dialog.jsx";
 import { Badge } from "./ui/badge.jsx";
 import { Button } from "./ui/button.jsx";
@@ -219,9 +220,13 @@ export default function MemoryBrowser() {
     setQuotaError(null);
   }
 
-  function goToUsage() {
+  function openSetup() {
     setQuotaError(null);
     globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "setup" }));
+  }
+
+  function goToUsage() {
+    openSetup();
     // Setup tab mounts asynchronously after the switch — defer the
     // scroll so the #usage anchor exists by the time we look it up.
     globalThis.setTimeout(function scrollToUsage() {
@@ -349,6 +354,14 @@ export default function MemoryBrowser() {
       await api.createMemory(body);
       setCreating(false);
       setForm({ key: "", value: "", tags: "", ttl: "" });
+      // First-memory celebration. Fire once per user (localStorage
+      // flag) so subsequent creates don't spam the toast.
+      if (!localStorage.getItem("hive_first_memory")) {
+        localStorage.setItem("hive_first_memory", "1");
+        toast.success("First memory saved", {
+          description: "Your agent can now recall it across sessions.",
+        });
+      }
       load();
     } catch (err) {
       handleMutationError(err);
@@ -521,8 +534,19 @@ export default function MemoryBrowser() {
             <EmptyState
               variant="memories"
               title="No memories yet"
-              description="Use the remember tool in your MCP client to store your first memory."
-              action={<Button onClick={openCreate}>+ New Memory</Button>}
+              description="Connect an MCP client from the Setup tab — once your agent calls the remember tool, memories show up here. You can also create one by hand below."
+              action={
+                <div className="flex flex-col sm:flex-row gap-3 items-center">
+                  <Button onClick={openCreate}>+ New Memory</Button>
+                  <button
+                    type="button"
+                    onClick={openSetup}
+                    className="text-[var(--accent)] underline cursor-pointer bg-transparent border-0 p-0 text-sm font-inherit"
+                  >
+                    Open Setup
+                  </button>
+                </div>
+              }
             />
           </Card>
         )}

@@ -1,0 +1,115 @@
+// Copyright (c) 2026 John Carter. All rights reserved.
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import OnboardingTour from "./OnboardingTour.jsx";
+
+function setupTabAnchors() {
+  // The tour spotlights real tab buttons via [data-tab-id]. Render
+  // a stand-in nav into the document body so getBoundingClientRect
+  // returns a real DOMRect instead of zeroes.
+  for (const id of ["memories", "setup", "activity", "clients", "dashboard"]) {
+    const btn = document.createElement("button");
+    btn.setAttribute("data-tab-id", id);
+    btn.textContent = id;
+    document.body.appendChild(btn);
+  }
+}
+
+function teardownTabAnchors() {
+  document.querySelectorAll("[data-tab-id]").forEach((el) => el.remove());
+}
+
+describe("OnboardingTour", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setupTabAnchors();
+  });
+
+  afterEach(() => {
+    teardownTabAnchors();
+    localStorage.clear();
+  });
+
+  it("renders the tour on first visit and walks Memories → Setup → Activity → Clients", async () => {
+    await act(async () => render(<OnboardingTour />));
+    expect(screen.getByTestId("onboarding-tour-card")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Your memory store" })).toBeTruthy();
+    expect(screen.getByText("Step 1 of 4")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("heading", { name: "Connect your first agent" })).toBeTruthy();
+    expect(screen.getByText("Step 2 of 4")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("heading", { name: "See your agents at work" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("heading", { name: "Manage OAuth clients" })).toBeTruthy();
+    // Last step: button label flips to "Got it" and clicking
+    // dismisses the tour (no Step 5).
+    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    expect(screen.queryByTestId("onboarding-tour-card")).toBeNull();
+    expect(localStorage.getItem("hive_tour_dismissed")).toBe("1");
+  });
+
+  it("appends the admin Dashboard step when isAdmin", async () => {
+    await act(async () => render(<OnboardingTour isAdmin />));
+    expect(screen.getByText("Step 1 of 5")).toBeTruthy();
+    // Skip ahead to the admin step.
+    for (let i = 0; i < 4; i++) {
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    }
+    expect(screen.getByRole("heading", { name: "Admin dashboard" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Got it" })).toBeTruthy();
+  });
+
+  it("Back button returns to the previous step", async () => {
+    await act(async () => render(<OnboardingTour />));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByText("Step 1 of 4")).toBeTruthy();
+    // Step 1 has no Back button (there's nothing to go back to).
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  });
+
+  it("Skip dismisses the tour and persists the choice across reloads", async () => {
+    const { unmount } = render(<OnboardingTour />);
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(screen.queryByTestId("onboarding-tour-card")).toBeNull();
+    unmount();
+
+    // Re-mount: dismissed flag in localStorage prevents the tour
+    // from re-appearing.
+    await act(async () => render(<OnboardingTour />));
+    expect(screen.queryByTestId("onboarding-tour-card")).toBeNull();
+  });
+
+  it("clicking the backdrop dismisses the tour", async () => {
+    await act(async () => render(<OnboardingTour />));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss onboarding tour" }));
+    expect(screen.queryByTestId("onboarding-tour-card")).toBeNull();
+  });
+
+  it("falls back to top-of-viewport tooltip when the tab anchor is missing", async () => {
+    teardownTabAnchors(); // simulate mobile drawer closed / no nav rendered
+    await act(async () => render(<OnboardingTour />));
+    const card = screen.getByTestId("onboarding-tour-card");
+    // Fallback positions the card at top:80, left:16 — pin it so a
+    // regression that changes the fallback origin breaks the test.
+    expect(card.style.top).toBe("80px");
+    expect(card.style.left).toBe("16px");
+  });
+
+  it("re-measures the spotlight rect on window resize", async () => {
+    await act(async () => render(<OnboardingTour />));
+    // Move the anchor: a resize event should re-read its rect via
+    // the effect's setTick(). We can't easily assert the new
+    // position from jsdom, but we can verify the listener is wired
+    // by triggering and confirming the card still renders without
+    // throwing.
+    await act(async () => {
+      globalThis.dispatchEvent(new Event("resize"));
+    });
+    expect(screen.getByTestId("onboarding-tour-card")).toBeTruthy();
+  });
+});
