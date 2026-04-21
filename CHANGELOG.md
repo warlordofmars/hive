@@ -6,7 +6,49 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.24.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.25.0. Will be rolled into the next release._
+
+## v0.25.0 — 2026-04-21
+
+UI/UX polish release — every tab the user touches on first visit
+now has a clear path forward, quota exhaustion is diagnosed rather
+than just reported, and there's a public roadmap for the first time.
+
+### Added
+
+#### Onboarding
+
+- First-visit **tour overlay** walks new users through Memories → Setup → Activity Log → OAuth Clients (admin users also see a Dashboard step). Each step spotlights the relevant tab, dispatches a tab switch so the page content matches the narration, and dismisses via Skip / backdrop-click / Escape / Got-it. Dismissal persists in `localStorage`. `aria-modal="true"` + focus management + Escape-to-dismiss match the accessibility expectations of a shadcn-style dialog without pulling in Radix. (#429, #619)
+- **MemoryBrowser empty state** previously said "use the remember tool in your MCP client"; now offers a two-action call-to-action (+ New Memory button plus an Open Setup link that deep-links into the Setup tab via the existing `hive:switch-tab` event). (#429, #619)
+- **First-memory celebration** — Sonner toast fires once per user when the first create succeeds. Gated on a per-browser `hive_first_memory` localStorage flag **and** a server-side check that the unfiltered workspace has exactly one memory, so existing users who just happen to be on a fresh browser don't get a misleading "first memory" toast. The probe caches its negative result in `hive_first_memory_skipped` so existing-workspace users don't re-query on every subsequent create. (#429, #619)
+
+#### Error surfaces
+
+- **Branded 404** (`NotFoundPage.jsx`) replaces the silent redirect-to-home that any unknown SPA path used to get. Offers Home / Docs / Contact-support links so users have a path forward. CloudFront-level error routing for 403/404 → `/index.html` was already in place; this PR wires React Router's catch-all to the new page instead of `<Navigate to="/">`. (#417, #618)
+- **Root-level `ErrorBoundary`** wraps the entire route tree. A thrown render exception in any page now lands on a friendly "Something went wrong" fallback with Reload + Contact-support instead of a blank tab; `componentDidCatch` logs the error via `console.error` for developer inspection, with room to wire a backend ingest endpoint later. (#417, #618)
+- **Docs-site 404** (`docs-site/404.md`) overrides VitePress's generic default with on-brand copy linking to docs home, quick start, tools reference, and the marketing home. (#417, #618)
+
+#### Quota / rate-limit UX
+
+- SetupPanel's Usage section renders a **`QuotaCallout`** below the existing QuotaBar rows when utilisation hits ≥ 80% (amber) or 100% (red). Severity is driven by the worst-case bucket (one resource at 100% is enough to block writes) and copy is tailored per bucket — memory-only, client-only, or combined — so "New memories cannot be saved" doesn't show up when it's actually the client quota that's full. Links to `mailto:hello@warlordofmars.net` for capacity requests. `_quotaSeverity` / `_quotaRatio` / `QuotaBar` all treat limits ≤ 0 as "unconfigured" rather than "infinitely full", and the whole Usage section hides when no limits are configured. (#359, #616)
+- **MemoryBrowser surfaces 429 responses** from `createMemory` with a richer banner instead of the bare server detail string. Banner body is quota-vs-rate-limit agnostic ("Try again later, or open Setup to review your current usage"), and an **Open Setup** button dispatches `hive:switch-tab` then scrolls to the `#usage` anchor. `api.js` now attaches the HTTP status to thrown errors so callers can branch on 429 without scraping the message. (#359, #616)
+
+#### Roadmap visibility
+
+- Public **`/roadmap`** page fetches `public-roadmap`-labelled issues from GitHub's REST API at render time and buckets them into **Now / Next / Later / Shipped** columns via a dedicated `roadmap:*` label namespace (kept separate from the existing backlog `status:*` taxonomy that `label-check.yml` enforces). Shipped column is closed-state regardless of label, sorted most-recent-first and capped to 8. PRs are filtered out of the `/issues` endpoint. Each card links to its issue so upvote reactions feed prioritisation directly. Footer link in PageLayout. (#430, #620, #623)
+
+#### Memory browser
+
+- **Version history now shows a word-level diff** against the current live value — each row in the History panel has a Show diff / Hide diff toggle that expands an inline `<ins>`/`<del>` rendering via the `diff` npm package. Restore stays in place. Diff colours are driven by `var(--success)` / `var(--danger)` so both themes stay clean. (#383, #621)
+- **Semantic search playground** — the search input already surfaced a `{N}% match` badge on every result, but there was no way to tune `top_k`. A range slider (1–100, default 50) appears only in search mode and re-runs the query on change after the existing 400ms debounce. `aria-label` + `aria-live` on the count span. (#384, #622)
+
+### Fixed
+
+- **E2e tab-click timeouts** — the OnboardingTour's viewport-covering backdrop was intercepting every nav-tab click in Playwright tests that had no way to dismiss it. `browser_page` / `admin_browser_page` fixtures now use `browser.new_context()` + `context.add_init_script()` to pre-set `hive_tour_dismissed=1` before any page load, so e2e tests proceed against the real UI. (#624)
+
+### Meta
+
+- CLAUDE.md: documented the **public-roadmap label convention** — `public-roadmap` as the gate label, `roadmap:now / :next / :later` for column placement, Shipped auto-populating from closed issues — and why `roadmap:*` is orthogonal to `status:*`. (#623)
 
 ## v0.24.0 — 2026-04-20
 
