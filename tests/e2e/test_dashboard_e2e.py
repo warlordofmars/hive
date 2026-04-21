@@ -33,7 +33,13 @@ def admin_browser_page():
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        context = browser.new_context()
+        # #619: pre-dismiss the onboarding tour so its viewport-
+        # covering backdrop doesn't intercept tab clicks.
+        context.add_init_script(
+            "localStorage.setItem('hive_tour_dismissed', '1');"
+        )
+        page = context.new_page()
 
         page.goto(
             f"{UI_URL}/auth/login?test_email={ADMIN_EMAIL}",
@@ -43,6 +49,7 @@ def admin_browser_page():
         page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
 
         yield page
+        context.close()
         browser.close()
 
 
