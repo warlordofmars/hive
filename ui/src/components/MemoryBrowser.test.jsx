@@ -641,6 +641,37 @@ describe("MemoryBrowser", () => {
     expect(lastListCall[0]).toBe("alpha");
   });
 
+  it("handles a probe response with missing items/next_cursor via the nullish fallbacks", async () => {
+    // Defensive — covers the `?? 0` / `?? null` branches on line 384
+    // when the server returns a sparse payload (older API version,
+    // or a proxy that strips fields).
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockResolvedValueOnce({}); // no items, no next_cursor
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // items undefined → items?.length === undefined → ?? 0 →
+    // 0 === 1 is false, so isFirstInStore is false and the toast
+    // does NOT fire.
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(localStorage.getItem("hive_first_memory_skipped")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
   it("subsequent creates don't re-fire the celebration toast once the flag is set", async () => {
     const sonner = await import("sonner");
     const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});

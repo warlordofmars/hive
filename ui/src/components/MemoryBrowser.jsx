@@ -393,7 +393,7 @@ export default function MemoryBrowser() {
             localStorage.setItem("hive_first_memory_skipped", "1");
           }
           if (!tagFilter && !isSearchMode) {
-            setMemories(fresh.items);
+            setMemories(fresh.items ?? []);
             setNextCursor(fresh.next_cursor ?? null);
             // load() normally clears `error` via setError("") on
             // its happy path. We're skipping load() here, so do the
