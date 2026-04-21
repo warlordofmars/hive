@@ -29,7 +29,13 @@ async function request(method, path, body) {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? "Request failed");
+    // Attach the HTTP status so callers can branch on 429 (quota / rate
+    // limit) without scraping the message — generic JS Error has no
+    // status field of its own.
+    const message = err.detail ?? "Request failed";
+    const wrapped = new Error(message);
+    wrapped.status = res.status;
+    throw wrapped;
   }
 
   if (res.status === 204) return null;

@@ -452,6 +452,196 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(screen.getByText("Create error")).toBeTruthy());
   });
 
+  it("surfaces a quota banner with a Setup link when createMemory returns 429", async () => {
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+    const dispatchSpy = vi.spyOn(globalThis, "dispatchEvent");
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    const banner = await screen.findByTestId("quota-banner");
+    expect(banner.textContent).toContain("Quota or rate limit reached");
+    expect(banner.textContent).toContain("Memory quota of 500 reached.");
+    expect(banner.textContent).toContain("Try again later");
+    // Generic error text MUST NOT also surface — banner replaces it.
+    expect(screen.queryByText("Memory quota of 500 reached.", { selector: "p" })).toBeNull();
+
+    // Clicking "Open Setup" dispatches the tab-switch event the App
+    // shell listens for; banner should clear so it doesn't stick on
+    // the new tab.
+    fireEvent.click(screen.getByText("Open Setup"));
+    const switchEvents = dispatchSpy.mock.calls
+      .map((call) => call[0])
+      .filter((evt) => evt && evt.type === "hive:switch-tab");
+    expect(switchEvents.length).toBeGreaterThan(0);
+    expect(switchEvents.at(-1).detail).toBe("setup");
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
+    dispatchSpy.mockRestore();
+  });
+
+  it("scrolls the #usage anchor into view after switching to Setup", async () => {
+    // Banner copy points users at "open Setup to review your current
+    // usage" — verify the click actually deep-links to the anchor,
+    // not just the tab. Use a real timeout (setTimeout delay of 0)
+    // instead of fake timers because fake timers + initial React
+    // effects don't mix (see §UI conventions in CLAUDE.md).
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+
+    const scrollIntoView = vi.fn();
+    const realGetElementById = document.getElementById.bind(document);
+    const getByIdSpy = vi
+      .spyOn(document, "getElementById")
+      .mockImplementation((id) => {
+        if (id === "usage") return { scrollIntoView };
+        return realGetElementById(id);
+      });
+
+    try {
+      await act(async () => render(<MemoryBrowser />));
+      fireEvent.click(screen.getByText("+ New"));
+      fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+        target: { value: "k" },
+      });
+      fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+        target: { value: "v" },
+      });
+      await act(async () => {
+        fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form"));
+      });
+      await screen.findByTestId("quota-banner");
+
+      fireEvent.click(screen.getByText("Open Setup"));
+      // Real setTimeout(0) — flush the macrotask queue.
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "start",
+      });
+    } finally {
+      getByIdSpy.mockRestore();
+    }
+  });
+
+  it("no-ops scroll when the #usage anchor isn't present", async () => {
+    // Defensive — covers the `if (target)` guard so the timer
+    // callback can't NPE when SetupPanel hasn't mounted. The test
+    // DOM has no #usage element (SetupPanel isn't mounted), so the
+    // deferred scrollIntoView must short-circuit cleanly.
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form"));
+    });
+    await screen.findByTestId("quota-banner");
+    fireEvent.click(screen.getByText("Open Setup"));
+    // Flush the macrotask queue — the deferred `if (target)` branch
+    // must no-op without throwing when #usage doesn't exist.
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    // Banner cleared on tab-switch click, confirming the click
+    // handler still ran even without a scroll target.
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
+  });
+
+  it("clears stale generic error when a follow-up 429 fires", async () => {
+    // Sequence: first create fails generically, then a retry hits the
+    // quota wall. The banner must take over and the inline error
+    // paragraph must clear so the two never render together.
+    const genericErr = new Error("Server hiccup");
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValueOnce(genericErr).mockRejectedValueOnce(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+    await waitFor(() => expect(screen.getByText("Server hiccup")).toBeTruthy());
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    await screen.findByTestId("quota-banner");
+    expect(screen.queryByText("Server hiccup")).toBeNull();
+  });
+
+  it("clears stale quota banner when a follow-up generic error fires", async () => {
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    const genericErr = new Error("Server hiccup");
+    api.createMemory.mockRejectedValueOnce(quotaErr).mockRejectedValueOnce(genericErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+    await screen.findByTestId("quota-banner");
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    await waitFor(() => expect(screen.getByText("Server hiccup")).toBeTruthy());
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
+  });
+
+  it("falls back to a generic message on 429 with no detail body", async () => {
+    const quotaErr = new Error("");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    const banner = await screen.findByTestId("quota-banner");
+    expect(banner.textContent).toContain("Quota or rate limit reached.");
+  });
+
   // ---------------------------------------------------------------------------
   // Edit / Update
   // ---------------------------------------------------------------------------

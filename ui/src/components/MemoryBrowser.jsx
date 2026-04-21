@@ -176,6 +176,7 @@ export default function MemoryBrowser() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [quotaError, setQuotaError] = useState(null);
   const [tagFilter, setTagFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchMode, setIsSearchMode] = useState(false);
@@ -202,6 +203,32 @@ export default function MemoryBrowser() {
   }, []);
   const searchDebounceRef = useRef(null);
   const listRef = useRef(null);
+
+  // Quota / rate-limit hits get a richer banner that points back to
+  // the Setup tab's Usage section, instead of the bare server detail
+  // string. Generic errors still go through `setError`. Each branch
+  // clears the other state slot so the banner and the inline error
+  // can never render together.
+  function handleMutationError(err) {
+    if (err && err.status === 429) {
+      setQuotaError(err.message || "Quota or rate limit reached.");
+      setError("");
+      return;
+    }
+    setError(err.message);
+    setQuotaError(null);
+  }
+
+  function goToUsage() {
+    setQuotaError(null);
+    globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "setup" }));
+    // Setup tab mounts asynchronously after the switch — defer the
+    // scroll so the #usage anchor exists by the time we look it up.
+    globalThis.setTimeout(function scrollToUsage() {
+      const target = globalThis.document?.getElementById("usage");
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -324,7 +351,7 @@ export default function MemoryBrowser() {
       setForm({ key: "", value: "", tags: "", ttl: "" });
       load();
     } catch (err) {
-      setError(err.message);
+      handleMutationError(err);
     }
   }
 
@@ -459,6 +486,33 @@ export default function MemoryBrowser() {
           <Button onClick={openCreate}>+ New</Button>
         </div>
 
+        {quotaError && (
+          <div
+            role="alert"
+            data-testid="quota-banner"
+            className="mb-3 rounded border p-3 text-[13px]"
+            style={{ borderColor: "var(--danger)", color: "var(--danger)" }}
+          >
+            <strong>Quota or rate limit reached.</strong>{" "}
+            <span className="text-[var(--text-muted)]">
+              {quotaError} Try again later, or open Setup to review your
+              current usage and request more capacity.
+            </span>{" "}
+            <button
+              type="button"
+              onClick={goToUsage}
+              className="underline cursor-pointer p-0 m-0 font-inherit text-inherit leading-inherit"
+              style={{
+                color: "var(--danger)",
+                background: "transparent",
+                border: 0,
+                font: "inherit",
+              }}
+            >
+              Open Setup
+            </button>
+          </div>
+        )}
         {error && <p className="text-[var(--danger)] mb-3">{error}</p>}
         {loading && <p className="text-[var(--text-muted)]">Loading…</p>}
 
