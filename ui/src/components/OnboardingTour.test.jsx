@@ -103,7 +103,10 @@ describe("OnboardingTour", () => {
     expect(card.style.left).toBe("16px");
   });
 
-  it("dispatches hive:switch-tab on each step so the underlying tab matches the spotlight", async () => {
+  it("dispatches hive:switch-tab on step changes (skipping initial mount)", async () => {
+    // Initial mount doesn't dispatch — the default tab is already
+    // "memories", so a programmatic switch would just fire a
+    // redundant tab_view analytics event.
     const dispatched = [];
     const realDispatch = globalThis.dispatchEvent.bind(globalThis);
     vi.spyOn(globalThis, "dispatchEvent").mockImplementation((evt) => {
@@ -112,7 +115,7 @@ describe("OnboardingTour", () => {
     });
 
     await act(async () => render(<OnboardingTour />));
-    expect(dispatched.at(-1)).toBe("memories");
+    expect(dispatched).toEqual([]); // no initial dispatch
 
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(dispatched.at(-1)).toBe("setup");

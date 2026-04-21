@@ -65,13 +65,15 @@ export default function OnboardingTour({ isAdmin = false }) {
   // Switch the underlying tab so the page content matches what the
   // current step describes — otherwise the user reads "Connect your
   // first agent" while still staring at the empty Memories list.
-  // Fires on every stepIndex change including initial mount.
+  // Skip the initial dispatch (stepIndex === 0): the default tab is
+  // already "memories", so we'd just be firing a redundant tab_view
+  // analytics event for a tab the user is already on.
   useEffect(() => {
-    if (dismissed || !step) return;
+    if (dismissed || !step || stepIndex === 0) return;
     globalThis.dispatchEvent(
       new CustomEvent("hive:switch-tab", { detail: step.tabId }),
     );
-  }, [dismissed, step]);
+  }, [dismissed, step, stepIndex]);
 
   if (dismissed) return null;
   // `tick` is read here to keep the dependency array honest — the

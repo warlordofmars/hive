@@ -362,21 +362,34 @@ export default function MemoryBrowser() {
       //      exactly this one item (so an existing user with
       //      memories from another browser / agent doesn't get a
       //      misleading "first memory" toast).
+      // Wrapped in try/catch so a transient list failure doesn't
+      // make a successful create look like it failed — the caller
+      // still falls through to the normal refresh path. We also
+      // only reuse the unfiltered fetch as the visible list when
+      // the user isn't currently filtered (search / tag) — otherwise
+      // we'd silently jump them out of their current view.
       if (!localStorage.getItem("hive_first_memory")) {
-        const fresh = await api.listMemories(undefined);
-        const isFirstInStore =
-          (fresh.items?.length ?? 0) === 1 && (fresh.next_cursor ?? null) === null;
-        if (isFirstInStore) {
-          localStorage.setItem("hive_first_memory", "1");
-          toast.success("First memory saved", {
-            description: "Your agent can now recall it across sessions.",
-          });
+        try {
+          const fresh = await api.listMemories(undefined);
+          const isFirstInStore =
+            (fresh.items?.length ?? 0) === 1 && (fresh.next_cursor ?? null) === null;
+          if (isFirstInStore) {
+            localStorage.setItem("hive_first_memory", "1");
+            toast.success("First memory saved", {
+              description: "Your agent can now recall it across sessions.",
+            });
+          }
+          if (!tagFilter && !isSearchMode) {
+            setMemories(fresh.items);
+            setNextCursor(fresh.next_cursor ?? null);
+            return;
+          }
+          // Filtered view — fall through to load() so we re-fetch
+          // the user's current slice instead of clobbering it.
+        } catch {
+          // Transient list failure shouldn't surface as a create
+          // error since the create itself succeeded.
         }
-        // We refreshed the list above; reuse it instead of calling
-        // load() (which would re-fetch immediately).
-        setMemories(fresh.items);
-        setNextCursor(fresh.next_cursor ?? null);
-        return;
       }
       load();
     } catch (err) {

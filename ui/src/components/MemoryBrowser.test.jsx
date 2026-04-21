@@ -520,6 +520,92 @@ describe("MemoryBrowser", () => {
     toastSuccess.mockRestore();
   });
 
+  it("does not surface a create error when the post-create first-memory check fails", async () => {
+    // Iter-2 fix: the post-create listMemories was throwing as a
+    // create failure — wrap the first-memory probe in its own
+    // try/catch and fall back to the normal refresh path.
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // First listMemories (mount) succeeds with empty page; second
+    // call (the first-memory probe) blows up; load() is then called
+    // and we let it succeed.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockRejectedValueOnce(new Error("transient list failure"))
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // No "transient list failure" surfaced as an error — the create
+    // succeeded and the form closed.
+    expect(screen.queryByText("transient list failure")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("New Memory")).toBeNull());
+  });
+
+  it("first-memory probe doesn't clobber the user's filtered view", async () => {
+    // Iter-2 fix: when a tag filter is active, the post-create
+    // probe must not call setMemories(fresh.items) — that would
+    // jump the user out of their filter back to the unfiltered
+    // first page. Instead the path falls through to load() which
+    // re-fetches the current slice.
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    // mount: filter "alpha" returns one memory.
+    // probe: unfiltered fetch returns 5 memories (some from other tags).
+    // post-create load: filter "alpha" returns the new + one existing.
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory({ tags: ["alpha"] })], next_cursor: null })
+      .mockResolvedValueOnce({
+        items: [
+          makeMemory({ tags: ["alpha"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+          makeMemory({ tags: ["beta"] }),
+        ],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        items: [makeMemory({ tags: ["alpha"] }), makeMemory({ tags: ["alpha"] })],
+        next_cursor: null,
+      });
+
+    await act(async () => render(<MemoryBrowser />));
+    // Apply the alpha tag filter via the existing TagPicker — but
+    // we can also simulate it by dispatching the hive:memory-browser
+    // event the component listens for in production. For test
+    // simplicity, mount with a known tag filter via the event.
+    await act(async () => {
+      globalThis.dispatchEvent(
+        new CustomEvent("hive:memory-browser", { detail: { tag: "alpha" } }),
+      );
+    });
+
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    // The third call (load() with filter) was made — listMemories
+    // received the "alpha" tag, not undefined.
+    const lastListCall = api.listMemories.mock.calls.at(-1);
+    expect(lastListCall[0]).toBe("alpha");
+  });
+
   it("subsequent creates don't re-fire the celebration toast once the flag is set", async () => {
     const sonner = await import("sonner");
     const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
