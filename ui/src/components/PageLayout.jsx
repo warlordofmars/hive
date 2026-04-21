@@ -154,6 +154,7 @@ export default function PageLayout({ children }) {
               <a href="/pricing" className="no-underline hover:text-[var(--text)] transition-colors">Pricing</a>
               <a href="/faq" className="no-underline hover:text-[var(--text)] transition-colors">FAQ</a>
               <a href="/docs/" className="no-underline hover:text-[var(--text)] transition-colors">Docs</a>
+              <a href="/roadmap" className="no-underline hover:text-[var(--text)] transition-colors">Roadmap</a>
               <a href="/changelog" className="no-underline hover:text-[var(--text)] transition-colors">Changelog</a>
               <a href="/status" className="no-underline hover:text-[var(--text)] transition-colors">Status</a>
               <a href="/terms" className="no-underline hover:text-[var(--text)] transition-colors">Terms</a>

@@ -182,6 +182,9 @@ export default function MemoryBrowser() {
   const [tagFilter, setTagFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchMode, setIsSearchMode] = useState(false);
+  // Top-K slider for the semantic search playground (#384). Default
+  // matches the API default (50); clamped 1–100.
+  const [searchTopK, setSearchTopK] = useState(50);
   const [editing, setEditing] = useState(null); // memory object or null
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ key: "", value: "", tags: "", ttl: "" });
@@ -255,12 +258,12 @@ export default function MemoryBrowser() {
     }
   }, [tagFilter]);
 
-  const runSearch = useCallback(async (query) => {
+  const runSearch = useCallback(async (query, topK) => {
     setLoading(true);
     setError("");
     setNextCursor(null);
     try {
-      const data = await api.searchMemories(query);
+      const data = await api.searchMemories(query, { limit: topK });
       setMemories(data.items);
     } catch (e) {
       setError(e.message);
@@ -274,15 +277,16 @@ export default function MemoryBrowser() {
     if (!isSearchMode) load();
   }, [load, isSearchMode]);
 
-  // Debounce search input
+  // Debounce search input. Re-runs when topK changes too so the
+  // playground reacts to slider tweaks without a page reload.
   useEffect(() => {
     if (!searchQuery) return;
     clearTimeout(searchDebounceRef.current);
     searchDebounceRef.current = setTimeout(() => {
-      runSearch(searchQuery);
+      runSearch(searchQuery, searchTopK);
     }, 400);
     return () => clearTimeout(searchDebounceRef.current);
-  }, [searchQuery, runSearch]);
+  }, [searchQuery, searchTopK, runSearch]);
 
   // #537 — Stats charts click-through: the Stats tab dispatches a
   // `hive:memory-browser` CustomEvent with `{ tag }` or `{ search }` to
@@ -559,6 +563,38 @@ export default function MemoryBrowser() {
           <TagPicker knownTags={knownTags} value={tagFilter} onSelect={handleTagSelect} />
           <Button onClick={openCreate}>+ New</Button>
         </div>
+        {isSearchMode && (
+          <div
+            data-testid="search-topk-control"
+            className="flex items-center gap-3 mb-4 text-[13px] text-[var(--text-muted)]"
+          >
+            <Label htmlFor="search-topk" className="whitespace-nowrap">
+              Top K
+            </Label>
+            <input
+              id="search-topk"
+              type="range"
+              min={1}
+              max={100}
+              value={searchTopK}
+              onChange={(e) => setSearchTopK(Number(e.target.value))}
+              className="flex-1 max-w-[200px] cursor-pointer"
+              aria-valuemin={1}
+              aria-valuemax={100}
+              aria-valuenow={searchTopK}
+              aria-label="Maximum number of search results"
+            />
+            <span
+              className="font-semibold text-[var(--text)] min-w-[2ch] text-right"
+              aria-live="polite"
+            >
+              {searchTopK}
+            </span>
+            <span className="text-[11px] text-[var(--text-muted)] hidden sm:inline">
+              results
+            </span>
+          </div>
+        )}
 
         {quotaError && (
           <div
