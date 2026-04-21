@@ -72,9 +72,9 @@ describe("RoadmapPage", () => {
 
   it("renders Now / Next / Later / Shipped columns with their issues", async () => {
     mockFetchOk([
-      issue({ id: 1, title: "Alpha now", labels: ["public-roadmap", "status:now"] }),
-      issue({ id: 2, title: "Beta next", labels: ["public-roadmap", "status:next"] }),
-      issue({ id: 3, title: "Gamma later", labels: ["public-roadmap", "status:later"] }),
+      issue({ id: 1, title: "Alpha now", labels: ["public-roadmap", "roadmap:now"] }),
+      issue({ id: 2, title: "Beta next", labels: ["public-roadmap", "roadmap:next"] }),
+      issue({ id: 3, title: "Gamma later", labels: ["public-roadmap", "roadmap:later"] }),
       issue({
         id: 4,
         title: "Delta shipped",
@@ -109,7 +109,7 @@ describe("RoadmapPage", () => {
       issue({
         id: 1,
         title: "Item with link",
-        labels: ["public-roadmap", "status:now"],
+        labels: ["public-roadmap", "roadmap:now"],
         html_url: "https://github.com/warlordofmars/hive/issues/42",
       }),
     ]);
@@ -121,18 +121,38 @@ describe("RoadmapPage", () => {
     expect(link.getAttribute("rel")).toBe("noreferrer");
   });
 
+  it("handles a missing reactions field on the card", async () => {
+    // Covers the `issue.reactions?.total_count ?? 0` fallback when
+    // GitHub omits the reactions object entirely (older API
+    // responses, cached CDN payload, etc.). The +N badge must not
+    // render and the card must not crash.
+    mockFetchOk([
+      {
+        ...issue({
+          id: 1,
+          title: "Reactionless item",
+          labels: ["public-roadmap", "roadmap:now"],
+        }),
+        reactions: undefined,
+      },
+    ]);
+    await act(async () => renderInRouter());
+    await waitFor(() => expect(screen.getByTestId("roadmap-columns")).toBeTruthy());
+    expect(screen.getByText("Reactionless item")).toBeTruthy();
+  });
+
   it("shows reaction count on cards that have upvotes", async () => {
     mockFetchOk([
       issue({
         id: 1,
         title: "Popular item",
-        labels: ["public-roadmap", "status:now"],
+        labels: ["public-roadmap", "roadmap:now"],
         reactions: { total_count: 17 },
       }),
       issue({
         id: 2,
         title: "Lonely item",
-        labels: ["public-roadmap", "status:now"],
+        labels: ["public-roadmap", "roadmap:now"],
         reactions: { total_count: 0 },
       }),
     ]);
@@ -148,12 +168,12 @@ describe("RoadmapPage", () => {
       issue({
         id: 1,
         title: "UI item",
-        labels: ["public-roadmap", "status:now", "ui"],
+        labels: ["public-roadmap", "roadmap:now", "ui"],
       }),
       issue({
         id: 2,
         title: "Obscure area item",
-        labels: ["public-roadmap", "status:now", "random-label"],
+        labels: ["public-roadmap", "roadmap:now", "random-label"],
       }),
     ]);
     await act(async () => renderInRouter());
@@ -192,7 +212,7 @@ describe("RoadmapPage", () => {
         {
           id: 1,
           state: "open",
-          labels: ["public-roadmap", "status:now"],
+          labels: ["public-roadmap", "roadmap:now"],
         },
       ]);
       expect(buckets.now).toHaveLength(1);
@@ -207,5 +227,83 @@ describe("RoadmapPage", () => {
       // Closed issues flow into Shipped regardless of labels.
       expect(buckets.shipped).toHaveLength(1);
     });
+
+    it("tolerates a missing closed_at on the shipped sort key", () => {
+      // Defensive — GitHub sometimes returns closed issues without
+      // a closed_at timestamp (edge case). Cover both sides of the
+      // `?? ""` fallback: a pair where only one side is dated, and
+      // a pair where neither side is dated.
+      const partial = _bucketByColumn([
+        { id: 1, state: "closed", closed_at: "2026-04-20T00:00:00Z", labels: [] },
+        { id: 2, state: "closed", labels: [] }, // no closed_at
+      ]);
+      expect(partial.shipped).toHaveLength(2);
+      // The dated one sorts before the undated one (empty-string
+      // comparator puts undated last).
+      expect(partial.shipped[0].id).toBe(1);
+
+      // Both-undated: the sort still runs but doesn't reorder.
+      const both = _bucketByColumn([
+        { id: 10, state: "closed", labels: [] },
+        { id: 11, state: "closed", labels: [] },
+      ]);
+      expect(both.shipped).toHaveLength(2);
+    });
+
+    it("filters out pull requests from the /issues payload", () => {
+      // GitHub's /issues endpoint returns PRs too (shared id space).
+      // Anything with a `pull_request` field is a PR and must be
+      // dropped regardless of state or labels so code-review work
+      // never leaks onto the public marketing roadmap.
+      const buckets = _bucketByColumn([
+        issue({
+          id: 1,
+          title: "Real issue",
+          state: "closed",
+          closed_at: "2026-04-21T00:00:00Z",
+          labels: ["public-roadmap"],
+        }),
+        {
+          ...issue({
+            id: 2,
+            title: "PR in disguise",
+            state: "closed",
+            closed_at: "2026-04-21T01:00:00Z",
+            labels: ["public-roadmap", "roadmap:now"],
+          }),
+          pull_request: { url: "https://api.github.com/..." },
+        },
+      ]);
+      expect(buckets.shipped).toHaveLength(1);
+      expect(buckets.shipped[0].title).toBe("Real issue");
+      expect(buckets.now).toHaveLength(0);
+    });
+  });
+
+  it("renders an area tag for every known area in the taxonomy", async () => {
+    // Regression for the Copilot-flagged drift between the roadmap
+    // allowlist and CLAUDE.md's taxonomy. Render one issue per
+    // known area label and verify each tag surfaces — catches the
+    // case where someone adds a new area to CLAUDE.md but forgets
+    // to update the component constant.
+    const ALL_AREAS = [
+      "ui", "ux", "a11y", "api", "mcp", "auth", "infra", "ci", "dx", "sdk",
+      "security", "compliance", "docs", "design", "performance",
+      "observability", "marketing", "seo", "growth", "ops", "reliability",
+    ];
+    mockFetchOk(
+      ALL_AREAS.map((area, i) =>
+        issue({
+          id: i + 1,
+          title: `Issue-${area}`,
+          labels: ["public-roadmap", "roadmap:now", area],
+        }),
+      ),
+    );
+    await act(async () => renderInRouter());
+    await waitFor(() => expect(screen.getByTestId("roadmap-columns")).toBeTruthy());
+    for (const area of ALL_AREAS) {
+      expect(screen.getByText(area)).toBeTruthy();
+    }
   });
 });

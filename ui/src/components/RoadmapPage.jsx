@@ -2,16 +2,22 @@
 import React, { useEffect, useMemo, useState } from "react";
 import PageLayout from "@/components/PageLayout";
 
-// Public GitHub REST API — unauth, limited to 60/hr per IP. The
-// marketing site is cacheable behind CloudFront, so in practice we
-// hit this endpoint far less than the limit.
+// Public GitHub REST API — unauth, rate-limited per caller (the
+// visitor's IP, not our CloudFront edge, because the browser calls
+// api.github.com directly). 60 req/hour in the unauth quota is
+// plenty for a marketing page; browser HTTP caching + GitHub's
+// ETag revalidation further reduce real traffic.
 const ISSUES_URL =
   "https://api.github.com/repos/warlordofmars/hive/issues?" +
   "labels=public-roadmap&state=all&per_page=100";
 
-// Columns map to `status:<col>` labels on each issue. Shipped = closed
-// regardless of status label so recently-merged work shows up
-// automatically without a manual label flip.
+// Columns map to `roadmap:<col>` labels on each issue. We deliberately
+// use a dedicated `roadmap:*` namespace rather than reusing the
+// existing `status:*` labels (which `label-check.yml` already treats
+// as the required backlog-workflow status — `status:ready`,
+// `status:blocked`, `status:needs-info`, `status:design-needed`).
+// Shipped column is closed-state regardless of label so recently-
+// merged work shows up automatically without a manual label flip.
 const COLUMNS = [
   { id: "now", title: "Now", blurb: "In progress — landing soon." },
   { id: "next", title: "Next", blurb: "Planned for the next release or two." },
@@ -19,22 +25,40 @@ const COLUMNS = [
   { id: "shipped", title: "Shipped", blurb: "Already live — recent highlights." },
 ];
 
+// Known area labels — kept in sync with the taxonomy in CLAUDE.md
+// (§Backlog labels and milestones → Area).
+const AREA_LABELS = [
+  "ui", "ux", "a11y", "api", "mcp", "auth", "infra", "ci", "dx", "sdk",
+  "security", "compliance", "docs", "design", "performance",
+  "observability", "marketing", "seo", "growth", "ops", "reliability",
+];
+
+// GitHub labels can come as either `{name: "foo"}` objects or bare
+// strings depending on the payload shape. Normalise here so callers
+// can always treat them as strings.
+function _labelNames(issue) {
+  const raw = issue.labels ?? [];
+  return raw.map((l) => (typeof l === "string" ? l : l.name));
+}
+
 // Exported for unit testing in isolation. Takes the raw GitHub
 // issues payload and returns a `{columnId: [issue, ...]}` map.
 export function _bucketByColumn(issues) {
   const buckets = { now: [], next: [], later: [], shipped: [] };
   for (const issue of issues) {
+    // GitHub's /issues endpoint returns PRs too (they share an id
+    // space) — skip anything with a `pull_request` field so the
+    // roadmap doesn't accidentally surface code-review work.
+    if (issue.pull_request) continue;
     if (issue.state === "closed") {
       buckets.shipped.push(issue);
       continue;
     }
-    const labels = (issue.labels ?? []).map((l) =>
-      typeof l === "string" ? l : l.name,
-    );
-    if (labels.includes("status:now")) buckets.now.push(issue);
-    else if (labels.includes("status:next")) buckets.next.push(issue);
-    else if (labels.includes("status:later")) buckets.later.push(issue);
-    // Items with `public-roadmap` but no status label are
+    const labels = _labelNames(issue);
+    if (labels.includes("roadmap:now")) buckets.now.push(issue);
+    else if (labels.includes("roadmap:next")) buckets.next.push(issue);
+    else if (labels.includes("roadmap:later")) buckets.later.push(issue);
+    // Items with `public-roadmap` but no roadmap:* label are
     // intentionally omitted — the roadmap is curated, not a dump
     // of every tagged issue.
   }
@@ -50,24 +74,8 @@ export function _bucketByColumn(issues) {
 // Area label → short tag rendered on each card. Derived per issue so
 // cards group visually at a glance.
 function _pickArea(issue) {
-  const known = [
-    "ui",
-    "ux",
-    "a11y",
-    "api",
-    "mcp",
-    "auth",
-    "infra",
-    "docs",
-    "security",
-    "performance",
-    "observability",
-    "growth",
-  ];
-  const labels = (issue.labels ?? []).map((l) =>
-    typeof l === "string" ? l : l.name,
-  );
-  return labels.find((l) => known.includes(l)) ?? null;
+  const labels = _labelNames(issue);
+  return labels.find((l) => AREA_LABELS.includes(l)) ?? null;
 }
 
 function RoadmapCard({ issue }) {
