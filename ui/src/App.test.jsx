@@ -106,10 +106,14 @@ describe("App routing", () => {
     window.history.pushState({}, "", "/");
   });
 
-  it("redirects unknown routes to /", async () => {
+  it("renders the branded NotFoundPage on unknown routes", async () => {
+    // Catch-all `*` route now lands on a real 404 instead of
+    // silently redirecting home — gives the user a path forward
+    // (Home / Docs / Contact) instead of a confusing reset.
     window.history.pushState({}, "", "/unknown-path");
     await act(async () => render(<App />));
-    expect(screen.getByTestId("home-page")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Page not found" })).toBeTruthy();
+    expect(screen.queryByTestId("home-page")).toBeNull();
     window.history.pushState({}, "", "/");
   });
 });
