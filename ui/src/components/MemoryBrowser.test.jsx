@@ -1390,6 +1390,78 @@ describe("MemoryBrowser", () => {
     expect(screen.getAllByText("Restore")).toHaveLength(2);
   });
 
+  it("toggles the diff view when 'Show diff' is clicked", async () => {
+    // #383: each history row gets a diff toggle that compares the
+    // version against the current live value. Toggle on → replaces
+    // the truncated value with a diff; toggle off → back to the
+    // truncated summary.
+    const version = {
+      version_timestamp: "20260412T120000000000",
+      value: "hello old world",
+      tags: [],
+      recorded_at: "2026-04-12T12:00:00.000Z",
+    };
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ value: "hello new world" })],
+      next_cursor: null,
+    });
+    api.listMemoryVersions.mockResolvedValue([version]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Show diff"));
+
+    // Initially truncated value is visible, diff testid is not.
+    expect(screen.getByText("hello old world")).toBeTruthy();
+    expect(screen.queryByTestId("memory-diff")).toBeNull();
+
+    fireEvent.click(screen.getByText("Show diff"));
+    expect(screen.getByTestId("memory-diff")).toBeTruthy();
+    // Toggle button flips label.
+    expect(screen.getByText("Hide diff")).toBeTruthy();
+
+    // Diff renders the before→after words via <ins>/<del>.
+    const diff = screen.getByTestId("memory-diff");
+    expect(diff.querySelector("ins").textContent).toContain("new");
+    expect(diff.querySelector("del").textContent).toContain("old");
+
+    fireEvent.click(screen.getByText("Hide diff"));
+    expect(screen.queryByTestId("memory-diff")).toBeNull();
+  });
+
+  it("closing history clears the expanded diff state", async () => {
+    // Defensive — expandedVersion must reset when the panel
+    // closes, otherwise reopening history would land in diff mode
+    // even though the user dismissed it.
+    const version = {
+      version_timestamp: "20260412T120000000000",
+      value: "hello old world",
+      tags: [],
+      recorded_at: "2026-04-12T12:00:00.000Z",
+    };
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ value: "hello new world" })],
+      next_cursor: null,
+    });
+    api.listMemoryVersions.mockResolvedValue([version]);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Show diff"));
+    fireEvent.click(screen.getByText("Show diff"));
+    expect(screen.getByTestId("memory-diff")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Close"));
+    await waitFor(() => expect(screen.queryByText("History: test-key")).toBeNull());
+    // Re-open: should land on the truncated list view, not stay in
+    // diff mode from the previous session.
+    await act(async () => fireEvent.click(screen.getByText("History")));
+    await waitFor(() => screen.getByText("Show diff"));
+    expect(screen.queryByTestId("memory-diff")).toBeNull();
+  });
+
   it("restores a version and closes history panel", async () => {
     const version = {
       version_timestamp: "20260412T120000000000",

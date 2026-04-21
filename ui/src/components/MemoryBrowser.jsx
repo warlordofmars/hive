@@ -4,6 +4,7 @@ import PropTypes from "prop-types";
 import { X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
+import MemoryDiff from "./MemoryDiff.jsx";
 import { toast } from "sonner";
 import { AlertDialog } from "./ui/alert-dialog.jsx";
 import { Badge } from "./ui/badge.jsx";
@@ -187,6 +188,10 @@ export default function MemoryBrowser() {
   const [viewingHistory, setViewingHistory] = useState(null); // memory object or null
   const [versions, setVersions] = useState([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+  // Which previous version is currently expanded into the diff view.
+  // null = the list-only mode; a timestamp = that version diffed
+  // against the live current value.
+  const [expandedVersion, setExpandedVersion] = useState(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [clientNameById, setClientNameById] = useState({});
@@ -471,6 +476,7 @@ export default function MemoryBrowser() {
     setViewingHistory(m);
     setEditing(null);
     setCreating(false);
+    setExpandedVersion(null);
     setVersionsLoading(true);
     try {
       const vs = await api.listMemoryVersions(m.memory_id);
@@ -485,6 +491,13 @@ export default function MemoryBrowser() {
   function closeHistory() {
     setViewingHistory(null);
     setVersions([]);
+    setExpandedVersion(null);
+  }
+
+  function toggleDiff(versionTimestamp) {
+    setExpandedVersion((prev) =>
+      prev === versionTimestamp ? null : versionTimestamp,
+    );
   }
 
   async function handleRestore(versionTimestamp) {
@@ -729,7 +742,7 @@ export default function MemoryBrowser() {
 
       {/* Version history panel */}
       {viewingHistory && (
-        <div className="w-full md:w-[360px]">
+        <div className="w-full md:w-[420px]">
           <Card>
             <h3 className="mb-4 text-base font-semibold">History: {viewingHistory.key}</h3>
             {versionsLoading && <p className="text-[var(--text-muted)]">Loading…</p>}
@@ -737,23 +750,58 @@ export default function MemoryBrowser() {
               <p className="text-[var(--text-muted)] text-sm">No previous versions.</p>
             )}
             <ul className="flex flex-col gap-3 list-none m-0 p-0">
-              {versions.map((v) => (
-                <li key={v.version_timestamp} className="border border-[var(--border)] rounded-[var(--radius)] p-3">
-                  <div className="text-[11px] text-[var(--text-muted)] mb-1">
-                    {new Date(v.recorded_at).toLocaleString()}
-                  </div>
-                  <p className="text-[13px] whitespace-pre-wrap mb-2">
-                    {v.value.length > 120 ? v.value.slice(0, 120) + "…" : v.value}
-                  </p>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => handleRestore(v.version_timestamp)}
+              {versions.map((v) => {
+                const isOpen = expandedVersion === v.version_timestamp;
+                const truncated =
+                  v.value.length > 120 ? v.value.slice(0, 120) + "…" : v.value;
+                return (
+                  <li
+                    key={v.version_timestamp}
+                    className="border border-[var(--border)] rounded-[var(--radius)] p-3"
                   >
-                    Restore
-                  </Button>
-                </li>
-              ))}
+                    <div className="text-[11px] text-[var(--text-muted)] mb-1">
+                      {new Date(v.recorded_at).toLocaleString()}
+                    </div>
+                    {isOpen ? (
+                      <div className="mb-2">
+                        <p className="text-[11px] text-[var(--text-muted)] mb-1">
+                          Changes vs current
+                        </p>
+                        <MemoryDiff
+                          before={v.value}
+                          after={viewingHistory.value}
+                        />
+                      </div>
+                    ) : (
+                      <p className="text-[13px] whitespace-pre-wrap mb-2">
+                        {truncated}
+                      </p>
+                    )}
+                    <div className="flex gap-2 flex-wrap">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => toggleDiff(v.version_timestamp)}
+                        aria-expanded={isOpen}
+                        aria-label={
+                          isOpen
+                            ? "Hide diff against current"
+                            : "Show diff against current"
+                        }
+                      >
+                        {isOpen ? "Hide diff" : "Show diff"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleRestore(v.version_timestamp)}
+                      >
+                        Restore
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
             <div className="mt-4">
               <Button variant="secondary" onClick={closeHistory}>Close</Button>
