@@ -501,8 +501,13 @@ export default function MemoryBrowser() {
             <button
               type="button"
               onClick={goToUsage}
-              className="underline cursor-pointer"
-              style={{ color: "var(--danger)", background: "transparent", border: 0 }}
+              className="underline cursor-pointer p-0 m-0 font-inherit text-inherit leading-inherit"
+              style={{
+                color: "var(--danger)",
+                background: "transparent",
+                border: 0,
+                font: "inherit",
+              }}
             >
               Open Setup
             </button>

@@ -265,7 +265,7 @@ export default function SetupPanel() {
         </p>
       </section>
 
-      {quota && (
+      {quota && _hasAnyConfiguredLimit(quota) && (
         <section id="usage" className="mt-12 border-t border-[var(--border)] pt-8">
           <h3 className="mb-4">Usage</h3>
           <div className="flex flex-col gap-3.5">
@@ -422,6 +422,16 @@ function DesktopOrChatgptInstructions({
       )}
     </>
   );
+}
+
+// True iff at least one bucket has a configured (positive) limit.
+// Used to hide the Usage section header when both limits are
+// missing or non-positive — without this guard the section would
+// render an empty block (no bars, no callout) and look broken.
+function _hasAnyConfiguredLimit(quota) {
+  const memOk = quota.memory_limit != null && quota.memory_limit > 0;
+  const cliOk = quota.client_limit != null && quota.client_limit > 0;
+  return memOk || cliOk;
 }
 
 // Per-bucket fill ratio. Limits ≤ 0 are treated as "unconfigured"

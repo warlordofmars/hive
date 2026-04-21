@@ -516,6 +516,34 @@ describe("SetupPanel", () => {
       expect(screen.queryByText("Clients")).toBeNull();
     });
 
+    it("hides the Usage section header when both limits are missing or 0", async () => {
+      // Iter-3: don't render an empty Usage block (header with no
+      // bars and no callout) when the configuration says no limits
+      // are tracked. The whole section disappears.
+      api.getStats.mockResolvedValue({
+        total_memories: 5,
+        total_clients: 2,
+        memory_limit: 500,
+        client_limit: 0,
+      });
+      // First render with one limit set — Usage shows.
+      const { unmount } = render(<SetupPanel />);
+      await waitFor(() => expect(screen.getByText("Usage")).toBeTruthy());
+      unmount();
+
+      // Re-render with both limits unconfigured — Usage hides.
+      api.getStats.mockResolvedValue({
+        total_memories: 5,
+        total_clients: 2,
+        memory_limit: 0,
+        client_limit: 0,
+      });
+      await act(async () => render(<SetupPanel />));
+      // Wait long enough for the getStats useEffect to settle.
+      await waitFor(() => expect(api.getStats).toHaveBeenCalledTimes(2));
+      expect(screen.queryByText("Usage")).toBeNull();
+    });
+
     it("treats limit=0 as unconfigured rather than infinitely full", async () => {
       // A misconfigured limit (env var typo, 0-coerced int) used to
       // light the callout up red because `0 / 0` was Infinity. The
