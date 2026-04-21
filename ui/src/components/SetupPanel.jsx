@@ -266,12 +266,13 @@ export default function SetupPanel() {
       </section>
 
       {quota && (
-        <section className="mt-12 border-t border-[var(--border)] pt-8">
+        <section id="usage" className="mt-12 border-t border-[var(--border)] pt-8">
           <h3 className="mb-4">Usage</h3>
           <div className="flex flex-col gap-3.5">
             <QuotaBar label="Memories" used={quota.total_memories} limit={quota.memory_limit} />
             <QuotaBar label="Clients" used={quota.total_clients} limit={quota.client_limit} />
           </div>
+          <QuotaCallout quota={quota} />
         </section>
       )}
 
@@ -420,6 +421,58 @@ function DesktopOrChatgptInstructions({
         </button>
       )}
     </>
+  );
+}
+
+// Highest fill ratio across the user's quotas. Drives the callout
+// severity — one resource at 100% is enough to block writes, so the
+// callout reflects the worst-case bucket rather than a per-bar
+// average.
+function _quotaSeverity(quota) {
+  const ratios = [];
+  if (quota.memory_limit) ratios.push(quota.total_memories / quota.memory_limit);
+  if (quota.client_limit) ratios.push(quota.total_clients / quota.client_limit);
+  if (ratios.length === 0) return "ok";
+  const worst = Math.max(...ratios);
+  if (worst >= 1) return "at";
+  if (worst >= 0.8) return "near";
+  return "ok";
+}
+
+export function QuotaCallout({ quota }) {
+  const severity = _quotaSeverity(quota);
+  if (severity === "ok") return null;
+
+  const isAt = severity === "at";
+  const tone = isAt ? "var(--danger)" : "var(--amber)";
+  const headline = isAt
+    ? "You've reached your free tier limit."
+    : "You're approaching your free tier limit.";
+  const detail = isAt
+    ? "New memories cannot be saved until you free up space or request more capacity."
+    : "Free up space soon, or get in touch to request more capacity.";
+
+  return (
+    <div
+      role="status"
+      data-testid="quota-callout"
+      data-severity={severity}
+      className="mt-4 rounded border p-3 text-[13px]"
+      style={{ borderColor: tone, color: tone }}
+    >
+      <strong>{headline}</strong>{" "}
+      <span className="text-[var(--text-muted)]">{detail}</span>{" "}
+      <a
+        href="mailto:hello@warlordofmars.net?subject=Hive%20capacity%20request"
+        className="underline"
+        style={{ color: tone }}
+      >
+        Contact us
+      </a>{" "}
+      <span className="text-[var(--text-muted)]">
+        to request an increase.
+      </span>
+    </div>
   );
 }
 

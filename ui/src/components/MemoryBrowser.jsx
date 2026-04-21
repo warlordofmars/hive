@@ -176,6 +176,7 @@ export default function MemoryBrowser() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [quotaError, setQuotaError] = useState(null);
   const [tagFilter, setTagFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchMode, setIsSearchMode] = useState(false);
@@ -202,6 +203,22 @@ export default function MemoryBrowser() {
   }, []);
   const searchDebounceRef = useRef(null);
   const listRef = useRef(null);
+
+  // Quota / rate-limit hits get a richer banner that points back to
+  // the Setup tab's Usage section, instead of the bare server detail
+  // string. Generic errors still go through `setError`.
+  function handleMutationError(err) {
+    if (err && err.status === 429) {
+      setQuotaError(err.message || "Quota or rate limit reached.");
+      return;
+    }
+    setError(err.message);
+  }
+
+  function goToUsage() {
+    setQuotaError(null);
+    globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "setup" }));
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -324,7 +341,7 @@ export default function MemoryBrowser() {
       setForm({ key: "", value: "", tags: "", ttl: "" });
       load();
     } catch (err) {
-      setError(err.message);
+      handleMutationError(err);
     }
   }
 
@@ -459,6 +476,28 @@ export default function MemoryBrowser() {
           <Button onClick={openCreate}>+ New</Button>
         </div>
 
+        {quotaError && (
+          <div
+            role="alert"
+            data-testid="quota-banner"
+            className="mb-3 rounded border p-3 text-[13px]"
+            style={{ borderColor: "var(--danger)", color: "var(--danger)" }}
+          >
+            <strong>Memory quota reached.</strong>{" "}
+            <span className="text-[var(--text-muted)]">
+              {quotaError} Free up space or request more capacity from the Setup
+              tab&apos;s Usage section.
+            </span>{" "}
+            <button
+              type="button"
+              onClick={goToUsage}
+              className="underline cursor-pointer"
+              style={{ color: "var(--danger)", background: "transparent", border: 0 }}
+            >
+              Open Setup
+            </button>
+          </div>
+        )}
         {error && <p className="text-[var(--danger)] mb-3">{error}</p>}
         {loading && <p className="text-[var(--text-muted)]">Loading…</p>}
 

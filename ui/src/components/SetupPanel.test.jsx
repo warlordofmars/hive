@@ -373,6 +373,104 @@ describe("SetupPanel", () => {
     expect(bars.length).toBeGreaterThan(0);
   });
 
+  describe("QuotaCallout", () => {
+    it("does not render under 80% utilisation", async () => {
+      api.getStats.mockResolvedValue({
+        total_memories: 100,
+        total_clients: 1,
+        memory_limit: 500,
+        client_limit: 10,
+      });
+      await act(async () => render(<SetupPanel />));
+      await waitFor(() => expect(screen.getByText("100 / 500")).toBeTruthy());
+      expect(screen.queryByTestId("quota-callout")).toBeNull();
+    });
+
+    it("renders amber 'approaching limit' callout between 80% and 99%", async () => {
+      api.getStats.mockResolvedValue({
+        total_memories: 420,
+        total_clients: 1,
+        memory_limit: 500,
+        client_limit: 10,
+      });
+      await act(async () => render(<SetupPanel />));
+      const callout = await screen.findByTestId("quota-callout");
+      expect(callout.dataset.severity).toBe("near");
+      expect(callout.textContent).toContain("approaching your free tier limit");
+      const link = callout.querySelector("a");
+      expect(link.getAttribute("href")).toContain("mailto:hello@warlordofmars.net");
+    });
+
+    it("renders red 'reached limit' callout at 100%", async () => {
+      api.getStats.mockResolvedValue({
+        total_memories: 500,
+        total_clients: 1,
+        memory_limit: 500,
+        client_limit: 10,
+      });
+      await act(async () => render(<SetupPanel />));
+      const callout = await screen.findByTestId("quota-callout");
+      expect(callout.dataset.severity).toBe("at");
+      expect(callout.textContent).toContain("reached your free tier limit");
+      expect(callout.textContent).toContain("New memories cannot be saved");
+    });
+
+    it("escalates to 'at' severity when only the client quota is full", async () => {
+      // The worst-case bucket drives severity — one resource at 100%
+      // is enough to block writes even if the other is well under.
+      api.getStats.mockResolvedValue({
+        total_memories: 0,
+        total_clients: 10,
+        memory_limit: 500,
+        client_limit: 10,
+      });
+      await act(async () => render(<SetupPanel />));
+      const callout = await screen.findByTestId("quota-callout");
+      expect(callout.dataset.severity).toBe("at");
+    });
+
+    it("renders nothing when both limits are absent", async () => {
+      api.getStats.mockResolvedValue({
+        total_memories: 0,
+        total_clients: 0,
+        memory_limit: null,
+        client_limit: null,
+      });
+      await act(async () => render(<SetupPanel />));
+      // Usage section is hidden entirely when memory_limit is null,
+      // so the callout never gets a chance to render.
+      expect(screen.queryByTestId("quota-callout")).toBeNull();
+    });
+
+    it("returns null directly when called with all-ok quota", async () => {
+      const { QuotaCallout } = await import("./SetupPanel.jsx");
+      const { container } = render(
+        <QuotaCallout
+          quota={{
+            total_memories: 1,
+            total_clients: 1,
+            memory_limit: 500,
+            client_limit: 10,
+          }}
+        />,
+      );
+      expect(container.firstChild).toBeNull();
+    });
+
+    it("returns 'ok' from severity helper when no limits are present", async () => {
+      // Defensive branch — covered separately because the Usage
+      // section is hidden in that state, so the callout never
+      // renders via the panel.
+      const { QuotaCallout } = await import("./SetupPanel.jsx");
+      const { container } = render(
+        <QuotaCallout
+          quota={{ total_memories: 1, total_clients: 1 }}
+        />,
+      );
+      expect(container.firstChild).toBeNull();
+    });
+  });
+
   it("renders key naming convention tip with example and docs link", async () => {
     await act(async () => render(<SetupPanel />));
     expect(screen.getByText(/Tip — naming your memories/)).toBeTruthy();

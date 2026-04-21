@@ -75,6 +75,17 @@ describe("api", () => {
     await expect(api.listMemories()).rejects.toThrow("Something bad");
   });
 
+  it("attaches the HTTP status to the thrown error so callers can branch on 429", async () => {
+    mockErr("Memory quota exceeded.", 429);
+    try {
+      await api.createMemory({ key: "k", value: "v", tags: [] });
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err.message).toBe("Memory quota exceeded.");
+      expect(err.status).toBe(429);
+    }
+  });
+
   it("falls back to statusText when error json has no detail", async () => {
     mockErr(undefined);
     await expect(api.listMemories()).rejects.toThrow("Request failed");

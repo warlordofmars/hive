@@ -452,6 +452,64 @@ describe("MemoryBrowser", () => {
     await waitFor(() => expect(screen.getByText("Create error")).toBeTruthy());
   });
 
+  it("surfaces a quota banner with a Setup link when createMemory returns 429", async () => {
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+    const dispatchSpy = vi.spyOn(globalThis, "dispatchEvent");
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    const banner = await screen.findByTestId("quota-banner");
+    expect(banner.textContent).toContain("Memory quota reached");
+    expect(banner.textContent).toContain("Memory quota of 500 reached.");
+    // Generic error text MUST NOT also surface — banner replaces it.
+    expect(screen.queryByText("Memory quota of 500 reached.", { selector: "p" })).toBeNull();
+
+    // Clicking "Open Setup" dispatches the tab-switch event the App
+    // shell listens for; banner should clear so it doesn't stick on
+    // the new tab.
+    fireEvent.click(screen.getByText("Open Setup"));
+    const switchEvents = dispatchSpy.mock.calls
+      .map((call) => call[0])
+      .filter((evt) => evt && evt.type === "hive:switch-tab");
+    expect(switchEvents.length).toBeGreaterThan(0);
+    expect(switchEvents.at(-1).detail).toBe("setup");
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
+    dispatchSpy.mockRestore();
+  });
+
+  it("falls back to a generic message on 429 with no detail body", async () => {
+    const quotaErr = new Error("");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValue(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    const banner = await screen.findByTestId("quota-banner");
+    expect(banner.textContent).toContain("Quota or rate limit reached.");
+  });
+
   // ---------------------------------------------------------------------------
   // Edit / Update
   // ---------------------------------------------------------------------------
