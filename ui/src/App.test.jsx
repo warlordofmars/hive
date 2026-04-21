@@ -173,11 +173,26 @@ describe("AppShell", () => {
     expect(screen.queryByTestId("setup-panel")).toBeNull();
   });
 
-  it("defaults to Setup tab on first load when no clients registered", async () => {
+  it("defaults to Setup tab on first load when no clients registered (tour dismissed)", async () => {
+    // The auto-switch only fires once the OnboardingTour has been
+    // dismissed — otherwise step 1's "Memories" spotlight would
+    // point at a tab that's no longer the active panel.
+    _storage["hive_tour_dismissed"] = "1";
     vi.stubGlobal("fetch", makeFetch({ clients: [] }));
     await act(async () => render(<App />));
     await waitFor(() => expect(screen.getByTestId("setup-panel")).toBeTruthy());
     expect(screen.queryByTestId("memory-browser")).toBeNull();
+  });
+
+  it("suppresses auto-switch to Setup while the OnboardingTour is still active", async () => {
+    // Tour dismissed flag is NOT set — the empty-clients
+    // auto-switch must hold so the spotlight on step 1 ("Memories")
+    // matches the active tab.
+    vi.stubGlobal("fetch", makeFetch({ clients: [] }));
+    await act(async () => render(<App />));
+    // Settle the listClients promise.
+    await waitFor(() => expect(screen.getByTestId("memory-browser")).toBeTruthy());
+    expect(screen.queryByTestId("setup-panel")).toBeNull();
   });
 
   it("does not switch to Setup when listClients returns null", async () => {

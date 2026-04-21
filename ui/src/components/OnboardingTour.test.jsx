@@ -1,5 +1,5 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import OnboardingTour from "./OnboardingTour.jsx";
 
@@ -134,6 +134,44 @@ describe("OnboardingTour", () => {
     expect(dispatched.at(-1)).toBe("memories");
 
     vi.restoreAllMocks();
+  });
+
+  it("Escape key dismisses the tour", async () => {
+    await act(async () => render(<OnboardingTour />));
+    await act(async () => {
+      globalThis.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(screen.queryByTestId("onboarding-tour-card")).toBeNull();
+    expect(localStorage.getItem("hive_tour_dismissed")).toBe("1");
+  });
+
+  it("ignores non-Escape keys", async () => {
+    // Defensive — covers the `if (e.key === 'Escape')` branch
+    // false path so a regression that broadens the dismiss key
+    // (e.g. any key) is caught.
+    await act(async () => render(<OnboardingTour />));
+    await act(async () => {
+      globalThis.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+    });
+    expect(screen.getByTestId("onboarding-tour-card")).toBeTruthy();
+  });
+
+  it("focuses the primary action on mount and on each step change", async () => {
+    await act(async () => render(<OnboardingTour />));
+    await waitFor(() => {
+      expect(document.activeElement?.textContent).toBe("Next");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => {
+      expect(document.activeElement?.textContent).toBe("Next");
+    });
+  });
+
+  it("renders the dialog with aria-modal so screen readers trap focus", async () => {
+    await act(async () => render(<OnboardingTour />));
+    const card = screen.getByTestId("onboarding-tour-card");
+    expect(card.getAttribute("role")).toBe("dialog");
+    expect(card.getAttribute("aria-modal")).toBe("true");
   });
 
   it("re-measures the spotlight rect on window resize", async () => {

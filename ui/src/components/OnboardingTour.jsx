@@ -65,6 +65,34 @@ export default function OnboardingTour({ isAdmin = false }) {
     return () => globalThis.removeEventListener("resize", onResize);
   }, [dismissed]);
 
+  // Escape-to-dismiss for keyboard users — matches the convention
+  // used by shadcn/ui's AlertDialog primitive without pulling in
+  // Radix for a 2-button overlay.
+  useEffect(() => {
+    if (dismissed) return undefined;
+    function onKey(e) {
+      if (e.key === "Escape") {
+        _markDismissed();
+        setDismissed(true);
+      }
+    }
+    globalThis.addEventListener("keydown", onKey);
+    return () => globalThis.removeEventListener("keydown", onKey);
+  }, [dismissed]);
+
+  // Focus the primary action when the tour mounts so keyboard
+  // users land inside the dialog without having to tab into it.
+  // Re-runs when the step changes so each step's primary control
+  // gets focus.
+  const cardRef = useRef(null);
+  useEffect(() => {
+    if (dismissed) return;
+    const primary = cardRef.current?.querySelector(
+      '[data-tour-primary="true"]',
+    );
+    if (primary && typeof primary.focus === "function") primary.focus();
+  }, [dismissed, stepIndex]);
+
   const steps = isAdmin ? [...BASE_STEPS, ADMIN_STEP] : BASE_STEPS;
   const step = steps[stepIndex];
 
@@ -158,7 +186,9 @@ export default function OnboardingTour({ isAdmin = false }) {
       )}
       {/* Tooltip card. */}
       <div
+        ref={cardRef}
         role="dialog"
+        aria-modal="true"
         aria-labelledby="onboarding-tour-title"
         data-testid="onboarding-tour-card"
         className="absolute pointer-events-auto bg-[var(--surface)] border border-[var(--border)] rounded-md shadow-lg p-4 max-w-[320px]"
@@ -188,7 +218,7 @@ export default function OnboardingTour({ isAdmin = false }) {
                 Back
               </Button>
             )}
-            <Button size="sm" onClick={next}>
+            <Button size="sm" onClick={next} data-tour-primary="true">
               {stepIndex >= steps.length - 1 ? "Got it" : "Next"}
             </Button>
           </div>

@@ -395,6 +395,12 @@ export default function MemoryBrowser() {
           if (!tagFilter && !isSearchMode) {
             setMemories(fresh.items);
             setNextCursor(fresh.next_cursor ?? null);
+            // load() normally clears `error` via setError("") on
+            // its happy path. We're skipping load() here, so do the
+            // clear explicitly — otherwise a stale error from an
+            // earlier failed mutation can stay visible after a
+            // successful create.
+            setError("");
             return;
           }
           // Filtered view — fall through to load() so we re-fetch

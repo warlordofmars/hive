@@ -92,7 +92,13 @@ function AppShell() {
     if (!authenticated) return;
     api.listClients()
       .then((data) => {
-        if (data?.items.length === 0) setTab("setup");
+        // Skip the auto-switch when the OnboardingTour is still
+        // active — otherwise step 1 spotlights "Memories" while
+        // the underlying content silently jumps to Setup, leaving
+        // the spotlight pointing at a tab that's no longer the
+        // active panel.
+        const tourActive = !localStorage.getItem("hive_tour_dismissed");
+        if (data?.items.length === 0 && !tourActive) setTab("setup");
       })
       .catch(() => {});
   }, [authenticated]);
