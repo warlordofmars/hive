@@ -35,9 +35,7 @@ def browser_page():
         # nav-tab click until it's dismissed. An `add_init_script`
         # pre-sets the dismissed flag on every page that loads in
         # this context so e2e tests never see the overlay.
-        context.add_init_script(
-            "localStorage.setItem('hive_tour_dismissed', '1');"
-        )
+        context.add_init_script("localStorage.setItem('hive_tour_dismissed', '1');")
         page = context.new_page()
 
         # Navigate to the bypass login endpoint via CloudFront (same origin as

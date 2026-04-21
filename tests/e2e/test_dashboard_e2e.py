@@ -36,9 +36,7 @@ def admin_browser_page():
         context = browser.new_context()
         # #619: pre-dismiss the onboarding tour so its viewport-
         # covering backdrop doesn't intercept tab clicks.
-        context.add_init_script(
-            "localStorage.setItem('hive_tour_dismissed', '1');"
-        )
+        context.add_init_script("localStorage.setItem('hive_tour_dismissed', '1');")
         page = context.new_page()
 
         page.goto(
