@@ -123,6 +123,16 @@ describe("OnboardingTour", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(dispatched.at(-1)).toBe("activity");
 
+    // Back from step 3 → step 2 must re-dispatch "setup", and
+    // Back from step 2 → step 1 must re-dispatch "memories" so
+    // the underlying tab matches the spotlight even when the user
+    // walks backwards. (Iter-3 fix: skip-on-mount ref instead of
+    // skip-on-stepIndex-zero.)
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(dispatched.at(-1)).toBe("setup");
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(dispatched.at(-1)).toBe("memories");
+
     vi.restoreAllMocks();
   });
 

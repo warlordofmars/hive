@@ -252,6 +252,7 @@ describe("MemoryBrowser", () => {
     // expects it (otherwise a previous test's create leaves the
     // flag set and the toast suppresses).
     localStorage.removeItem("hive_first_memory");
+    localStorage.removeItem("hive_first_memory_skipped");
     localStorage.removeItem("hive_tour_dismissed");
     api.listMemories.mockResolvedValue({ items: [], next_cursor: null });
     api.searchMemories.mockResolvedValue({ items: [], count: 0 });
@@ -262,6 +263,7 @@ describe("MemoryBrowser", () => {
   afterEach(() => {
     vi.clearAllMocks();
     localStorage.removeItem("hive_first_memory");
+    localStorage.removeItem("hive_first_memory_skipped");
     localStorage.removeItem("hive_tour_dismissed");
   });
 
@@ -514,9 +516,42 @@ describe("MemoryBrowser", () => {
     );
 
     expect(toastSuccess).not.toHaveBeenCalled();
-    // Flag must NOT flip — otherwise a real future first-memory in
-    // a freshly-purged workspace would never celebrate.
+    // Celebration flag must NOT flip — that would suppress a real
+    // future first-memory celebration if the workspace ever drops
+    // back to a single item.
     expect(localStorage.getItem("hive_first_memory")).toBeNull();
+    // But the "skipped" flag MUST flip so subsequent creates don't
+    // re-probe the unfiltered list on every save.
+    expect(localStorage.getItem("hive_first_memory_skipped")).toBe("1");
+    toastSuccess.mockRestore();
+  });
+
+  it("respects the cached 'skipped' flag and doesn't re-probe on later creates", async () => {
+    // Iter-3 fix: existing-workspace users used to pay for an
+    // unfiltered listMemories on every create. The skipped flag
+    // suppresses the probe entirely until they clear it.
+    const sonner = await import("sonner");
+    const toastSuccess = vi.spyOn(sonner.toast, "success").mockImplementation(() => {});
+    localStorage.setItem("hive_first_memory_skipped", "1");
+    api.createMemory.mockResolvedValue({ memory_id: "new" });
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    api.listMemories.mockClear(); // ignore the initial mount fetch
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // Only the load() refresh should fire — no probe call.
+    expect(api.listMemories).toHaveBeenCalledTimes(1);
     toastSuccess.mockRestore();
   });
 

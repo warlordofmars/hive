@@ -368,7 +368,16 @@ export default function MemoryBrowser() {
       // only reuse the unfiltered fetch as the visible list when
       // the user isn't currently filtered (search / tag) — otherwise
       // we'd silently jump them out of their current view.
-      if (!localStorage.getItem("hive_first_memory")) {
+      // Two flags so we don't pay for the probe on every create:
+      //   hive_first_memory=1 — we already celebrated; skip.
+      //   hive_first_memory_skipped=1 — the workspace already had
+      //     other memories the first time we checked, so a "first
+      //     memory in store" can't happen here without a wipe;
+      //     skip until the user clears it.
+      if (
+        !localStorage.getItem("hive_first_memory") &&
+        !localStorage.getItem("hive_first_memory_skipped")
+      ) {
         try {
           const fresh = await api.listMemories(undefined);
           const isFirstInStore =
@@ -378,6 +387,10 @@ export default function MemoryBrowser() {
             toast.success("First memory saved", {
               description: "Your agent can now recall it across sessions.",
             });
+          } else {
+            // Cache the negative result so we don't re-probe on
+            // every subsequent create.
+            localStorage.setItem("hive_first_memory_skipped", "1");
           }
           if (!tagFilter && !isSearchMode) {
             setMemories(fresh.items);

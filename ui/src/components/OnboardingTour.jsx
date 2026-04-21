@@ -1,5 +1,5 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Button } from "./ui/button.jsx";
 
 const DISMISSED_KEY = "hive_tour_dismissed";
@@ -49,6 +49,12 @@ export default function OnboardingTour({ isAdmin = false }) {
   const [dismissed, setDismissed] = useState(_isDismissed);
   const [stepIndex, setStepIndex] = useState(0);
   const [tick, setTick] = useState(0);
+  // Track whether the step-change effect has run at least once so
+  // we can skip the very first dispatch (default tab is already
+  // "memories") without also skipping Back → step 1, which would
+  // leave the underlying tab on Setup while the spotlight is on
+  // Memories.
+  const didMountRef = useRef(false);
 
   // Re-measure the spotlight rect on resize so the tooltip stays
   // anchored to its tab when the viewport changes.
@@ -65,15 +71,21 @@ export default function OnboardingTour({ isAdmin = false }) {
   // Switch the underlying tab so the page content matches what the
   // current step describes — otherwise the user reads "Connect your
   // first agent" while still staring at the empty Memories list.
-  // Skip the initial dispatch (stepIndex === 0): the default tab is
-  // already "memories", so we'd just be firing a redundant tab_view
-  // analytics event for a tab the user is already on.
+  // Skip the *initial* render (default tab is already "memories",
+  // dispatching there would just fire a redundant tab_view), but
+  // not subsequent renders where stepIndex happens to land on 0
+  // again (Back from step 2 → step 1 still needs to re-sync the
+  // active tab).
   useEffect(() => {
-    if (dismissed || !step || stepIndex === 0) return;
+    if (dismissed || !step) return;
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
     globalThis.dispatchEvent(
       new CustomEvent("hive:switch-tab", { detail: step.tabId }),
     );
-  }, [dismissed, step, stepIndex]);
+  }, [dismissed, step]);
 
   if (dismissed) return null;
   // `tick` is read here to keep the dependency array honest — the
@@ -94,11 +106,14 @@ export default function OnboardingTour({ isAdmin = false }) {
       dismiss();
       return;
     }
-    setStepIndex(stepIndex + 1);
+    // Functional setState so a fast double-click can't compute
+    // both updates from the same captured `stepIndex` and skip a
+    // step.
+    setStepIndex((i) => i + 1);
   }
 
   function back() {
-    if (stepIndex > 0) setStepIndex(stepIndex - 1);
+    if (stepIndex > 0) setStepIndex((i) => i - 1);
   }
 
   // Position the tooltip below the highlighted tab. Falls back to
