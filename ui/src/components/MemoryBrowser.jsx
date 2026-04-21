@@ -206,13 +206,17 @@ export default function MemoryBrowser() {
 
   // Quota / rate-limit hits get a richer banner that points back to
   // the Setup tab's Usage section, instead of the bare server detail
-  // string. Generic errors still go through `setError`.
+  // string. Generic errors still go through `setError`. Each branch
+  // clears the other state slot so the banner and the inline error
+  // can never render together.
   function handleMutationError(err) {
     if (err && err.status === 429) {
       setQuotaError(err.message || "Quota or rate limit reached.");
+      setError("");
       return;
     }
     setError(err.message);
+    setQuotaError(null);
   }
 
   function goToUsage() {
@@ -483,7 +487,7 @@ export default function MemoryBrowser() {
             className="mb-3 rounded border p-3 text-[13px]"
             style={{ borderColor: "var(--danger)", color: "var(--danger)" }}
           >
-            <strong>Memory quota reached.</strong>{" "}
+            <strong>Quota or rate limit reached.</strong>{" "}
             <span className="text-[var(--text-muted)]">
               {quotaError} Free up space or request more capacity from the Setup
               tab&apos;s Usage section.

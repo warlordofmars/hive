@@ -471,7 +471,7 @@ describe("MemoryBrowser", () => {
     );
 
     const banner = await screen.findByTestId("quota-banner");
-    expect(banner.textContent).toContain("Memory quota reached");
+    expect(banner.textContent).toContain("Quota or rate limit reached");
     expect(banner.textContent).toContain("Memory quota of 500 reached.");
     // Generic error text MUST NOT also surface — banner replaces it.
     expect(screen.queryByText("Memory quota of 500 reached.", { selector: "p" })).toBeNull();
@@ -487,6 +487,61 @@ describe("MemoryBrowser", () => {
     expect(switchEvents.at(-1).detail).toBe("setup");
     expect(screen.queryByTestId("quota-banner")).toBeNull();
     dispatchSpy.mockRestore();
+  });
+
+  it("clears stale generic error when a follow-up 429 fires", async () => {
+    // Sequence: first create fails generically, then a retry hits the
+    // quota wall. The banner must take over and the inline error
+    // paragraph must clear so the two never render together.
+    const genericErr = new Error("Server hiccup");
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    api.createMemory.mockRejectedValueOnce(genericErr).mockRejectedValueOnce(quotaErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+    await waitFor(() => expect(screen.getByText("Server hiccup")).toBeTruthy());
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    await screen.findByTestId("quota-banner");
+    expect(screen.queryByText("Server hiccup")).toBeNull();
+  });
+
+  it("clears stale quota banner when a follow-up generic error fires", async () => {
+    const quotaErr = new Error("Memory quota of 500 reached.");
+    quotaErr.status = 429;
+    const genericErr = new Error("Server hiccup");
+    api.createMemory.mockRejectedValueOnce(quotaErr).mockRejectedValueOnce(genericErr);
+
+    await act(async () => render(<MemoryBrowser />));
+    fireEvent.click(screen.getByText("+ New"));
+    fireEvent.change(screen.getByPlaceholderText("unique-key"), {
+      target: { value: "k" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Memory content…"), {
+      target: { value: "v" },
+    });
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+    await screen.findByTestId("quota-banner");
+    await act(async () =>
+      fireEvent.submit(screen.getByPlaceholderText("unique-key").closest("form")),
+    );
+
+    await waitFor(() => expect(screen.getByText("Server hiccup")).toBeTruthy());
+    expect(screen.queryByTestId("quota-banner")).toBeNull();
   });
 
   it("falls back to a generic message on 429 with no detail body", async () => {

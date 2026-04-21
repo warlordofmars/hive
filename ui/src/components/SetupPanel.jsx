@@ -427,11 +427,17 @@ function DesktopOrChatgptInstructions({
 // Highest fill ratio across the user's quotas. Drives the callout
 // severity — one resource at 100% is enough to block writes, so the
 // callout reflects the worst-case bucket rather than a per-bar
-// average.
+// average. Limits ≤ 0 are treated as "unconfigured" rather than
+// "infinitely full" so a misconfigured env var never lights the
+// callout up red.
 function _quotaSeverity(quota) {
   const ratios = [];
-  if (quota.memory_limit) ratios.push(quota.total_memories / quota.memory_limit);
-  if (quota.client_limit) ratios.push(quota.total_clients / quota.client_limit);
+  if (quota.memory_limit != null && quota.memory_limit > 0) {
+    ratios.push(quota.total_memories / quota.memory_limit);
+  }
+  if (quota.client_limit != null && quota.client_limit > 0) {
+    ratios.push(quota.total_clients / quota.client_limit);
+  }
   if (ratios.length === 0) return "ok";
   const worst = Math.max(...ratios);
   if (worst >= 1) return "at";

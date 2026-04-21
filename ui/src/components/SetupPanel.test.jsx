@@ -469,6 +469,24 @@ describe("SetupPanel", () => {
       );
       expect(container.firstChild).toBeNull();
     });
+
+    it("treats limit=0 as unconfigured rather than infinitely full", async () => {
+      // A misconfigured limit (env var typo, 0-coerced int) used to
+      // light the callout up red because `0 / 0` was Infinity. The
+      // helper now skips non-positive limits.
+      const { QuotaCallout } = await import("./SetupPanel.jsx");
+      const { container } = render(
+        <QuotaCallout
+          quota={{
+            total_memories: 5,
+            total_clients: 0,
+            memory_limit: 0,
+            client_limit: 0,
+          }}
+        />,
+      );
+      expect(container.firstChild).toBeNull();
+    });
   });
 
   it("renders key naming convention tip with example and docs link", async () => {
