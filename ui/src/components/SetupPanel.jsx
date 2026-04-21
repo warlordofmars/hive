@@ -424,25 +424,56 @@ function DesktopOrChatgptInstructions({
   );
 }
 
-// Highest fill ratio across the user's quotas. Drives the callout
-// severity — one resource at 100% is enough to block writes, so the
-// callout reflects the worst-case bucket rather than a per-bar
-// average. Limits ≤ 0 are treated as "unconfigured" rather than
-// "infinitely full" so a misconfigured env var never lights the
-// callout up red.
+// Per-bucket fill ratio. Limits ≤ 0 are treated as "unconfigured"
+// (returns null) so a misconfigured env var never registers as
+// "infinitely full" and a 0-limit `QuotaBar` doesn't divide by zero.
+function _quotaRatio(used, limit) {
+  if (limit == null || limit <= 0) return null;
+  return used / limit;
+}
+
+// Worst-case bucket drives the callout severity — one resource at
+// 100% is enough to block writes, so the callout reflects the
+// per-bucket worst case rather than a flat average.
 function _quotaSeverity(quota) {
-  const ratios = [];
-  if (quota.memory_limit != null && quota.memory_limit > 0) {
-    ratios.push(quota.total_memories / quota.memory_limit);
-  }
-  if (quota.client_limit != null && quota.client_limit > 0) {
-    ratios.push(quota.total_clients / quota.client_limit);
-  }
+  const ratios = [
+    _quotaRatio(quota.total_memories, quota.memory_limit),
+    _quotaRatio(quota.total_clients, quota.client_limit),
+  ].filter((r) => r != null);
   if (ratios.length === 0) return "ok";
   const worst = Math.max(...ratios);
   if (worst >= 1) return "at";
   if (worst >= 0.8) return "near";
   return "ok";
+}
+
+// Which buckets are tripping the callout. Used to tailor the body
+// copy: "New memories cannot be saved" only applies when the memory
+// quota is the offender, not when it's the client quota that's full.
+function _affectedBuckets(quota, threshold) {
+  const memRatio = _quotaRatio(quota.total_memories, quota.memory_limit);
+  const cliRatio = _quotaRatio(quota.total_clients, quota.client_limit);
+  return {
+    memory: memRatio != null && memRatio >= threshold,
+    clients: cliRatio != null && cliRatio >= threshold,
+  };
+}
+
+function _detailCopy(severity, affected) {
+  const isAt = severity === "at";
+  const verbAt = "cannot be saved until you free up space or request more capacity";
+  const verbNear = "are running low — free up space soon, or get in touch to request more capacity";
+  const verb = isAt ? verbAt : verbNear;
+  if (affected.memory && affected.clients) {
+    return `New memories and OAuth clients ${verb}.`;
+  }
+  if (affected.clients) {
+    const clientVerb = isAt
+      ? "cannot be created until you delete an existing one or request more capacity"
+      : "are running low — delete an unused one, or get in touch to request more capacity";
+    return `New OAuth clients ${clientVerb}.`;
+  }
+  return `New memories ${verb}.`;
 }
 
 export function QuotaCallout({ quota }) {
@@ -454,9 +485,8 @@ export function QuotaCallout({ quota }) {
   const headline = isAt
     ? "You've reached your free tier limit."
     : "You're approaching your free tier limit.";
-  const detail = isAt
-    ? "New memories cannot be saved until you free up space or request more capacity."
-    : "Free up space soon, or get in touch to request more capacity.";
+  const affected = _affectedBuckets(quota, isAt ? 1 : 0.8);
+  const detail = _detailCopy(severity, affected);
 
   return (
     <div
@@ -483,6 +513,10 @@ export function QuotaCallout({ quota }) {
 }
 
 function QuotaBar({ label, used, limit }) {
+  // Match `_quotaSeverity` semantics: a missing or non-positive
+  // limit is "unconfigured", not "infinitely full" — skip the bar
+  // entirely rather than dividing by zero into a 100% red sliver.
+  if (limit == null || limit <= 0) return null;
   const pct = Math.min((used / limit) * 100, 100);
   const nearLimit = pct >= 80;
   const atLimit = pct >= 100;

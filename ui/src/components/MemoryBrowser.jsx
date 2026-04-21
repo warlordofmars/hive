@@ -222,6 +222,12 @@ export default function MemoryBrowser() {
   function goToUsage() {
     setQuotaError(null);
     globalThis.dispatchEvent(new CustomEvent("hive:switch-tab", { detail: "setup" }));
+    // Setup tab mounts asynchronously after the switch — defer the
+    // scroll so the #usage anchor exists by the time we look it up.
+    globalThis.setTimeout(function scrollToUsage() {
+      const target = globalThis.document?.getElementById("usage");
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   }
 
   const load = useCallback(async () => {
@@ -489,8 +495,8 @@ export default function MemoryBrowser() {
           >
             <strong>Quota or rate limit reached.</strong>{" "}
             <span className="text-[var(--text-muted)]">
-              {quotaError} Free up space or request more capacity from the Setup
-              tab&apos;s Usage section.
+              {quotaError} Try again later, or open Setup to review your
+              current usage and request more capacity.
             </span>{" "}
             <button
               type="button"

@@ -415,9 +415,12 @@ describe("SetupPanel", () => {
       expect(callout.textContent).toContain("New memories cannot be saved");
     });
 
-    it("escalates to 'at' severity when only the client quota is full", async () => {
+    it("tailors the body copy to clients when only the client quota is full", async () => {
       // The worst-case bucket drives severity — one resource at 100%
       // is enough to block writes even if the other is well under.
+      // Backend only blocks new clients on client_limit, not memories,
+      // so the body copy switches to "OAuth clients … cannot be
+      // created" rather than the default memory phrasing.
       api.getStats.mockResolvedValue({
         total_memories: 0,
         total_clients: 10,
@@ -427,6 +430,34 @@ describe("SetupPanel", () => {
       await act(async () => render(<SetupPanel />));
       const callout = await screen.findByTestId("quota-callout");
       expect(callout.dataset.severity).toBe("at");
+      expect(callout.textContent).toContain("New OAuth clients cannot be created");
+      expect(callout.textContent).not.toContain("New memories");
+    });
+
+    it("uses combined memories+clients copy when both buckets are at limit", async () => {
+      api.getStats.mockResolvedValue({
+        total_memories: 500,
+        total_clients: 10,
+        memory_limit: 500,
+        client_limit: 10,
+      });
+      await act(async () => render(<SetupPanel />));
+      const callout = await screen.findByTestId("quota-callout");
+      expect(callout.textContent).toContain("New memories and OAuth clients");
+    });
+
+    it("uses 'running low' wording for client-only near-limit case", async () => {
+      api.getStats.mockResolvedValue({
+        total_memories: 0,
+        total_clients: 9,
+        memory_limit: 500,
+        client_limit: 10,
+      });
+      await act(async () => render(<SetupPanel />));
+      const callout = await screen.findByTestId("quota-callout");
+      expect(callout.dataset.severity).toBe("near");
+      expect(callout.textContent).toContain("New OAuth clients are running low");
+      expect(callout.textContent).toContain("delete an unused one");
     });
 
     it("renders nothing when both limits are absent", async () => {
@@ -468,6 +499,21 @@ describe("SetupPanel", () => {
         />,
       );
       expect(container.firstChild).toBeNull();
+    });
+
+    it("hides individual QuotaBar when its limit is missing or non-positive", async () => {
+      // Even when one limit is set, a missing client_limit should
+      // skip its bar rather than rendering "3 / null" or a div-by-0
+      // 100% sliver.
+      api.getStats.mockResolvedValue({
+        total_memories: 10,
+        total_clients: 3,
+        memory_limit: 500,
+        client_limit: 0,
+      });
+      await act(async () => render(<SetupPanel />));
+      await waitFor(() => expect(screen.getByText("10 / 500")).toBeTruthy());
+      expect(screen.queryByText("Clients")).toBeNull();
     });
 
     it("treats limit=0 as unconfigured rather than infinitely full", async () => {
