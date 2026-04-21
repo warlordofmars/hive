@@ -46,8 +46,16 @@ describe("ErrorBoundary", () => {
     // Reload + Contact support paths must both be visible.
     expect(screen.getByRole("button", { name: "Reload page" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Contact support" })).toBeTruthy();
-    // componentDidCatch logged the error.
-    expect(consoleError).toHaveBeenCalled();
+    // componentDidCatch logged the error with our specific prefix.
+    // React itself also logs caught errors to console.error, so we
+    // can't just assert the spy was called — distinguish on the
+    // "ErrorBoundary caught:" prefix to confirm our handler ran.
+    expect(
+      consoleError.mock.calls.some(
+        ([firstArg]) =>
+          typeof firstArg === "string" && firstArg.includes("ErrorBoundary caught:"),
+      ),
+    ).toBe(true);
   });
 
   it("calls window.location.reload when the Reload button is clicked", async () => {
