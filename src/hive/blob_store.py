@@ -54,7 +54,13 @@ class BlobStore:
         _s3_client: Any = None,
     ) -> None:
         # Read env at call time so tests can override after import.
-        self._bucket = bucket_name or os.environ.get("HIVE_BLOBS_BUCKET", "")
+        resolved = bucket_name or os.environ.get("HIVE_BLOBS_BUCKET", "")
+        if not resolved.strip():
+            raise ValueError(
+                "BlobStore requires a non-empty bucket name; pass `bucket_name` "
+                "or set the HIVE_BLOBS_BUCKET environment variable."
+            )
+        self._bucket = resolved
         region = region or os.environ.get("AWS_REGION", "us-east-1")
         self._s3: S3Client = _s3_client or boto3.client("s3", region_name=region)
 

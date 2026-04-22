@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_serializer
 
@@ -67,7 +67,7 @@ class Memory(BaseModel):
     # oversized text to S3 with ``value`` cleared and ``s3_uri`` set.
     # "image" / "blob" are reserved for the binary remember_blob
     # path that lands in #499.
-    value_type: str = "text"
+    value_type: Literal["text", "text-large", "image", "blob"] = "text"
     s3_uri: str | None = None
     content_type: str | None = None
     size_bytes: int | None = None

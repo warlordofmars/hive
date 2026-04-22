@@ -65,7 +65,7 @@ logger = get_logger("hive.server")
 
 _MEMORIES_READ_SCOPE = "memories:read"
 
-DEFAULT_MAX_VALUE_BYTES = 10 * 1024
+DEFAULT_MAX_VALUE_BYTES = 10 * 1024 * 1024
 
 
 def _max_value_bytes() -> int:
@@ -1231,9 +1231,9 @@ async def search_memories(
     now = datetime.now(timezone.utc)
     scored: list[tuple[Memory, float, float, float, float]] = []
     for m, sem in hydrated:
-        # value is None for the large-memory foundation (#497);
-        # #498 lands the S3 fetch. Until then, fall back to empty
-        # string so keyword_score stays typed as str.
+        # Large-memory entries keep an empty-string inline placeholder
+        # until #498 lands the S3 fetch. Fall back to "" here so
+        # keyword_score always receives a str.
         kw = keyword_score(query_tokens, m.value or "")
         rec = recency_score(m, now=now)
         blended = blend_score(

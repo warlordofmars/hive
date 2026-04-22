@@ -88,3 +88,8 @@ class TestBlobStore:
         monkeypatch.setenv("HIVE_BLOBS_BUCKET", "env-bucket")
         store = BlobStore()
         assert store.bucket == "env-bucket"
+
+    def test_missing_bucket_raises_value_error(self, monkeypatch):
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        with pytest.raises(ValueError, match="HIVE_BLOBS_BUCKET"):
+            BlobStore()

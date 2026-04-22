@@ -239,7 +239,7 @@ class HiveStorage:
         us an oversized string and expects us to pick the right
         backend.
         """
-        from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES
+        from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES, MAX_BLOB_SIZE_BYTES
 
         # Non-text paths have their own upload lifecycle (#499) —
         # don't touch them here.
@@ -250,6 +250,11 @@ class HiveStorage:
             return
 
         encoded = memory.value.encode("utf-8")
+        if len(encoded) > MAX_BLOB_SIZE_BYTES:
+            raise ValueError(
+                f"Value size {len(encoded)} bytes exceeds the maximum of "
+                f"{MAX_BLOB_SIZE_BYTES} bytes."
+            )
         if len(encoded) <= INLINE_TEXT_THRESHOLD_BYTES:
             # Inline path: unchanged. Capture size_bytes for the
             # forthcoming two-dimension quota (#500) even on the

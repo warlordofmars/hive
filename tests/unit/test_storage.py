@@ -544,6 +544,17 @@ class TestLargeMemoryRouting:
         storage.put_memory(m)
         assert fake.objects == {}
 
+    def test_value_exceeding_max_blob_size_raises(self, storage_with_blob_store):
+        from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES, MAX_BLOB_SIZE_BYTES
+
+        storage, _ = storage_with_blob_store
+        big_value = "x" * (MAX_BLOB_SIZE_BYTES + 1)
+        m = Memory(key="too-big", value=big_value, owner_client_id="c1")
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            storage._route_large_value(m)
+        # Inline-threshold check must still pass before the size guard triggers.
+        assert len(big_value.encode("utf-8")) > INLINE_TEXT_THRESHOLD_BYTES
+
     def test_blob_store_property_lazy_instantiates_real_blob_store(self, storage, monkeypatch):
         # Covers the lazy-init path (lines 147-151) when no override
         # is injected — the real BlobStore is constructed on first
