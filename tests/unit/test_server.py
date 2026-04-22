@@ -294,8 +294,16 @@ class TestRemember:
         ):
             await remember("big-key", "x" * 1000, [], ctx=_make_ctx(jwt))
 
-    async def test_value_at_limit_succeeds(self, server_env):
+    async def test_value_at_limit_succeeds(self, server_env, monkeypatch):
+        import boto3
+
         from hive.server import DEFAULT_MAX_VALUE_BYTES, remember
+
+        # With the new 10 MB default, a value at the limit exceeds the
+        # inline threshold and routes to S3. Create the bucket inside
+        # the existing mock_aws() context so the routing path succeeds.
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", "test-blobs-at-limit")
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-blobs-at-limit")
 
         storage, _, jwt = server_env
         value = "x" * DEFAULT_MAX_VALUE_BYTES

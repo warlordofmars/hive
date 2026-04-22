@@ -422,8 +422,149 @@ class TestMemoryStorage:
 
 
 # ---------------------------------------------------------------------------
-# Memory version tests
+# Large-memory routing tests (#497)
 # ---------------------------------------------------------------------------
+
+
+class _FakeBlobStore:
+    """In-memory stand-in for BlobStore — records put/get/delete."""
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.content_types: dict[tuple[str, str], str] = {}
+
+    def put(self, owner, memory_id, body, content_type="text/plain; charset=utf-8"):
+        self.objects[(owner, memory_id)] = body
+        self.content_types[(owner, memory_id)] = content_type
+        return f"s3://fake-bucket/{owner}/{memory_id}"
+
+    def get(self, owner, memory_id):
+        return self.objects[(owner, memory_id)]
+
+    def delete(self, owner, memory_id):
+        self.objects.pop((owner, memory_id), None)
+
+
+@pytest.fixture()
+def storage_with_blob_store(storage):
+    """Storage fixture with a fake BlobStore wired in."""
+    fake = _FakeBlobStore()
+    storage._blob_store_override = fake
+    return storage, fake
+
+
+class TestLargeMemoryRouting:
+    """#497 — oversized text values get offloaded to the blob store."""
+
+    def test_small_text_memory_stays_inline(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        m = Memory(key="small", value="hello", owner_client_id="c1")
+        storage.put_memory(m)
+
+        # No S3 object — stayed inline in DynamoDB.
+        assert fake.objects == {}
+
+        stored = storage.get_memory_by_key("small")
+        assert stored is not None
+        assert stored.value == "hello"
+        assert stored.value_type == "text"
+        assert stored.s3_uri is None
+        # size_bytes gets set for future quota rollups (#500) even
+        # on the inline path.
+        assert stored.size_bytes == 5
+
+    def test_large_text_memory_routes_to_s3(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        # 500 KB > 100 KB threshold → gets promoted to text-large.
+        big_value = "x" * (500 * 1024)
+        m = Memory(
+            key="big-doc",
+            value=big_value,
+            owner_client_id="c1",
+            owner_user_id="u-1",
+        )
+        storage.put_memory(m)
+
+        # Exactly one S3 object stored under owner_user_id / memory_id.
+        assert list(fake.objects.keys()) == [("u-1", m.memory_id)]
+        assert fake.objects[("u-1", m.memory_id)] == big_value.encode("utf-8")
+
+        stored = storage.get_memory_by_key("big-doc")
+        assert stored is not None
+        assert stored.value_type == "text-large"
+        assert stored.s3_uri == f"s3://fake-bucket/u-1/{m.memory_id}"
+        assert stored.size_bytes == 500 * 1024
+        assert stored.content_type == "text/plain; charset=utf-8"
+        # Inline DynamoDB value is empty — authoritative bytes live in S3.
+        assert stored.value == ""
+
+    def test_owner_prefix_falls_back_to_client_when_user_missing(self, storage_with_blob_store):
+        # Pre-user-migration memories (#482 pending) don't carry
+        # owner_user_id. The routing uses owner_client_id so those
+        # memories still land in a tenant-scoped prefix.
+        storage, fake = storage_with_blob_store
+        big_value = "y" * (200 * 1024)
+        m = Memory(key="pre-user", value=big_value, owner_client_id="legacy-client")
+        storage.put_memory(m)
+        assert ("legacy-client", m.memory_id) in fake.objects
+
+    def test_non_text_value_type_skips_the_router(self, storage_with_blob_store):
+        # #499's remember_blob path supplies an image/blob with its
+        # own s3_uri already set — the transparent-text router must
+        # leave those alone.
+        storage, fake = storage_with_blob_store
+        m = Memory(
+            key="img",
+            value="",
+            value_type="image",
+            s3_uri="s3://some/other/path",
+            content_type="image/png",
+            size_bytes=1234,
+            owner_client_id="c1",
+        )
+        storage.put_memory(m)
+        # Router did not upload anything — binary upload is the
+        # caller's responsibility for non-text types.
+        assert fake.objects == {}
+
+        stored = storage.get_memory_by_key("img")
+        assert stored is not None
+        assert stored.value_type == "image"
+        assert stored.s3_uri == "s3://some/other/path"
+        assert stored.content_type == "image/png"
+        assert stored.size_bytes == 1234
+
+    def test_value_type_text_with_none_value_skips_upload(self, storage_with_blob_store):
+        # Defensive — Pydantic would coerce this to the default
+        # empty string, but an explicit None must not crash the
+        # router.
+        storage, fake = storage_with_blob_store
+        m = Memory(key="edge", owner_client_id="c1")
+        m.value = None  # bypass pydantic default
+        storage.put_memory(m)
+        assert fake.objects == {}
+
+    def test_value_exceeding_max_blob_size_raises(self, storage_with_blob_store):
+        from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES, MAX_BLOB_SIZE_BYTES
+
+        storage, _ = storage_with_blob_store
+        big_value = "x" * (MAX_BLOB_SIZE_BYTES + 1)
+        m = Memory(key="too-big", value=big_value, owner_client_id="c1")
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            storage._route_large_value(m)
+        # Inline-threshold check must still pass before the size guard triggers.
+        assert len(big_value.encode("utf-8")) > INLINE_TEXT_THRESHOLD_BYTES
+
+    def test_blob_store_property_lazy_instantiates_real_blob_store(self, storage, monkeypatch):
+        # Covers the lazy-init path (lines 147-151) when no override
+        # is injected — the real BlobStore is constructed on first
+        # access and cached for subsequent calls.
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", "lazy-init-bucket")
+        from hive.blob_store import BlobStore
+
+        first = storage.blob_store
+        assert isinstance(first, BlobStore)
+        assert storage.blob_store is first  # cached — not re-created
 
 
 class TestMemoryVersionStorage:

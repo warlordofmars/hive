@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_serializer
 
@@ -52,7 +52,7 @@ class Memory(BaseModel):
 
     memory_id: str = Field(default_factory=_new_id)
     key: str
-    value: str
+    value: str | None = ""
     tags: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now_utc)
     updated_at: datetime = Field(default_factory=_now_utc)
@@ -62,6 +62,15 @@ class Memory(BaseModel):
     recall_count: int = 0  # incremented on every successful recall
     last_accessed_at: datetime | None = None  # set on every successful recall
     redacted_at: datetime | None = None  # when redact_memory tombstoned the value (#400)
+    # Large-memory foundation (#497). "text" remains the default and
+    # keeps the inline-value path unchanged. "text-large" offloads
+    # oversized text to S3 with ``value`` cleared and ``s3_uri`` set.
+    # "image" / "blob" are reserved for the binary remember_blob
+    # path that lands in #499.
+    value_type: Literal["text", "text-large", "image", "blob"] = "text"
+    s3_uri: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -74,7 +83,12 @@ class Memory(BaseModel):
             "SK": "META",
             "memory_id": self.memory_id,
             "key": self.key,
-            "value": self.value,
+            # Inline ``value`` stores text up to the 100 KB threshold.
+            # For "text-large"/"image"/"blob" the body lives in S3 and
+            # we persist an empty string so legacy readers that expect
+            # a str keep working. Authoritative content pointer is
+            # ``s3_uri``.
+            "value": self.value if self.value is not None else "",
             "tags": self.tags,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -93,6 +107,16 @@ class Memory(BaseModel):
             item["last_accessed_at"] = self.last_accessed_at.isoformat()
         if self.redacted_at is not None:
             item["redacted_at"] = self.redacted_at.isoformat()
+        # Only serialise non-default large-memory fields so legacy
+        # items (all "text", all inline) round-trip byte-identical.
+        if self.value_type != "text":
+            item["value_type"] = self.value_type
+        if self.s3_uri is not None:
+            item["s3_uri"] = self.s3_uri
+        if self.content_type is not None:
+            item["content_type"] = self.content_type
+        if self.size_bytes is not None:
+            item["size_bytes"] = self.size_bytes
         return item
 
     def to_dynamo_tag_items(self) -> list[dict[str, Any]]:
@@ -124,6 +148,8 @@ class Memory(BaseModel):
         redacted_at = None
         if ra := item.get("redacted_at"):
             redacted_at = datetime.fromisoformat(ra)
+        # Legacy items predate #497 — default value_type to "text"
+        # so the unchanged inline-value path keeps working.
         return cls(
             memory_id=item["memory_id"],
             key=item["key"],
@@ -137,6 +163,10 @@ class Memory(BaseModel):
             recall_count=int(item.get("recall_count", 0) or 0),
             last_accessed_at=last_accessed_at,
             redacted_at=redacted_at,
+            value_type=item.get("value_type", "text"),
+            s3_uri=item.get("s3_uri"),
+            content_type=item.get("content_type"),
+            size_bytes=int(item["size_bytes"]) if item.get("size_bytes") is not None else None,
         )
 
     @property
