@@ -544,6 +544,17 @@ class TestLargeMemoryRouting:
         storage.put_memory(m)
         assert fake.objects == {}
 
+    def test_blob_store_property_lazy_instantiates_real_blob_store(self, storage, monkeypatch):
+        # Covers the lazy-init path (lines 147-151) when no override
+        # is injected — the real BlobStore is constructed on first
+        # access and cached for subsequent calls.
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", "lazy-init-bucket")
+        from hive.blob_store import BlobStore
+
+        first = storage.blob_store
+        assert isinstance(first, BlobStore)
+        assert storage.blob_store is first  # cached — not re-created
+
 
 class TestMemoryVersionStorage:
     def test_list_versions_newest_first(self, storage):
