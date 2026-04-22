@@ -1122,8 +1122,9 @@ class HiveStorage:
 
         Called after the DynamoDB item is already removed. Failures are
         logged as warnings and swallowed — the memory is already gone from
-        DynamoDB so it's inaccessible regardless; the S3 lifecycle rule
-        provides a backstop for any objects that slip through.
+        DynamoDB so it's inaccessible regardless. The configured S3
+        lifecycle rule only aborts incomplete multipart uploads; it does
+        not clean up orphaned objects left behind by failed deletes.
         """
         if memory.s3_uri is None:
             return
@@ -1132,8 +1133,9 @@ class HiveStorage:
             self.blob_store.delete(owner=owner, memory_id=memory.memory_id)
         except Exception:
             logger.warning(
-                "blob_delete_failed",
-                extra={"memory_id": memory.memory_id, "s3_uri": memory.s3_uri},
+                "blob_delete_failed memory_id=%s s3_uri=%s",
+                memory.memory_id,
+                memory.s3_uri,
                 exc_info=True,
             )
 
