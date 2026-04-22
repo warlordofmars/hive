@@ -287,6 +287,16 @@ class HiveStack(cdk.Stack):
             ),
             auto_delete_objects=not is_prod,
         )
+        # Safety-net lifecycle rule: abort truly incomplete multipart
+        # uploads after 1 day so partial PutObject failures don't leave
+        # phantom in-progress uploads consuming storage quota.
+        # Full orphan detection (objects with no DynamoDB counterpart)
+        # requires a scheduled cross-check Lambda — tracked separately.
+        blobs_bucket.add_lifecycle_rule(
+            id="AbortIncompleteUploads",
+            abort_incomplete_multipart_upload_after=cdk.Duration.days(1),
+            enabled=True,
+        )
 
         app_version = os.environ.get("APP_VERSION", "dev")
         common_env = {
