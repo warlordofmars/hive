@@ -260,10 +260,39 @@ class HiveStack(cdk.Stack):
             vector_bucket_name=vectors_bucket_name,
         )
 
+        # Memory blobs bucket — stores text values over 100 KB and
+        # (post-#499) binary memory content. SSE-S3 is sufficient
+        # given the bucket is tenant-partitioned by the object-key
+        # prefix (``{owner}/{memory_id}``); the IAM policy on each
+        # Lambda role is what keeps cross-tenant access off the
+        # table. Block-public-access is on. Versioning is off —
+        # Hive's own version-history (VERSION items in DynamoDB)
+        # already covers that need, and S3 versioning would double
+        # the storage bill. In non-prod we set RemovalPolicy=DESTROY
+        # + auto-delete so ephemeral dev stacks tear down cleanly;
+        # prod gets RETAIN to prevent accidental data loss.
+        blobs_bucket_name = (
+            "hive-memory-blobs" if is_prod else f"hive-memory-blobs-{env_name}"
+        )
+        blobs_bucket = s3.Bucket(
+            self,
+            "MemoryBlobsBucket",
+            bucket_name=blobs_bucket_name,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            versioned=False,
+            enforce_ssl=True,
+            removal_policy=(
+                cdk.RemovalPolicy.RETAIN if is_prod else cdk.RemovalPolicy.DESTROY
+            ),
+            auto_delete_objects=not is_prod,
+        )
+
         app_version = os.environ.get("APP_VERSION", "dev")
         common_env = {
             "HIVE_TABLE_NAME": table.table_name,
             "HIVE_VECTORS_BUCKET": vectors_bucket_name,
+            "HIVE_BLOBS_BUCKET": blobs_bucket_name,
             # Custom domain is the canonical issuer URL for all environments.
             "HIVE_ISSUER": f"https://{custom_domain}",
             # Tell both Lambdas which SSM parameter holds the JWT secret.
@@ -307,6 +336,11 @@ class HiveStack(cdk.Stack):
         google_client_secret_param.grant_read(mcp_role)
         allowed_emails_param.grant_read(mcp_role)
         origin_verify_param.grant_read(mcp_role)
+        # Memory blobs — MCP Lambda reads, writes, and (post-#502)
+        # deletes objects on forget. Scoped to the bucket via CDK's
+        # grant; no cross-bucket access is possible from this role.
+        blobs_bucket.grant_read_write(mcp_role)
+        blobs_bucket.grant_delete(mcp_role)
         # S3 Vectors + Bedrock Titan Embeddings V2 for MCP Lambda
         mcp_role.add_to_policy(
             iam.PolicyStatement(
@@ -382,6 +416,10 @@ class HiveStack(cdk.Stack):
         google_client_secret_param.grant_read(api_role)
         allowed_emails_param.grant_read(api_role)
         origin_verify_param.grant_read(api_role)
+        # Memory blobs — API Lambda needs read/write for the
+        # management UI's memory CRUD + delete on forget (#502).
+        blobs_bucket.grant_read_write(api_role)
+        blobs_bucket.grant_delete(api_role)
         api_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["cloudwatch:GetMetricData", "cloudwatch:DescribeAlarms"],

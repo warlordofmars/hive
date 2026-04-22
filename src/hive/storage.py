@@ -118,7 +118,11 @@ class HiveStorage:
     """All DynamoDB read/write operations for Hive."""
 
     def __init__(
-        self, table_name: str | None = None, region: str | None = None, **kwargs: Any
+        self,
+        table_name: str | None = None,
+        region: str | None = None,
+        blob_store: Any = None,
+        **kwargs: Any,
     ) -> None:
         # Read env vars at call time so tests can override them after import
         table_name = table_name or os.environ.get("HIVE_TABLE_NAME", "hive")
@@ -127,6 +131,24 @@ class HiveStorage:
         kwargs.setdefault("endpoint_url", os.environ.get("DYNAMODB_ENDPOINT"))
         dynamodb = boto3.resource("dynamodb", region_name=region, **kwargs)
         self.table = dynamodb.Table(table_name)
+        # Lazily-instantiated BlobStore — we only need it on the
+        # text-large / binary path so tests that never exercise that
+        # branch can leave HIVE_BLOBS_BUCKET unset. Inject a mock via
+        # the ``blob_store`` kwarg in tests.
+        self._blob_store_override = blob_store
+        self._blob_store: Any = None
+
+    @property
+    def blob_store(self) -> Any:
+        """Lazy BlobStore handle — constructed on first use."""
+        if self._blob_store_override is not None:
+            return self._blob_store_override
+        # Import inline to avoid circular-import risk at module load.
+        if self._blob_store is None:
+            from hive.blob_store import BlobStore
+
+            self._blob_store = BlobStore()
+        return self._blob_store
 
     # ------------------------------------------------------------------
     # Memory CRUD
@@ -142,7 +164,14 @@ class HiveStorage:
         conditional expression requiring the stored ``updated_at`` to match
         — supporting optimistic locking (#391). Raises ``VersionConflict``
         if the stored version has moved on since the caller read it.
+
+        Large-memory routing (#497): text values over the inline
+        threshold are uploaded to S3 and the META item stores only
+        ``s3_uri`` + ``size_bytes``. The routing happens in-place on
+        the passed ``memory`` so callers always see the persisted
+        shape.
         """
+        self._route_large_value(memory)
         existing_raw = self._get_memory_meta(memory.memory_id)
         if expected_version is not None:
             if existing_raw is None:
@@ -199,6 +228,51 @@ class HiveStorage:
                     "Memory value is too large to store (DynamoDB 400 KB item limit exceeded)."
                 ) from exc
             raise
+
+    def _route_large_value(self, memory: Memory) -> None:
+        """Offload oversized text to S3, leaving a pointer in DynamoDB.
+
+        Only runs on "text"-typed memories. Non-text types (image /
+        blob, arriving via #499) are expected to already carry an
+        ``s3_uri`` when they reach ``put_memory`` — this router only
+        handles the transparent-text-large path where a caller hands
+        us an oversized string and expects us to pick the right
+        backend.
+        """
+        from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES
+
+        # Non-text paths have their own upload lifecycle (#499) —
+        # don't touch them here.
+        if memory.value_type != "text":
+            return
+
+        if memory.value is None:
+            return
+
+        encoded = memory.value.encode("utf-8")
+        if len(encoded) <= INLINE_TEXT_THRESHOLD_BYTES:
+            # Inline path: unchanged. Capture size_bytes for the
+            # forthcoming two-dimension quota (#500) even on the
+            # small path so rollups are consistent.
+            memory.size_bytes = len(encoded)
+            return
+
+        # Promote to text-large — write body to S3 under the
+        # workspace-equivalent prefix (user id today, workspace id
+        # post-#482).
+        owner = memory.owner_user_id or memory.owner_client_id
+        s3_uri = self.blob_store.put(
+            owner=owner,
+            memory_id=memory.memory_id,
+            body=encoded,
+            content_type="text/plain; charset=utf-8",
+        )
+        memory.value_type = "text-large"
+        memory.s3_uri = s3_uri
+        memory.size_bytes = len(encoded)
+        memory.content_type = "text/plain; charset=utf-8"
+        # Drop the inline value — DynamoDB only keeps the pointer.
+        memory.value = ""
 
     def get_memory_by_id(self, memory_id: str) -> Memory | None:
         item = self._get_memory_meta(memory_id)

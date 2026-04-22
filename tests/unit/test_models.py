@@ -53,6 +53,65 @@ class TestMemory:
         m = Memory(key="k", value="v", owner_client_id="c1")
         assert m.to_dynamo_tag_items() == []
 
+    def test_default_value_type_is_text(self):
+        # #497: existing memories stay "text" with no pointer
+        # fields, so legacy items round-trip byte-identical through
+        # to_dynamo_meta.
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        assert m.value_type == "text"
+        assert m.s3_uri is None
+        assert m.content_type is None
+        assert m.size_bytes is None
+        item = m.to_dynamo_meta()
+        # None of the large-memory fields appear on the wire for
+        # inline text — legacy readers see an unchanged item.
+        assert "value_type" not in item
+        assert "s3_uri" not in item
+        assert "content_type" not in item
+        assert "size_bytes" not in item
+
+    def test_large_memory_fields_round_trip_through_dynamo(self):
+        m = Memory(
+            key="big",
+            value="",
+            value_type="text-large",
+            s3_uri="s3://hive-memory-blobs/u-1/mem-1",
+            content_type="text/plain; charset=utf-8",
+            size_bytes=500_000,
+            owner_client_id="c1",
+        )
+        item = m.to_dynamo_meta()
+        assert item["value_type"] == "text-large"
+        assert item["s3_uri"] == "s3://hive-memory-blobs/u-1/mem-1"
+        assert item["content_type"] == "text/plain; charset=utf-8"
+        assert item["size_bytes"] == 500_000
+        # None-value is serialised as an empty string so readers
+        # that expect a str keep working.
+        assert item["value"] == ""
+
+        m2 = Memory.from_dynamo(item)
+        assert m2.value_type == "text-large"
+        assert m2.s3_uri == "s3://hive-memory-blobs/u-1/mem-1"
+        assert m2.content_type == "text/plain; charset=utf-8"
+        assert m2.size_bytes == 500_000
+
+    def test_legacy_dynamo_item_without_value_type_defaults_to_text(self):
+        # Pre-#497 META items have no value_type / s3_uri / etc —
+        # from_dynamo must default them so the read path stays
+        # backwards compatible.
+        item = {
+            "memory_id": "mem-1",
+            "key": "legacy",
+            "value": "legacy-value",
+            "created_at": "2026-04-20T00:00:00+00:00",
+            "updated_at": "2026-04-20T00:00:00+00:00",
+            "owner_client_id": "c1",
+        }
+        m = Memory.from_dynamo(item)
+        assert m.value_type == "text"
+        assert m.s3_uri is None
+        assert m.size_bytes is None
+
     def test_default_recall_fields(self):
         m = Memory(key="k", value="v", owner_client_id="c1")
         assert m.recall_count == 0

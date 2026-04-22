@@ -1231,7 +1231,10 @@ async def search_memories(
     now = datetime.now(timezone.utc)
     scored: list[tuple[Memory, float, float, float, float]] = []
     for m, sem in hydrated:
-        kw = keyword_score(query_tokens, m.value)
+        # value is None for the large-memory foundation (#497);
+        # #498 lands the S3 fetch. Until then, fall back to empty
+        # string so keyword_score stays typed as str.
+        kw = keyword_score(query_tokens, m.value or "")
         rec = recency_score(m, now=now)
         blended = blend_score(
             semantic=sem,
@@ -1327,7 +1330,9 @@ async def relate_memories(
 
     try:
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
-        pairs = _vector_store().search(memory.value, client_id, top_k=top_k + 1)
+        # `memory.value or ""` guards the #497 large-memory path where
+        # the inline value is empty until #498 wires the S3 fetch.
+        pairs = _vector_store().search(memory.value or "", client_id, top_k=top_k + 1)
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
@@ -1569,7 +1574,7 @@ async def pack_context(
     for memory, sem in hydrated:
         if memory.is_redacted:
             continue
-        kw = keyword_score(query_tokens, memory.value)
+        kw = keyword_score(query_tokens, memory.value or "")
         rec = recency_score(memory, now=now)
         blended = blend_score(semantic=sem, keyword=kw, recency=rec)
         scored.append(
@@ -1894,7 +1899,9 @@ def read_memory_resource(key: str) -> str:
         raise ValueError(f"Memory not found: {decoded_key!r}")
     if memory.is_redacted:
         raise ValueError(f"Memory has been redacted: {decoded_key!r}")
-    return memory.value
+    # `memory.value or ""` guards the #497 large-memory path — #498
+    # swaps this for a transparent S3 fetch on text-large items.
+    return memory.value or ""
 
 
 # ---------------------------------------------------------------------------
