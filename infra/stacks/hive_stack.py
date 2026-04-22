@@ -271,9 +271,7 @@ class HiveStack(cdk.Stack):
         # the storage bill. In non-prod we set RemovalPolicy=DESTROY
         # + auto-delete so ephemeral dev stacks tear down cleanly;
         # prod gets RETAIN to prevent accidental data loss.
-        blobs_bucket_name = (
-            "hive-memory-blobs" if is_prod else f"hive-memory-blobs-{env_name}"
-        )
+        blobs_bucket_name = "hive-memory-blobs" if is_prod else f"hive-memory-blobs-{env_name}"
         blobs_bucket = s3.Bucket(
             self,
             "MemoryBlobsBucket",
@@ -282,10 +280,18 @@ class HiveStack(cdk.Stack):
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             versioned=False,
             enforce_ssl=True,
-            removal_policy=(
-                cdk.RemovalPolicy.RETAIN if is_prod else cdk.RemovalPolicy.DESTROY
-            ),
+            removal_policy=(cdk.RemovalPolicy.RETAIN if is_prod else cdk.RemovalPolicy.DESTROY),
             auto_delete_objects=not is_prod,
+        )
+        # Safety-net lifecycle rule: abort abandoned multipart upload
+        # sessions after 1 day so in-progress parts don't accumulate
+        # storage quota. Full orphan detection (complete objects with
+        # no DynamoDB counterpart) requires a scheduled cross-check
+        # Lambda — tracked separately.
+        blobs_bucket.add_lifecycle_rule(
+            id="AbortIncompleteUploads",
+            abort_incomplete_multipart_upload_after=cdk.Duration.days(1),
+            enabled=True,
         )
 
         app_version = os.environ.get("APP_VERSION", "dev")
@@ -649,9 +655,7 @@ class HiveStack(cdk.Stack):
                 resources=[f"{waf_log_group.log_group_arn}:*"],
                 conditions={
                     "StringEquals": {"aws:SourceAccount": self.account},
-                    "ArnLike": {
-                        "aws:SourceArn": f"arn:aws:logs:{self.region}:{self.account}:*"
-                    },
+                    "ArnLike": {"aws:SourceArn": f"arn:aws:logs:{self.region}:{self.account}:*"},
                 },
             )
         )
@@ -914,9 +918,7 @@ function handler(event) {
             )
 
         # Deploy built docs site assets — only if docs-site/.vitepress/dist exists
-        docs_dist_path = os.path.join(
-            os.path.dirname(__file__), "../../docs-site/.vitepress/dist"
-        )
+        docs_dist_path = os.path.join(os.path.dirname(__file__), "../../docs-site/.vitepress/dist")
         if os.path.exists(docs_dist_path):
             deploy_docs = s3deploy.BucketDeployment(
                 self,
@@ -1088,9 +1090,7 @@ function handler(event) {
         ) -> cw.Alarm:
             """Lambda error rate alarm: > 5% over two consecutive 5-min periods."""
             errors = fn.metric_errors(period=cdk.Duration.minutes(5), statistic="Sum")
-            invocations = fn.metric_invocations(
-                period=cdk.Duration.minutes(5), statistic="Sum"
-            )
+            invocations = fn.metric_invocations(period=cdk.Duration.minutes(5), statistic="Sum")
             error_rate = cw.MathExpression(
                 expression="100 * errors / MAX([errors, invocations])",
                 using_metrics={"errors": errors, "invocations": invocations},
@@ -1119,9 +1119,7 @@ function handler(event) {
             self,
             "McpP99DurationAlarm",
             alarm_name=f"Hive-{env_name}-McpP99Duration",
-            metric=mcp_fn.metric_duration(
-                period=cdk.Duration.minutes(5), statistic="p99"
-            ),
+            metric=mcp_fn.metric_duration(period=cdk.Duration.minutes(5), statistic="p99"),
             threshold=25_000,  # milliseconds
             evaluation_periods=2,
             datapoints_to_alarm=2,
@@ -1222,9 +1220,7 @@ function handler(event) {
                 self,
                 construct_id,
                 alarm_name=f"Hive-{env_name}-{construct_id.removesuffix('Alarm')}",
-                metric=fn.metric_throttles(
-                    period=cdk.Duration.minutes(5), statistic="Sum"
-                ),
+                metric=fn.metric_throttles(period=cdk.Duration.minutes(5), statistic="Sum"),
                 threshold=0,
                 evaluation_periods=1,
                 comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
@@ -1296,9 +1292,7 @@ function handler(event) {
             window_minutes: int,
         ) -> cw.Alarm:
             """Burn rate alarm using error rate vs SLO error budget."""
-            errors = fn.metric_errors(
-                period=cdk.Duration.minutes(window_minutes), statistic="Sum"
-            )
+            errors = fn.metric_errors(period=cdk.Duration.minutes(window_minutes), statistic="Sum")
             invocations = fn.metric_invocations(
                 period=cdk.Duration.minutes(window_minutes), statistic="Sum"
             )
@@ -1345,9 +1339,7 @@ function handler(event) {
             self,
             "McpP95LatencyAlarm",
             alarm_name=f"Hive-{env_name}-McpP95Latency",
-            metric=mcp_fn.metric_duration(
-                period=cdk.Duration.minutes(60), statistic="p95"
-            ),
+            metric=mcp_fn.metric_duration(period=cdk.Duration.minutes(60), statistic="p95"),
             threshold=2000,
             evaluation_periods=1,
             datapoints_to_alarm=1,
@@ -1380,39 +1372,23 @@ function handler(event) {
                 cw.GraphWidget(
                     title="MCP Invocations & Errors",
                     left=[
-                        mcp_fn.metric_invocations(
-                            period=cdk.Duration.minutes(5), statistic="Sum"
-                        )
+                        mcp_fn.metric_invocations(period=cdk.Duration.minutes(5), statistic="Sum")
                     ],
-                    right=[
-                        mcp_fn.metric_errors(
-                            period=cdk.Duration.minutes(5), statistic="Sum"
-                        )
-                    ],
+                    right=[mcp_fn.metric_errors(period=cdk.Duration.minutes(5), statistic="Sum")],
                     width=8,
                 ),
                 cw.GraphWidget(
                     title="MCP Duration (ms)",
                     left=[
-                        mcp_fn.metric_duration(
-                            period=cdk.Duration.minutes(5), statistic="p50"
-                        ),
-                        mcp_fn.metric_duration(
-                            period=cdk.Duration.minutes(5), statistic="p95"
-                        ),
-                        mcp_fn.metric_duration(
-                            period=cdk.Duration.minutes(5), statistic="p99"
-                        ),
+                        mcp_fn.metric_duration(period=cdk.Duration.minutes(5), statistic="p50"),
+                        mcp_fn.metric_duration(period=cdk.Duration.minutes(5), statistic="p95"),
+                        mcp_fn.metric_duration(period=cdk.Duration.minutes(5), statistic="p99"),
                     ],
                     width=8,
                 ),
                 cw.GraphWidget(
                     title="MCP Throttles",
-                    left=[
-                        mcp_fn.metric_throttles(
-                            period=cdk.Duration.minutes(5), statistic="Sum"
-                        )
-                    ],
+                    left=[mcp_fn.metric_throttles(period=cdk.Duration.minutes(5), statistic="Sum")],
                     width=8,
                 ),
             ),
@@ -1424,39 +1400,23 @@ function handler(event) {
                 cw.GraphWidget(
                     title="API Invocations & Errors",
                     left=[
-                        api_fn.metric_invocations(
-                            period=cdk.Duration.minutes(5), statistic="Sum"
-                        )
+                        api_fn.metric_invocations(period=cdk.Duration.minutes(5), statistic="Sum")
                     ],
-                    right=[
-                        api_fn.metric_errors(
-                            period=cdk.Duration.minutes(5), statistic="Sum"
-                        )
-                    ],
+                    right=[api_fn.metric_errors(period=cdk.Duration.minutes(5), statistic="Sum")],
                     width=8,
                 ),
                 cw.GraphWidget(
                     title="API Duration (ms)",
                     left=[
-                        api_fn.metric_duration(
-                            period=cdk.Duration.minutes(5), statistic="p50"
-                        ),
-                        api_fn.metric_duration(
-                            period=cdk.Duration.minutes(5), statistic="p95"
-                        ),
-                        api_fn.metric_duration(
-                            period=cdk.Duration.minutes(5), statistic="p99"
-                        ),
+                        api_fn.metric_duration(period=cdk.Duration.minutes(5), statistic="p50"),
+                        api_fn.metric_duration(period=cdk.Duration.minutes(5), statistic="p95"),
+                        api_fn.metric_duration(period=cdk.Duration.minutes(5), statistic="p99"),
                     ],
                     width=8,
                 ),
                 cw.GraphWidget(
                     title="API Throttles",
-                    left=[
-                        api_fn.metric_throttles(
-                            period=cdk.Duration.minutes(5), statistic="Sum"
-                        )
-                    ],
+                    left=[api_fn.metric_throttles(period=cdk.Duration.minutes(5), statistic="Sum")],
                     width=8,
                 ),
             ),
@@ -1667,7 +1627,9 @@ function handler(event) {
                 cw.AlarmWidget(alarm=api_slow_burn_alarm, title="API Slow Burn (2×, 6h)", width=6),
             ),
             cw.Row(
-                cw.AlarmWidget(alarm=mcp_p95_latency_alarm, title="MCP p95 Latency SLO (1h)", width=8),
+                cw.AlarmWidget(
+                    alarm=mcp_p95_latency_alarm, title="MCP p95 Latency SLO (1h)", width=8
+                ),
                 cw.GraphWidget(
                     title="MCP Error Rate % (SLO threshold = 0.5%)",
                     left=[
@@ -1690,11 +1652,7 @@ function handler(event) {
                 ),
                 cw.GraphWidget(
                     title="MCP p95 Latency (SLO threshold = 2000 ms)",
-                    left=[
-                        mcp_fn.metric_duration(
-                            period=cdk.Duration.minutes(60), statistic="p95"
-                        )
-                    ],
+                    left=[mcp_fn.metric_duration(period=cdk.Duration.minutes(60), statistic="p95")],
                     left_y_axis=cw.YAxisProps(min=0),
                     width=8,
                 ),
@@ -1704,8 +1662,12 @@ function handler(event) {
         # ----------------------------------------------------------------
         # Outputs
         # ----------------------------------------------------------------
-        cdk.CfnOutput(self, "McpFunctionUrl", value=mcp_url.url, description="MCP Lambda URL (direct)")
-        cdk.CfnOutput(self, "ApiFunctionUrl", value=api_url.url, description="API Lambda URL (direct)")
+        cdk.CfnOutput(
+            self, "McpFunctionUrl", value=mcp_url.url, description="MCP Lambda URL (direct)"
+        )
+        cdk.CfnOutput(
+            self, "ApiFunctionUrl", value=api_url.url, description="API Lambda URL (direct)"
+        )
         cdk.CfnOutput(self, "TableName", value=table.table_name, description="DynamoDB table name")
         cdk.CfnOutput(
             self,

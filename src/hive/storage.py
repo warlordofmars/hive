@@ -24,6 +24,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+from hive.logging_config import get_logger
 from hive.models import (
     ActivityEvent,
     ApiKey,
@@ -37,6 +38,8 @@ from hive.models import (
     TokenType,
     User,
 )
+
+logger = get_logger("hive.storage")
 
 TABLE_NAME = os.environ.get("HIVE_TABLE_NAME", "hive")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -341,6 +344,7 @@ class HiveStorage:
         memory = Memory.from_dynamo(existing)
         self._delete_tag_items(memory)
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
+        self._delete_blob_if_needed(memory)
         return True
 
     # ------------------------------------------------------------------
@@ -518,6 +522,7 @@ class HiveStorage:
                     continue
                 self._delete_tag_items(memory)
                 self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
+                self._delete_blob_if_needed(memory)
                 deleted += 1
             if cursor is None:
                 break
@@ -1111,6 +1116,28 @@ class HiveStorage:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _delete_blob_if_needed(self, memory: Memory) -> None:
+        """Delete the S3 blob for a memory if one exists.
+
+        Called after the DynamoDB item is already removed. Failures are
+        logged as warnings and swallowed — the memory is already gone from
+        DynamoDB so it's inaccessible regardless. The configured S3
+        lifecycle rule only aborts incomplete multipart uploads; it does
+        not clean up orphaned objects left behind by failed deletes.
+        """
+        if memory.s3_uri is None:
+            return
+        owner = memory.owner_user_id or memory.owner_client_id or ""
+        try:
+            self.blob_store.delete(owner=owner, memory_id=memory.memory_id)
+        except Exception:
+            logger.warning(
+                "blob_delete_failed memory_id=%s s3_uri=%s",
+                memory.memory_id,
+                memory.s3_uri,
+                exc_info=True,
+            )
 
     def _get_memory_meta(self, memory_id: str) -> dict[str, Any] | None:
         resp = self.table.get_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})

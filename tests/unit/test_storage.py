@@ -566,6 +566,46 @@ class TestLargeMemoryRouting:
         assert isinstance(first, BlobStore)
         assert storage.blob_store is first  # cached — not re-created
 
+    def test_delete_memory_removes_s3_blob(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="big", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+        assert ("u1", m.memory_id) in fake.objects
+
+        storage.delete_memory(m.memory_id)
+        assert ("u1", m.memory_id) not in fake.objects
+
+    def test_delete_memory_s3_failure_is_nonfatal(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="big2", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+
+        def _raise(owner, memory_id):
+            raise RuntimeError("S3 unavailable")
+
+        fake.delete = _raise
+        # Should not raise — DynamoDB item is gone; S3 failure is logged
+        assert storage.delete_memory(m.memory_id)
+        assert storage.get_memory_by_key("big2") is None
+
+    def test_delete_memories_by_tag_removes_blobs(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(
+            key="bulk-big",
+            value=big_value,
+            tags=["bulk"],
+            owner_user_id="u1",
+            owner_client_id="c1",
+        )
+        storage.put_memory(m)
+        assert ("u1", m.memory_id) in fake.objects
+
+        storage.delete_memories_by_tag("bulk")
+        assert ("u1", m.memory_id) not in fake.objects
+
 
 class TestMemoryVersionStorage:
     def test_list_versions_newest_first(self, storage):
