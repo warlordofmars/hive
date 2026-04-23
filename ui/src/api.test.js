@@ -514,4 +514,72 @@ describe("api", () => {
     expect(storage["hive_mgmt_token"]).toBeUndefined();
     expect(replace).toHaveBeenCalledWith("/");
   });
+
+  // ---------------------------------------------------------------------------
+  // getMemoryContent
+  // ---------------------------------------------------------------------------
+
+  it("getMemoryContent fetches memory content and returns blob", async () => {
+    const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(blob),
+    });
+    const result = await api.getMemoryContent("mem-abc");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/memories/mem-abc/content");
+    expect(result).toBe(blob);
+  });
+
+  it("getMemoryContent sends Authorization header when token present", async () => {
+    storage["hive_mgmt_token"] = "user-token";
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(new Blob()),
+    });
+    await api.getMemoryContent("mem-abc");
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer user-token");
+  });
+
+  it("getMemoryContent throws on non-ok response with detail", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: () => Promise.resolve({ detail: "Memory has no S3 content" }),
+    });
+    await expect(api.getMemoryContent("mem-abc")).rejects.toThrow("Memory has no S3 content");
+  });
+
+  it("getMemoryContent throws fallback message when json has no detail field", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Server Error",
+      json: () => Promise.resolve({}),
+    });
+    await expect(api.getMemoryContent("mem-abc")).rejects.toThrow("Failed to fetch content");
+  });
+
+  it("getMemoryContent throws generic message when json parse fails", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Server Error",
+      json: () => Promise.reject(new Error("bad json")),
+    });
+    await expect(api.getMemoryContent("mem-abc")).rejects.toThrow("Server Error");
+  });
+
+  it("getMemoryContent clears token and redirects on 401", async () => {
+    storage["hive_mgmt_token"] = "old-token";
+    const replace = vi.fn();
+    vi.stubGlobal("location", { replace });
+    fetchMock.mockResolvedValue({ ok: false, status: 401 });
+    const result = await api.getMemoryContent("mem-abc");
+    expect(result).toBeNull();
+    expect(storage["hive_mgmt_token"]).toBeUndefined();
+    expect(replace).toHaveBeenCalledWith("/");
+  });
 });

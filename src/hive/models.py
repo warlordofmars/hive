@@ -614,6 +614,9 @@ class MemoryResponse(BaseModel):
     memory_id: str
     key: str
     value: str
+    value_type: Literal["text", "text-large", "image", "blob"] = "text"
+    content_type: str | None = None
+    size_bytes: int | None = None
     tags: list[str]
     created_at: datetime
     updated_at: datetime
@@ -626,7 +629,10 @@ class MemoryResponse(BaseModel):
         return cls(
             memory_id=m.memory_id,
             key=m.key,
-            value=m.value,
+            value=m.value or "",
+            value_type=m.value_type,
+            content_type=m.content_type,
+            size_bytes=m.size_bytes,
             tags=m.tags,
             created_at=m.created_at,
             updated_at=m.updated_at,

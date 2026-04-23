@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import PropTypes from "prop-types";
-import { X } from "lucide-react";
+import { Download, X } from "lucide-react";
 import { api } from "../api.js";
 import EmptyState from "./EmptyState.jsx";
 import MemoryDiff from "./MemoryDiff.jsx";
@@ -169,6 +169,59 @@ TagPicker.propTypes = {
 };
 
 // ------------------------------------------------------------------
+// Helpers for binary memory types
+// ------------------------------------------------------------------
+
+const _TYPE_LABELS = { "text-large": "Large text", image: "Image", blob: "Blob" };
+export function typeBadgeLabel(vt) {
+  return _TYPE_LABELS[vt] ?? vt;
+}
+
+export function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function MemoryImage({ memoryId, alt, className }) {
+  const [src, setSrc] = useState(null);
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(
+    function fetchImage() {
+      let objectUrl = null;
+      api
+        .getMemoryContent(memoryId)
+        .then(function onBlob(blob) {
+          objectUrl = URL.createObjectURL(blob);
+          setSrc(objectUrl);
+        })
+        .catch(function onError() {
+          setImgError(true);
+        });
+      return function cleanup() {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+      };
+    },
+    [memoryId],
+  );
+
+  if (imgError)
+    return (
+      <span className="text-[var(--text-muted)] text-[13px]">Preview unavailable</span>
+    );
+  if (!src)
+    return <span className="text-[var(--text-muted)] text-[13px]">Loading preview…</span>;
+  return <img src={src} alt={alt} className={className} />;
+}
+
+MemoryImage.propTypes = {
+  memoryId: PropTypes.string.isRequired,
+  alt: PropTypes.string.isRequired,
+  className: PropTypes.string,
+};
+
+// ------------------------------------------------------------------
 // MemoryBrowser
 // ------------------------------------------------------------------
 
@@ -198,6 +251,7 @@ export default function MemoryBrowser() {
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [clientNameById, setClientNameById] = useState({});
+  const [contentLoading, setContentLoading] = useState(false);
 
   useEffect(function loadClientNames() {
     api.listClients()
@@ -455,12 +509,41 @@ export default function MemoryBrowser() {
     }
   }
 
-  function openEdit(m) {
+  async function openEdit(m) {
     setEditing(m);
-    setForm({ key: m.key, value: m.value, tags: m.tags.join(", "), ttl: "" });
     setCreating(false);
     setViewingHistory(null);
     setVersions([]);
+
+    if (m.value_type === "text-large") {
+      setForm({ key: m.key, value: "", tags: m.tags.join(", "), ttl: "" });
+      setContentLoading(true);
+      try {
+        const blob = await api.getMemoryContent(m.memory_id);
+        const text = await blob.text();
+        setForm((prev) => ({ ...prev, value: text }));
+      } catch {
+        // Keep the empty value; user can still save tags or a replacement value
+      } finally {
+        setContentLoading(false);
+      }
+    } else {
+      setForm({ key: m.key, value: m.value ?? "", tags: m.tags.join(", "), ttl: "" });
+    }
+  }
+
+  async function handleBlobDownload() {
+    try {
+      const blob = await api.getMemoryContent(editing.memory_id);
+      const url = URL.createObjectURL(blob);
+      const a = globalThis.document.createElement("a");
+      a.href = url;
+      a.download = editing.key;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   function openCreate() {
@@ -665,6 +748,14 @@ export default function MemoryBrowser() {
                     {m.score !== undefined && (
                       <Badge>{Math.round(m.score * 100)}% match</Badge>
                     )}
+                    {m.value_type && m.value_type !== "text" && (
+                      <Badge
+                        data-testid="type-badge"
+                        style={{ background: "var(--accent)", color: "var(--accent-fg)" }}
+                      >
+                        {typeBadgeLabel(m.value_type)}
+                      </Badge>
+                    )}
                     {m.expires_at && (
                       <Badge className="border-[var(--amber)] text-[var(--amber)]">Expires {new Date(m.expires_at).toLocaleDateString()}</Badge>
                     )}
@@ -674,9 +765,28 @@ export default function MemoryBrowser() {
                       </Badge>
                     )}
                   </div>
-                  <p className="mt-1 text-[var(--text-muted)] text-[13px] whitespace-pre-wrap">
-                    {m.value.length > 160 ? m.value.slice(0, 160) + "…" : m.value}
-                  </p>
+                  {m.value_type === "image" ? (
+                    <MemoryImage
+                      memoryId={m.memory_id}
+                      alt={m.key}
+                      className="mt-1 max-h-16 object-cover rounded"
+                    />
+                  ) : m.value_type === "blob" ? (
+                    <p className="mt-1 text-[var(--text-muted)] text-[13px]">
+                      {m.content_type ?? "Binary file"}
+                      {m.size_bytes ? ` · ${formatBytes(m.size_bytes)}` : ""}
+                    </p>
+                  ) : m.value_type === "text-large" ? (
+                    <p className="mt-1 text-[var(--text-muted)] text-[13px] italic">
+                      Large text{m.size_bytes ? ` · ${formatBytes(m.size_bytes)}` : ""}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-[var(--text-muted)] text-[13px] whitespace-pre-wrap">
+                      {(m.value ?? "").length > 160
+                        ? m.value.slice(0, 160) + "…"
+                        : (m.value ?? "")}
+                    </p>
+                  )}
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {m.tags.map((t) => (
                       <Badge key={t}>{t}</Badge>
@@ -716,63 +826,122 @@ export default function MemoryBrowser() {
       {/* Side form */}
       {(creating || editing) && (
         <div className="w-full md:w-[360px]">
-          <Card>
-            <h3 className="mb-4 text-base font-semibold">
-              {creating ? "New Memory" : `Edit: ${editing.key}`}
-            </h3>
-            <form onSubmit={creating ? handleCreate : handleUpdate}>
-              {creating && (
-                <div className="mb-3">
-                  <Label htmlFor="memory-key">Key</Label>
-                  <Input
-                    id="memory-key"
-                    required
-                    value={form.key}
-                    onChange={(e) => setForm({ ...form, key: e.target.value })}
-                    placeholder="unique-key"
-                  />
+          {editing?.value_type === "image" ? (
+            <Card>
+              <h3 className="mb-4 text-base font-semibold">Image: {editing.key}</h3>
+              <MemoryImage
+                memoryId={editing.memory_id}
+                alt={editing.key}
+                className="max-w-full rounded mb-3"
+              />
+              {(editing.content_type || editing.size_bytes) && (
+                <p className="text-[13px] text-[var(--text-muted)] mb-2">
+                  {editing.content_type}
+                  {editing.size_bytes ? ` · ${formatBytes(editing.size_bytes)}` : ""}
+                </p>
+              )}
+              {editing.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-3">
+                  {editing.tags.map((t) => (
+                    <Badge key={t}>{t}</Badge>
+                  ))}
                 </div>
               )}
-              <div className="mb-3">
-                <Label htmlFor="memory-value">Value</Label>
-                <Textarea
-                  id="memory-value"
-                  required
-                  rows={6}
-                  value={form.value}
-                  onChange={(e) => setForm({ ...form, value: e.target.value })}
-                  placeholder="Memory content…"
-                />
-              </div>
-              <div className="mb-3">
-                <Label htmlFor="memory-tags">Tags (comma-separated)</Label>
-                <Input
-                  id="memory-tags"
-                  value={form.tags}
-                  onChange={(e) => setForm({ ...form, tags: e.target.value })}
-                  placeholder="tag1, tag2"
-                />
-              </div>
-              <div className="mb-4">
-                <Label htmlFor="memory-ttl">Expires in</Label>
-                <Select
-                  id="memory-ttl"
-                  value={form.ttl}
-                  onChange={(e) => setForm({ ...form, ttl: e.target.value })}
-                >
-                  {TTL_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+              <Button variant="secondary" onClick={closePanel}>
+                Close
+              </Button>
+            </Card>
+          ) : editing?.value_type === "blob" ? (
+            <Card>
+              <h3 className="mb-4 text-base font-semibold">Blob: {editing.key}</h3>
+              <p className="text-[13px] mb-1">
+                {editing.content_type ?? "Binary file"}
+              </p>
+              {editing.size_bytes && (
+                <p className="text-[13px] text-[var(--text-muted)] mb-3">
+                  {formatBytes(editing.size_bytes)}
+                </p>
+              )}
+              {editing.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mb-3">
+                  {editing.tags.map((t) => (
+                    <Badge key={t}>{t}</Badge>
                   ))}
-                </Select>
-              </div>
+                </div>
+              )}
               <div className="flex gap-2">
-                <Button type="submit">Save</Button>
-                <Button variant="secondary" type="button" onClick={closePanel}>
-                  Cancel
+                <Button onClick={handleBlobDownload}>
+                  <Download size={14} className="mr-1" />
+                  Download
+                </Button>
+                <Button variant="secondary" onClick={closePanel}>
+                  Close
                 </Button>
               </div>
-            </form>
-          </Card>
+            </Card>
+          ) : (
+            <Card>
+              <h3 className="mb-4 text-base font-semibold">
+                {creating ? "New Memory" : `Edit: ${editing.key}`}
+              </h3>
+              <form onSubmit={creating ? handleCreate : handleUpdate}>
+                {creating && (
+                  <div className="mb-3">
+                    <Label htmlFor="memory-key">Key</Label>
+                    <Input
+                      id="memory-key"
+                      required
+                      value={form.key}
+                      onChange={(e) => setForm({ ...form, key: e.target.value })}
+                      placeholder="unique-key"
+                    />
+                  </div>
+                )}
+                <div className="mb-3">
+                  <Label htmlFor="memory-value">Value</Label>
+                  {contentLoading ? (
+                    <p className="text-[var(--text-muted)] text-[13px]">Loading content…</p>
+                  ) : (
+                    <Textarea
+                      id="memory-value"
+                      required
+                      rows={6}
+                      value={form.value}
+                      onChange={(e) => setForm({ ...form, value: e.target.value })}
+                      placeholder="Memory content…"
+                    />
+                  )}
+                </div>
+                <div className="mb-3">
+                  <Label htmlFor="memory-tags">Tags (comma-separated)</Label>
+                  <Input
+                    id="memory-tags"
+                    value={form.tags}
+                    onChange={(e) => setForm({ ...form, tags: e.target.value })}
+                    placeholder="tag1, tag2"
+                  />
+                </div>
+                <div className="mb-4">
+                  <Label htmlFor="memory-ttl">Expires in</Label>
+                  <Select
+                    id="memory-ttl"
+                    value={form.ttl}
+                    onChange={(e) => setForm({ ...form, ttl: e.target.value })}
+                  >
+                    {TTL_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="flex gap-2">
+                  <Button type="submit">Save</Button>
+                  <Button variant="secondary" type="button" onClick={closePanel}>
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            </Card>
+          )}
         </div>
       )}
 

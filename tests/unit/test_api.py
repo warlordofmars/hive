@@ -21,6 +21,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("HIVE_JWT_SECRET", "unit-test-secret")
+os.environ.setdefault("HIVE_VECTORS_BUCKET", "hive-unit-vectors")
 # Ensure unit tests never try to hit a real DynamoDB endpoint
 os.environ.pop("DYNAMODB_ENDPOINT", None)
 
@@ -102,7 +103,13 @@ def _setup_app_overrides(app, storage, claims):
     def _override_storage():
         return storage
 
+    from unittest.mock import MagicMock
+
+    mock_vs = MagicMock()
+    mock_vs.search.return_value = []
+
     app.dependency_overrides[auth_mod.require_mgmt_user] = _override_mgmt_user
+    app.dependency_overrides[memories_mod._vector_store] = lambda: mock_vs
     for mod in (memories_mod, clients_mod, stats_mod, users_mod, versions_mod):
         app.dependency_overrides[mod._storage] = _override_storage
 
@@ -490,6 +497,121 @@ class TestMemoryTTL:
         resp = tc.patch(f"/api/memories/{mid}", json={"ttl_seconds": 0})
         assert resp.status_code == 200
         assert resp.json()["expires_at"] is None
+
+    def test_response_includes_value_type_fields(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories", json={"key": "vt-k", "value": "v"})
+        data = resp.json()
+        assert data["value_type"] == "text"
+        assert data["content_type"] is None
+        assert data["size_bytes"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Memory content endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryContentEndpoint:
+    def test_inline_memory_returns_409(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "inline-k", "value": "hi"}).json()["memory_id"]
+        resp = tc.get(f"/api/memories/{mid}/content")
+        assert resp.status_code == 409
+
+    def test_nonexistent_memory_returns_404(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/memories/no-such-id/content")
+        assert resp.status_code == 404
+
+    def test_non_admin_cannot_access_other_users_content(self, client):
+        from hive.models import Memory
+
+        tc, storage, _ = client
+        other = Memory(
+            key="other-bin",
+            value_type="blob",
+            owner_client_id="x",
+            owner_user_id="other-user",
+            s3_uri="s3://bucket/other-user/mem-id",
+        )
+        storage.put_memory(other)
+        resp = tc.get(f"/api/memories/{other.memory_id}/content")
+        assert resp.status_code == 404
+
+    def test_streams_image_content_with_correct_type(self, client):
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+
+        tc, storage, user_id = client
+        mem = Memory(
+            key="img.png",
+            value_type="image",
+            owner_client_id=user_id,
+            owner_user_id=user_id,
+            s3_uri=f"s3://bucket/{user_id}/img-id",
+            content_type="image/png",
+        )
+        storage.put_memory(mem)
+
+        mock_bs = MagicMock()
+        mock_bs.get.return_value = b"\x89PNG\r\n"
+        with patch("hive.blob_store.BlobStore", return_value=mock_bs):
+            resp = tc.get(f"/api/memories/{mem.memory_id}/content")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/png")
+        assert resp.content == b"\x89PNG\r\n"
+        mock_bs.get.assert_called_once_with(user_id, mem.memory_id)
+
+    def test_admin_can_access_other_users_content(self, admin_client):
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+
+        tc, storage, _ = admin_client
+        mem = Memory(
+            key="other-pdf",
+            value_type="blob",
+            owner_client_id="x",
+            owner_user_id="other-user",
+            s3_uri="s3://bucket/other-user/pdf-id",
+            content_type="application/pdf",
+        )
+        storage.put_memory(mem)
+
+        mock_bs = MagicMock()
+        mock_bs.get.return_value = b"%PDF-1.4"
+        with patch("hive.blob_store.BlobStore", return_value=mock_bs):
+            resp = tc.get(f"/api/memories/{mem.memory_id}/content")
+
+        assert resp.status_code == 200
+        assert resp.content == b"%PDF-1.4"
+
+    def test_missing_content_type_defaults_to_octet_stream(self, client):
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+
+        tc, storage, user_id = client
+        mem = Memory(
+            key="unknown-blob",
+            value_type="blob",
+            owner_client_id=user_id,
+            owner_user_id=user_id,
+            s3_uri=f"s3://bucket/{user_id}/unknown-id",
+        )
+        storage.put_memory(mem)
+
+        mock_bs = MagicMock()
+        mock_bs.get.return_value = b"raw bytes"
+        with patch("hive.blob_store.BlobStore", return_value=mock_bs):
+            resp = tc.get(f"/api/memories/{mem.memory_id}/content")
+
+        assert resp.status_code == 200
+        assert "application/octet-stream" in resp.headers["content-type"]
+        assert resp.content == b"raw bytes"
 
 
 # ---------------------------------------------------------------------------
