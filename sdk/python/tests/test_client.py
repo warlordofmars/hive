@@ -5,11 +5,9 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio  # noqa: F401 — registers asyncio mode
-from pytest_httpx import HTTPXMock
-
 from hive_client import HiveClient
 from hive_client.client import HiveError
-
+from pytest_httpx import HTTPXMock
 
 BASE_URL = "https://app.hive-memory.com"
 API_KEY = "hive_sk_test"

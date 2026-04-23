@@ -23,7 +23,6 @@ from __future__ import annotations
 import os
 
 import aws_cdk as cdk
-from cdk_nag import NagPackSuppression, NagSuppressions
 from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
@@ -39,9 +38,9 @@ from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from aws_cdk import aws_s3vectors as s3vectors
 from aws_cdk import aws_sns as sns
-from aws_cdk import aws_sns_subscriptions as sns_subs
 from aws_cdk import aws_ssm as ssm
 from aws_cdk import aws_wafv2 as wafv2
+from cdk_nag import NagPackSuppression, NagSuppressions
 from constructs import Construct
 
 GITHUB_REPO = "warlordofmars/hive"
@@ -254,7 +253,7 @@ class HiveStack(cdk.Stack):
 
         # S3 Vectors bucket — one vector index per OAuth client, lazy-created
         vectors_bucket_name = "hive-vectors" if is_prod else f"hive-vectors-{env_name}"
-        vectors_bucket = s3vectors.CfnVectorBucket(
+        s3vectors.CfnVectorBucket(
             self,
             "VectorsBucket",
             vector_bucket_name=vectors_bucket_name,
@@ -1229,8 +1228,8 @@ function handler(event) {
             )
             return _notify(alarm)
 
-        mcp_throttles_alarm = _throttle_alarm("McpThrottlesAlarm", mcp_fn, "MCP")
-        api_throttles_alarm = _throttle_alarm("ApiThrottlesAlarm", api_fn, "API")
+        _throttle_alarm("McpThrottlesAlarm", mcp_fn, "MCP")
+        _throttle_alarm("ApiThrottlesAlarm", api_fn, "API")
 
         # DynamoDB user errors — 4xx-class failures from the SDK (validation,
         # ConditionalCheckFailed, etc.). A small rate is normal (optimistic

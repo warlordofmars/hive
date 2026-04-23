@@ -45,10 +45,7 @@ def _has_copyright(path: Path) -> bool:
         lines = path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError:
         return True  # skip binary files
-    for line in lines[:5]:
-        if COPYRIGHT_RE.search(line):
-            return True
-    return False
+    return any(COPYRIGHT_RE.search(line) for line in lines[:5])
 
 
 def _add_copyright(path: Path) -> None:
