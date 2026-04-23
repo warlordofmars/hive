@@ -470,7 +470,11 @@ async def remember(
         event_type = EventType.memory_updated
         action = "Updated"
         try:
-            _vector_store().upsert_memory(existing)
+            _vector_store().upsert_memory(
+                existing.model_copy(update={"value": value})
+                if existing.value_type == "text-large"
+                else existing
+            )
         except Exception:
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
     else:
@@ -491,7 +495,11 @@ async def remember(
         event_type = EventType.memory_created
         action = "Stored"
         try:
-            _vector_store().upsert_memory(memory)
+            _vector_store().upsert_memory(
+                memory.model_copy(update={"value": value})
+                if memory.value_type == "text-large"
+                else memory
+            )
         except Exception:
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
@@ -599,7 +607,11 @@ async def remember_if_absent(
         await emit_metric("ToolErrors", operation="remember_if_absent")
         raise ToolError(str(exc)) from exc
     try:
-        _vector_store().upsert_memory(memory)
+        _vector_store().upsert_memory(
+            memory.model_copy(update={"value": value})
+            if memory.value_type == "text-large"
+            else memory
+        )
     except Exception:
         logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
@@ -698,7 +710,19 @@ async def recall(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="recall"
     )
-    return _tool_result(memory.value, storage, client_id, memory=memory)
+    if memory.value_type == "text-large":
+        try:
+            recalled_value = storage.fetch_blob_value(memory)
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for recall key='%s'",
+                key,
+                exc_info=True,
+            )
+            recalled_value = f"[memory content unavailable — blob fetch failed for key '{key}']"
+    else:
+        recalled_value = memory.value or ""
+    return _tool_result(recalled_value, storage, client_id, memory=memory)
 
 
 @mcp.tool(
@@ -1231,9 +1255,10 @@ async def search_memories(
     now = datetime.now(timezone.utc)
     scored: list[tuple[Memory, float, float, float, float]] = []
     for m, sem in hydrated:
-        # Large-memory entries keep an empty-string inline placeholder
-        # until #498 lands the S3 fetch. Fall back to "" here so
-        # keyword_score always receives a str.
+        # For text-large memories, keyword scoring uses the empty inline
+        # placeholder — fetching S3 blobs per candidate would be too
+        # expensive. Semantic relevance from the vector index covers the
+        # large-document recall path.
         kw = keyword_score(query_tokens, m.value or "")
         rec = recency_score(m, now=now)
         blended = blend_score(
@@ -1328,11 +1353,20 @@ async def relate_memories(
     if memory is None:
         raise ToolError(f"No memory found for key '{key}'.")
 
+    query_value = memory.value or ""
+    if memory.value_type == "text-large":
+        try:
+            query_value = storage.fetch_blob_value(memory)
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for relate_memories key='%s'",
+                key,
+                exc_info=True,
+            )
+
     try:
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
-        # `memory.value or ""` guards the #497 large-memory path where
-        # the inline value is empty until #498 wires the S3 fetch.
-        pairs = _vector_store().search(memory.value or "", client_id, top_k=top_k + 1)
+        pairs = _vector_store().search(query_value, client_id, top_k=top_k + 1)
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
@@ -1899,8 +1933,16 @@ def read_memory_resource(key: str) -> str:
         raise ValueError(f"Memory not found: {decoded_key!r}")
     if memory.is_redacted:
         raise ValueError(f"Memory has been redacted: {decoded_key!r}")
-    # `memory.value or ""` guards the #497 large-memory path — #498
-    # swaps this for a transparent S3 fetch on text-large items.
+    if memory.value_type == "text-large":
+        try:
+            return storage.fetch_blob_value(memory)
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for resource key='%s'",
+                decoded_key,
+                exc_info=True,
+            )
+            return f"[memory content unavailable — blob fetch failed for key {decoded_key!r}]"
     return memory.value or ""
 
 

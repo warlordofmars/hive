@@ -235,19 +235,26 @@ class HiveStorage:
     def _route_large_value(self, memory: Memory) -> None:
         """Offload oversized text to S3, leaving a pointer in DynamoDB.
 
-        Only runs on "text"-typed memories. Non-text types (image /
-        blob, arriving via #499) are expected to already carry an
-        ``s3_uri`` when they reach ``put_memory`` — this router only
-        handles the transparent-text-large path where a caller hands
-        us an oversized string and expects us to pick the right
-        backend.
+        Handles both initial writes and updates for text and text-large
+        memories. Binary types (image/blob, arriving via #499) are expected
+        to already carry an ``s3_uri`` — this router only handles the
+        transparent-text path where a caller hands us a string and expects
+        the right backend to be chosen automatically.
         """
         from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES, MAX_BLOB_SIZE_BYTES
 
-        # Non-text paths have their own upload lifecycle (#499) —
-        # don't touch them here.
-        if memory.value_type != "text":
+        # Binary paths (image, blob) have their own upload lifecycle (#499).
+        if memory.value_type not in ("text", "text-large"):
             return
+
+        # A text-large memory fetched from DynamoDB has value="" (blob already
+        # in S3). Re-route only when the caller has provided a new value (the
+        # remember-update path). An empty value means the existing S3 object
+        # is unchanged.
+        if memory.value_type == "text-large":
+            if not memory.value:
+                return
+            memory.value_type = "text"
 
         if memory.value is None:
             return
@@ -1138,6 +1145,16 @@ class HiveStorage:
                 memory.s3_uri,
                 exc_info=True,
             )
+
+    def fetch_blob_value(self, memory: Memory) -> str:
+        """Fetch the full text content from S3 for a ``text-large`` memory.
+
+        Raises whatever the underlying blob store raises so the caller can
+        decide whether to propagate or surface a user-facing fallback.
+        """
+        owner = memory.owner_user_id or memory.owner_client_id or ""
+        data = self.blob_store.get(owner=owner, memory_id=memory.memory_id)
+        return data.decode("utf-8")
 
     def _get_memory_meta(self, memory_id: str) -> dict[str, Any] | None:
         resp = self.table.get_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
