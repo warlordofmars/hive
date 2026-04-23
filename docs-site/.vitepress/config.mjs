@@ -77,6 +77,7 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/tools/overview" },
           { text: "remember", link: "/tools/remember" },
+          { text: "remember_blob", link: "/tools/remember_blob" },
           { text: "recall", link: "/tools/recall" },
           { text: "forget", link: "/tools/forget" },
           { text: "list_memories", link: "/tools/list-memories" },
@@ -100,6 +101,7 @@ export default defineConfig({
           { text: "How memory scoping works", link: "/concepts/memory-scoping" },
           { text: "Tags and organisation", link: "/concepts/tags" },
           { text: "Key naming conventions", link: "/concepts/key-conventions" },
+          { text: "Large memory", link: "/concepts/large-memory" },
           { text: "Quotas and rate limits", link: "/concepts/quotas" },
           { text: "MCP Resources", link: "/concepts/resources" },
         ],

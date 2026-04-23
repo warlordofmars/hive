@@ -10,9 +10,22 @@ Sign in at [hive.warlordofmars.net](https://hive.warlordofmars.net) and click th
 
 Your memories are listed in the main panel. Each card shows:
 - The memory **key**
-- A preview of the **value** (first 160 characters)
+- A **type badge** for non-text memories (`Large text`, `Image`, or `Blob`)
+- A preview of the **value** (first 160 characters for text memories; a placeholder or thumbnail for large/binary memories)
 - Any **tags** attached to the memory
 - A **by {client name}** badge attributing the memory to the OAuth client that created it (falls back to the client id when the name has been deleted)
+
+### Large text memories
+
+When a text value exceeds 100 KB it is stored in S3 and shown with a **Large text** badge. Clicking the memory opens the full content in the edit panel (fetched from S3 on demand). You can edit and save large text memories the same way as ordinary ones.
+
+### Image memories
+
+Images stored via `remember_blob` show a thumbnail preview in both the list and the detail panel. Clicking a card opens a full-size preview. Images are read-only — to replace an image, use the MCP tool `remember_blob` with the same key.
+
+### Blob memories
+
+Non-image binary memories (PDFs, audio, etc.) show a **Blob** badge with the MIME type and file size. The detail panel has a **Download** button to save the file locally. Blobs are read-only in the UI.
 
 ## Searching memories
 
