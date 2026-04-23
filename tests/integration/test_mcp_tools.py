@@ -105,7 +105,7 @@ def setup():
         aws_secret_access_key="local",
     )
 
-    oauth_client = OAuthClient(client_name="MCP Test Client")
+    oauth_client = OAuthClient(client_name="MCP Test Client", owner_user_id="integration-test-user")
     storage.put_client(oauth_client)
 
     now = datetime.now(timezone.utc)
