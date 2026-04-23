@@ -601,6 +601,85 @@ class TestListMemories:
         assert body["has_more"] is False
 
 
+def _make_user_jwt(storage, owner_user_id: str) -> str:
+    """Issue a full-scope JWT for a new client belonging to ``owner_user_id``."""
+    from hive.auth.tokens import issue_jwt
+    from hive.models import OAuthClient, Token
+
+    client = OAuthClient(client_name=f"User {owner_user_id}", owner_user_id=owner_user_id)
+    storage.put_client(client)
+    now = datetime.now(timezone.utc)
+    token = Token(
+        client_id=client.client_id,
+        scope="memories:read memories:write",
+        issued_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    storage.put_token(token)
+    return issue_jwt(token)
+
+
+class TestListMemoriesUserScoping:
+    """Cross-user isolation for the list_memories MCP tool."""
+
+    async def test_cross_user_isolation(self, server_env):
+        """User B cannot see User A's memories even if they share a tag."""
+        storage, _, _ = server_env
+        from hive.server import list_memories, remember
+
+        jwt_a = _make_user_jwt(storage, "user-alice")
+        jwt_b = _make_user_jwt(storage, "user-bob")
+
+        await remember("secret-alice", "alice-value", ["shared-tag"], ctx=_make_ctx(jwt_a))
+        await remember("secret-bob", "bob-value", ["shared-tag"], ctx=_make_ctx(jwt_b))
+
+        result_a = await list_memories("shared-tag", ctx=_make_ctx(jwt_a))
+        keys_a = [m["key"] for m in _body(result_a)["items"]]
+        assert "secret-alice" in keys_a
+        assert "secret-bob" not in keys_a
+
+        result_b = await list_memories("shared-tag", ctx=_make_ctx(jwt_b))
+        keys_b = [m["key"] for m in _body(result_b)["items"]]
+        assert "secret-bob" in keys_b
+        assert "secret-alice" not in keys_b
+
+    async def test_within_user_cross_client_sharing(self, server_env):
+        """Two clients owned by the same user can see each other's tagged memories."""
+        storage, _, _ = server_env
+        from hive.server import list_memories, remember
+
+        jwt_c1 = _make_user_jwt(storage, "user-charlie")
+        jwt_c2 = _make_user_jwt(storage, "user-charlie")
+
+        await remember("from-client1", "v1", ["proj"], ctx=_make_ctx(jwt_c1))
+        await remember("from-client2", "v2", ["proj"], ctx=_make_ctx(jwt_c2))
+
+        result = await list_memories("proj", ctx=_make_ctx(jwt_c2))
+        keys = [m["key"] for m in _body(result)["items"]]
+        assert "from-client1" in keys
+        assert "from-client2" in keys
+
+
+class TestSummarizeContextUserScoping:
+    """Cross-user isolation for the summarize_context MCP tool."""
+
+    async def test_cross_user_isolation(self, server_env):
+        """summarize_context must not include memories from a different user."""
+        storage, _, _ = server_env
+        from hive.server import remember, summarize_context
+
+        jwt_a = _make_user_jwt(storage, "user-diana")
+        jwt_b = _make_user_jwt(storage, "user-eve")
+
+        await remember("diana-note", "diana-private", ["project-x"], ctx=_make_ctx(jwt_a))
+        await remember("eve-note", "eve-private", ["project-x"], ctx=_make_ctx(jwt_b))
+
+        result = await summarize_context("project-x", ctx=_make_ctx(jwt_a))
+        text = _text(result)
+        assert "diana-private" in text
+        assert "eve-private" not in text
+
+
 # ---------------------------------------------------------------------------
 # list_tags
 # ---------------------------------------------------------------------------

@@ -1105,6 +1105,89 @@ class TestPagination:
         assert len(page2) == 2
         assert cursor2 is None
 
+    def test_list_memories_by_tag_owner_user_id_filters_cross_user(self, storage):
+        """Cross-user memories sharing a tag must not be returned when owner_user_id is set."""
+        from hive.models import OAuthClient
+
+        client_a = OAuthClient(client_name="User-A Client", owner_user_id="user-a")
+        client_b = OAuthClient(client_name="User-B Client", owner_user_id="user-b")
+        storage.put_client(client_a)
+        storage.put_client(client_b)
+
+        storage.put_memory(
+            Memory(
+                key="a-mem",
+                value="user-a value",
+                tags=["shared"],
+                owner_client_id=client_a.client_id,
+                owner_user_id="user-a",
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="b-mem",
+                value="user-b value",
+                tags=["shared"],
+                owner_client_id=client_b.client_id,
+                owner_user_id="user-b",
+            )
+        )
+
+        # User A only sees their own memory
+        mems_a, _ = storage.list_memories_by_tag("shared", owner_user_id="user-a")
+        assert [m.key for m in mems_a] == ["a-mem"]
+
+        # User B only sees their own memory
+        mems_b, _ = storage.list_memories_by_tag("shared", owner_user_id="user-b")
+        assert [m.key for m in mems_b] == ["b-mem"]
+
+    def test_list_memories_by_tag_owner_user_id_cross_client_within_user(self, storage):
+        """Within-user cross-client sharing: both clients of the same user see all memories."""
+        from hive.models import OAuthClient
+
+        client_1 = OAuthClient(client_name="User-A Client-1", owner_user_id="user-a")
+        client_2 = OAuthClient(client_name="User-A Client-2", owner_user_id="user-a")
+        storage.put_client(client_1)
+        storage.put_client(client_2)
+
+        storage.put_memory(
+            Memory(
+                key="from-c1",
+                value="v1",
+                tags=["work"],
+                owner_client_id=client_1.client_id,
+                owner_user_id="user-a",
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="from-c2",
+                value="v2",
+                tags=["work"],
+                owner_client_id=client_2.client_id,
+                owner_user_id="user-a",
+            )
+        )
+
+        mems, _ = storage.list_memories_by_tag("work", owner_user_id="user-a")
+        assert {m.key for m in mems} == {"from-c1", "from-c2"}
+
+    def test_list_memories_by_tag_no_owner_filter_returns_all(self, storage):
+        """When owner_user_id is None, all memories matching the tag are returned."""
+        storage.put_memory(
+            Memory(
+                key="xa", value="v", tags=["open"], owner_client_id="c-x", owner_user_id="user-x"
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="ya", value="v", tags=["open"], owner_client_id="c-y", owner_user_id="user-y"
+            )
+        )
+
+        mems, _ = storage.list_memories_by_tag("open")
+        assert {m.key for m in mems} == {"xa", "ya"}
+
     def test_invalid_cursor_raises(self, storage):
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
             storage.list_all_memories(cursor="not-valid-base64!!!")

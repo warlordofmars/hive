@@ -436,8 +436,13 @@ class HiveStorage:
         tag: str,
         limit: int = 100,
         cursor: str | None = None,
+        owner_user_id: str | None = None,
     ) -> tuple[list[Memory], str | None]:
         """Query TagIndex GSI to find memories with a given tag.
+
+        When owner_user_id is provided, only memories belonging to that user
+        are returned (within-user cross-client sharing is intentional product
+        behaviour; cross-user isolation is enforced here).
 
         Returns (memories, next_cursor). next_cursor is None when exhausted.
         """
@@ -453,7 +458,7 @@ class HiveStorage:
         memories: list[Memory] = []
         for item in resp.get("Items", []):
             m = self.get_memory_by_id(item["memory_id"])
-            if m is not None:
+            if m is not None and (owner_user_id is None or m.owner_user_id == owner_user_id):
                 memories.append(m)
 
         lek = resp.get("LastEvaluatedKey")
@@ -523,10 +528,10 @@ class HiveStorage:
         deleted = 0
         cursor: str | None = None
         while True:
-            items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
+            items, cursor = self.list_memories_by_tag(
+                tag, limit=100, cursor=cursor, owner_user_id=owner_user_id
+            )
             for memory in items:
-                if owner_user_id and memory.owner_user_id != owner_user_id:
-                    continue
                 self._delete_tag_items(memory)
                 self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
                 self._delete_blob_if_needed(memory)
@@ -549,11 +554,10 @@ class HiveStorage:
         if tag:
             cursor: str | None = None
             while True:
-                items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
-                for memory in items:
-                    if owner_user_id and memory.owner_user_id != owner_user_id:
-                        continue
-                    yield memory
+                items, cursor = self.list_memories_by_tag(
+                    tag, limit=100, cursor=cursor, owner_user_id=owner_user_id
+                )
+                yield from items
                 if cursor is None:
                     break
         else:
