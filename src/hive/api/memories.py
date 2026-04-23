@@ -282,6 +282,43 @@ async def import_memories(
 
 
 @router.get(
+    "/memories/{memory_id}/content",
+    summary="Download memory content from S3",
+    description="Stream raw binary or large-text content from S3 for image, blob, and text-large memories. Non-admins can only access their own memories.",
+    responses={
+        401: {"description": "Unauthorized"},
+        404: {"description": _MEMORY_NOT_FOUND},
+        409: {"description": "Memory has no S3 content"},
+    },
+)
+async def get_memory_content(
+    memory_id: str,
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+) -> StreamingResponse:
+    from hive.blob_store import BlobStore
+
+    memory = storage.get_memory_by_id(memory_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
+    owner_user_id = _user_filter(claims)
+    if owner_user_id and memory.owner_user_id != owner_user_id:
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
+    if memory.s3_uri is None:
+        raise HTTPException(status_code=409, detail="Memory has no S3 content")
+
+    owner = memory.owner_user_id or memory.owner_client_id
+    blob_store = BlobStore()
+    body = blob_store.get(owner, memory_id)
+    content_type = memory.content_type or "application/octet-stream"
+    return StreamingResponse(
+        iter([body]),
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{memory.key}"'},
+    )
+
+
+@router.get(
     "/memories/{memory_id}",
     summary="Get a memory by ID",
     description="Retrieve a single memory by its unique ID. Non-admins can only access their own memories.",

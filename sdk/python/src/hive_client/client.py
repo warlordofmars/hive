@@ -72,7 +72,11 @@ class HiveClient:
             except Exception:
                 body = {}
             if not resp.is_success:
-                detail = body.get("detail", resp.reason_phrase) if isinstance(body, dict) else resp.reason_phrase
+                detail = (
+                    body.get("detail", resp.reason_phrase)
+                    if isinstance(body, dict)
+                    else resp.reason_phrase
+                )
                 raise HiveError(resp.status_code, detail)
             return body
 

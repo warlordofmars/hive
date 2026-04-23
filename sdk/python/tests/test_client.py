@@ -5,11 +5,9 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio  # noqa: F401 — registers asyncio mode
-from pytest_httpx import HTTPXMock
-
 from hive_client import HiveClient
 from hive_client.client import HiveError
-
+from pytest_httpx import HTTPXMock
 
 BASE_URL = "https://app.hive-memory.com"
 API_KEY = "hive_sk_test"
@@ -23,6 +21,7 @@ def client():
 # ------------------------------------------------------------------ #
 # remember                                                             #
 # ------------------------------------------------------------------ #
+
 
 class TestRemember:
     async def test_remember_sends_post(self, client: HiveClient, httpx_mock: HTTPXMock):
@@ -46,6 +45,7 @@ class TestRemember:
         assert memory.tags == ["t1"]
         request = httpx_mock.get_request()
         import json
+
         body = json.loads(request.content)
         assert body["ttl_seconds"] == 3600
         assert body["tags"] == ["t1"]
@@ -66,6 +66,7 @@ class TestRemember:
 # ------------------------------------------------------------------ #
 # get_memory                                                           #
 # ------------------------------------------------------------------ #
+
 
 class TestGetMemory:
     async def test_get_memory_sends_get(self, client: HiveClient, httpx_mock: HTTPXMock):
@@ -93,6 +94,7 @@ class TestGetMemory:
 # forget                                                               #
 # ------------------------------------------------------------------ #
 
+
 class TestForget:
     async def test_forget_sends_delete(self, client: HiveClient, httpx_mock: HTTPXMock):
         httpx_mock.add_response(
@@ -107,6 +109,7 @@ class TestForget:
 # ------------------------------------------------------------------ #
 # list_memories                                                        #
 # ------------------------------------------------------------------ #
+
 
 class TestListMemories:
     async def test_list_returns_items(self, client: HiveClient, httpx_mock: HTTPXMock):
@@ -135,17 +138,21 @@ class TestListMemories:
 # search_memories                                                      #
 # ------------------------------------------------------------------ #
 
+
 class TestSearchMemories:
     async def test_search_sends_search_param(self, client: HiveClient, httpx_mock: HTTPXMock):
         httpx_mock.add_response(method="GET", json={"items": [], "count": 0})
         await client.search_memories("hello world")
         request = httpx_mock.get_request()
-        assert "search=hello+world" in str(request.url) or "search=hello%20world" in str(request.url)
+        assert "search=hello+world" in str(request.url) or "search=hello%20world" in str(
+            request.url
+        )
 
 
 # ------------------------------------------------------------------ #
 # recall                                                               #
 # ------------------------------------------------------------------ #
+
 
 class TestRecall:
     async def test_recall_finds_matching_key(self, client: HiveClient, httpx_mock: HTTPXMock):
@@ -162,7 +169,9 @@ class TestRecall:
         assert memory is not None
         assert memory.value == "found"
 
-    async def test_recall_returns_none_when_not_found(self, client: HiveClient, httpx_mock: HTTPXMock):
+    async def test_recall_returns_none_when_not_found(
+        self, client: HiveClient, httpx_mock: HTTPXMock
+    ):
         httpx_mock.add_response(method="GET", json={"items": []})
         memory = await client.recall("missing")
         assert memory is None
@@ -171,6 +180,7 @@ class TestRecall:
 # ------------------------------------------------------------------ #
 # Authorization header                                                 #
 # ------------------------------------------------------------------ #
+
 
 class TestAuth:
     async def test_sends_bearer_token(self, client: HiveClient, httpx_mock: HTTPXMock):
@@ -183,6 +193,7 @@ class TestAuth:
 # ------------------------------------------------------------------ #
 # Error handling — no detail field                                     #
 # ------------------------------------------------------------------ #
+
 
 class TestErrorHandling:
     async def test_error_without_detail_uses_reason_phrase(
@@ -211,6 +222,7 @@ class TestErrorHandling:
 # ------------------------------------------------------------------ #
 # Sync wrappers                                                        #
 # ------------------------------------------------------------------ #
+
 
 class TestSyncWrappers:
     def test_sync_remember(self, client: HiveClient, httpx_mock: HTTPXMock):
