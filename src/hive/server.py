@@ -479,13 +479,20 @@ async def remember(
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
     else:
         client = storage.get_client(client_id)
-        owner_user_id = client.owner_user_id if client else None
+        if client is None:
+            raise ToolError("Unable to load client record for authenticated caller.")
+        owner_user_id = client.owner_user_id
         try:
             check_memory_quota(owner_user_id, storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
         memory = Memory(
-            key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+            key=key,
+            value=value,
+            tags=tags,
+            owner_client_id=client_id,
+            owner_user_id=owner_user_id,
+            expires_at=expires_at,
         )
         try:
             storage.put_memory(memory)
@@ -592,14 +599,21 @@ async def remember_if_absent(
         return _tool_result(f"Memory '{key}' already exists — not overwritten.", storage, client_id)
 
     client = storage.get_client(client_id)
-    owner_user_id = client.owner_user_id if client else None
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    owner_user_id = client.owner_user_id
     try:
         check_memory_quota(owner_user_id, storage)
     except QuotaExceeded as exc:
         raise ToolError(exc.detail) from exc
 
     memory = Memory(
-        key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+        key=key,
+        value=value,
+        tags=tags,
+        owner_client_id=client_id,
+        owner_user_id=owner_user_id,
+        expires_at=expires_at,
     )
     try:
         storage.put_memory(memory)
@@ -1025,9 +1039,19 @@ async def list_memories(
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    owner_user_id = client.owner_user_id
 
     limit = max(1, min(limit, 500))
-    memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
+    memories, next_cursor = storage.list_memories_by_tag(
+        tag, limit=limit, cursor=cursor, owner_user_id=owner_user_id
+    )
     if not include_redacted:
         memories = [m for m in memories if not m.is_redacted]
     _log(
@@ -1122,9 +1146,17 @@ async def summarize_context(
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    owner_user_id = client.owner_user_id
 
     await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
-    memories, _ = storage.list_memories_by_tag(topic, limit=500)
+    memories, _ = storage.list_memories_by_tag(topic, limit=500, owner_user_id=owner_user_id)
     await _report_progress(
         ctx, 1, 2, f"Retrieved {len(memories)} memories; synthesising summary..."
     )

@@ -122,7 +122,7 @@ def server_env():
             from hive.storage import HiveStorage
 
             storage = HiveStorage(table_name="hive-unit-server", region="us-east-1")
-            client = OAuthClient(client_name="MCP Test Client")
+            client = OAuthClient(client_name="MCP Test Client", owner_user_id="test-user")
             storage.put_client(client)
 
             now = datetime.now(timezone.utc)
@@ -599,6 +599,225 @@ class TestListMemories:
         body = _body(result)
         assert body["items"] == []
         assert body["has_more"] is False
+
+
+def _make_user_jwt(storage, owner_user_id: str) -> str:
+    """Issue a full-scope JWT for a new client belonging to ``owner_user_id``."""
+    from hive.auth.tokens import issue_jwt
+    from hive.models import OAuthClient, Token
+
+    client = OAuthClient(client_name=f"User {owner_user_id}", owner_user_id=owner_user_id)
+    storage.put_client(client)
+    now = datetime.now(timezone.utc)
+    token = Token(
+        client_id=client.client_id,
+        scope="memories:read memories:write",
+        issued_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    storage.put_token(token)
+    return issue_jwt(token)
+
+
+class TestListMemoriesUserScoping:
+    """Cross-user isolation for the list_memories MCP tool."""
+
+    async def test_cross_user_isolation(self, server_env):
+        """User B cannot see User A's memories even if they share a tag."""
+        storage, _, _ = server_env
+        from hive.server import list_memories, remember
+
+        jwt_a = _make_user_jwt(storage, "user-alice")
+        jwt_b = _make_user_jwt(storage, "user-bob")
+
+        await remember("secret-alice", "alice-value", ["shared-tag"], ctx=_make_ctx(jwt_a))
+        await remember("secret-bob", "bob-value", ["shared-tag"], ctx=_make_ctx(jwt_b))
+
+        result_a = await list_memories("shared-tag", ctx=_make_ctx(jwt_a))
+        keys_a = [m["key"] for m in _body(result_a)["items"]]
+        assert "secret-alice" in keys_a
+        assert "secret-bob" not in keys_a
+
+        result_b = await list_memories("shared-tag", ctx=_make_ctx(jwt_b))
+        keys_b = [m["key"] for m in _body(result_b)["items"]]
+        assert "secret-bob" in keys_b
+        assert "secret-alice" not in keys_b
+
+    async def test_within_user_cross_client_sharing(self, server_env):
+        """Two clients owned by the same user can see each other's tagged memories."""
+        storage, _, _ = server_env
+        from hive.server import list_memories, remember
+
+        jwt_c1 = _make_user_jwt(storage, "user-charlie")
+        jwt_c2 = _make_user_jwt(storage, "user-charlie")
+
+        await remember("from-client1", "v1", ["proj"], ctx=_make_ctx(jwt_c1))
+        await remember("from-client2", "v2", ["proj"], ctx=_make_ctx(jwt_c2))
+
+        result = await list_memories("proj", ctx=_make_ctx(jwt_c2))
+        keys = [m["key"] for m in _body(result)["items"]]
+        assert "from-client1" in keys
+        assert "from-client2" in keys
+
+
+class TestSummarizeContextUserScoping:
+    """Cross-user isolation for the summarize_context MCP tool."""
+
+    async def test_cross_user_isolation(self, server_env):
+        """summarize_context must not include memories from a different user."""
+        storage, _, _ = server_env
+        from hive.server import remember, summarize_context
+
+        jwt_a = _make_user_jwt(storage, "user-diana")
+        jwt_b = _make_user_jwt(storage, "user-eve")
+
+        await remember("diana-note", "diana-private", ["project-x"], ctx=_make_ctx(jwt_a))
+        await remember("eve-note", "eve-private", ["project-x"], ctx=_make_ctx(jwt_b))
+
+        result = await summarize_context("project-x", ctx=_make_ctx(jwt_a))
+        text = _text(result)
+        assert "diana-private" in text
+        assert "eve-private" not in text
+
+
+class TestUnscopedClientRejected:
+    """list_memories and summarize_context must fail closed when owner_user_id is missing."""
+
+    def _make_unscoped_jwt(self, storage) -> str:
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+
+        client = OAuthClient(client_name="Unscoped Client")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        return issue_jwt(token)
+
+    async def test_list_memories_rejects_unscoped_client(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import list_memories
+
+        storage, _, _ = server_env
+        jwt = self._make_unscoped_jwt(storage)
+        with pytest.raises(ToolError, match="per-user memory scoping is required"):
+            await list_memories("any-tag", ctx=_make_ctx(jwt))
+
+    async def test_summarize_context_rejects_unscoped_client(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import summarize_context
+
+        storage, _, _ = server_env
+        jwt = self._make_unscoped_jwt(storage)
+        with pytest.raises(ToolError, match="per-user memory scoping is required"):
+            await summarize_context("any-topic", ctx=_make_ctx(jwt))
+
+    async def test_remember_rejects_missing_client_record(self, server_env):
+        """remember fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client", owner_user_id="ghost-user")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember("key", "value", ctx=_make_ctx(jwt))
+
+    async def test_remember_if_absent_rejects_missing_client_record(self, server_env):
+        """remember_if_absent fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember_if_absent
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client IA", owner_user_id="ghost-user-ia")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember_if_absent("key", "value", ctx=_make_ctx(jwt))
+
+    async def test_list_memories_rejects_missing_client_record(self, server_env):
+        """list_memories fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import list_memories
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client LM", owner_user_id="ghost-user-lm")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await list_memories("any-tag", ctx=_make_ctx(jwt))
+
+    async def test_summarize_context_rejects_missing_client_record(self, server_env):
+        """summarize_context fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import summarize_context
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client SC", owner_user_id="ghost-user-sc")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await summarize_context("any-topic", ctx=_make_ctx(jwt))
 
 
 # ---------------------------------------------------------------------------
