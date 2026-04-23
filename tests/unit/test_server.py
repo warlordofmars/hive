@@ -744,6 +744,81 @@ class TestUnscopedClientRejected:
         with pytest.raises(ToolError, match="Unable to load client record"):
             await remember("key", "value", ctx=_make_ctx(jwt))
 
+    async def test_remember_if_absent_rejects_missing_client_record(self, server_env):
+        """remember_if_absent fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember_if_absent
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client IA", owner_user_id="ghost-user-ia")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember_if_absent("key", "value", ctx=_make_ctx(jwt))
+
+    async def test_list_memories_rejects_missing_client_record(self, server_env):
+        """list_memories fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import list_memories
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client LM", owner_user_id="ghost-user-lm")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await list_memories("any-tag", ctx=_make_ctx(jwt))
+
+    async def test_summarize_context_rejects_missing_client_record(self, server_env):
+        """summarize_context fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import summarize_context
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client SC", owner_user_id="ghost-user-sc")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await summarize_context("any-topic", ctx=_make_ctx(jwt))
+
 
 # ---------------------------------------------------------------------------
 # list_tags
