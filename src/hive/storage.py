@@ -1160,6 +1160,15 @@ class HiveStorage:
         data = self.blob_store.get(owner=owner, memory_id=memory.memory_id)
         return data.decode("utf-8")
 
+    def fetch_blob_bytes(self, memory: Memory) -> bytes:
+        """Fetch raw binary content from S3 for an ``image`` or ``blob`` memory.
+
+        Raises whatever the underlying blob store raises so the caller can
+        decide whether to propagate or surface a user-facing fallback.
+        """
+        owner = memory.owner_user_id or memory.owner_client_id or ""
+        return self.blob_store.get(owner=owner, memory_id=memory.memory_id)
+
     def _get_memory_meta(self, memory_id: str) -> dict[str, Any] | None:
         resp = self.table.get_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         item: dict[str, Any] | None = resp.get("Item")  # type: ignore[assignment]
