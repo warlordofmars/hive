@@ -249,20 +249,27 @@ def two_user_setup():
         BillingMode="PAY_PER_REQUEST",
     )
 
+    previous_table_name = os.environ.get("HIVE_TABLE_NAME")
     os.environ["HIVE_TABLE_NAME"] = table_name
-    from hive.storage import HiveStorage
+    try:
+        from hive.storage import HiveStorage
 
-    storage = HiveStorage(
-        table_name=table_name,
-        region="us-east-1",
-        endpoint_url=DYNAMO_ENDPOINT,
-        aws_access_key_id="local",
-        aws_secret_access_key="local",
-    )
+        storage = HiveStorage(
+            table_name=table_name,
+            region="us-east-1",
+            endpoint_url=DYNAMO_ENDPOINT,
+            aws_access_key_id="local",
+            aws_secret_access_key="local",
+        )
 
-    jwt_a = _make_user_token(storage, "integration-user-a")
-    jwt_b = _make_user_token(storage, "integration-user-b")
-    return jwt_a, jwt_b
+        jwt_a = _make_user_token(storage, "integration-user-a")
+        jwt_b = _make_user_token(storage, "integration-user-b")
+        yield jwt_a, jwt_b
+    finally:
+        if previous_table_name is None:
+            os.environ.pop("HIVE_TABLE_NAME", None)
+        else:
+            os.environ["HIVE_TABLE_NAME"] = previous_table_name
 
 
 @pytest.mark.asyncio

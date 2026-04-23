@@ -122,7 +122,7 @@ def server_env():
             from hive.storage import HiveStorage
 
             storage = HiveStorage(table_name="hive-unit-server", region="us-east-1")
-            client = OAuthClient(client_name="MCP Test Client")
+            client = OAuthClient(client_name="MCP Test Client", owner_user_id="test-user")
             storage.put_client(client)
 
             now = datetime.now(timezone.utc)
@@ -678,6 +678,71 @@ class TestSummarizeContextUserScoping:
         text = _text(result)
         assert "diana-private" in text
         assert "eve-private" not in text
+
+
+class TestUnscopedClientRejected:
+    """list_memories and summarize_context must fail closed when owner_user_id is missing."""
+
+    def _make_unscoped_jwt(self, storage) -> str:
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+
+        client = OAuthClient(client_name="Unscoped Client")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        return issue_jwt(token)
+
+    async def test_list_memories_rejects_unscoped_client(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import list_memories
+
+        storage, _, _ = server_env
+        jwt = self._make_unscoped_jwt(storage)
+        with pytest.raises(ToolError, match="per-user memory scoping is required"):
+            await list_memories("any-tag", ctx=_make_ctx(jwt))
+
+    async def test_summarize_context_rejects_unscoped_client(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import summarize_context
+
+        storage, _, _ = server_env
+        jwt = self._make_unscoped_jwt(storage)
+        with pytest.raises(ToolError, match="per-user memory scoping is required"):
+            await summarize_context("any-topic", ctx=_make_ctx(jwt))
+
+    async def test_remember_rejects_missing_client_record(self, server_env):
+        """remember fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client", owner_user_id="ghost-user")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember("key", "value", ctx=_make_ctx(jwt))
 
 
 # ---------------------------------------------------------------------------

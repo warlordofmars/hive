@@ -479,7 +479,9 @@ async def remember(
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
     else:
         client = storage.get_client(client_id)
-        owner_user_id = client.owner_user_id if client else None
+        if client is None:
+            raise ToolError("Unable to load client record for authenticated caller.")
+        owner_user_id = client.owner_user_id
         try:
             check_memory_quota(owner_user_id, storage)
         except QuotaExceeded as exc:
@@ -597,7 +599,9 @@ async def remember_if_absent(
         return _tool_result(f"Memory '{key}' already exists — not overwritten.", storage, client_id)
 
     client = storage.get_client(client_id)
-    owner_user_id = client.owner_user_id if client else None
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    owner_user_id = client.owner_user_id
     try:
         check_memory_quota(owner_user_id, storage)
     except QuotaExceeded as exc:
@@ -1036,7 +1040,13 @@ async def list_memories(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     client = storage.get_client(client_id)
-    owner_user_id = client.owner_user_id if client else None
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    owner_user_id = client.owner_user_id
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(
@@ -1137,7 +1147,13 @@ async def summarize_context(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
     client = storage.get_client(client_id)
-    owner_user_id = client.owner_user_id if client else None
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    owner_user_id = client.owner_user_id
 
     await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
     memories, _ = storage.list_memories_by_tag(topic, limit=500, owner_user_id=owner_user_id)
