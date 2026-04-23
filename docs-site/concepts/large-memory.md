@@ -15,7 +15,7 @@ Hive stores three kinds of non-standard memory alongside ordinary inline text. U
 
 When you call `remember` with a text value, Hive checks the encoded byte length against a 100 KB threshold:
 
-- **≤ 100 KB** — stored inline in DynamoDB as `value_type="text"`. Retrieval is a single `GetItem`.
+- **≤ 100 KB** — stored inline in DynamoDB as `value_type="text"`. `recall` stays DynamoDB-only and does not fetch from S3.
 - **> 100 KB** — stored in S3 as `value_type="text-large"`. The DynamoDB item holds metadata only; the value is fetched from S3 when you `recall` the key.
 
 The promotion to `text-large` is **transparent**: you call `remember` and `recall` exactly as before. The only observable differences are:
