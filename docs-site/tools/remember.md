@@ -34,7 +34,7 @@ Update the memory at key "project/deadline" — the deadline has moved to April 
 
 ## Limits
 
-- **Value size**: up to ~100 KB stored inline; values above that are transparently promoted to S3-backed `text-large` storage with no practical upper limit (see [Large memory](/concepts/large-memory))
+- **Value size**: up to ~100 KB stored inline; values above that are transparently promoted to S3-backed `text-large` storage, up to a maximum of **10 MB** (see [Large memory](/concepts/large-memory))
 - **Tags per memory**: no hard limit, but keep it reasonable
 - **Key length**: up to 512 characters
 
@@ -42,4 +42,4 @@ Update the memory at key "project/deadline" — the deadline has moved to April 
 
 - [`recall`](/tools/recall) — retrieve a memory by key
 - [`forget`](/tools/forget) — delete a memory
-- [`remember_blob`](/tools/remember_blob) — store binary content (images, PDFs, etc.)
+- [`remember_blob`](/tools/remember-blob) — store binary content (images, PDFs, etc.)

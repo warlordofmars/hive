@@ -10,8 +10,8 @@ Sign in at [hive.warlordofmars.net](https://hive.warlordofmars.net) and click th
 
 Your memories are listed in the main panel. Each card shows:
 - The memory **key**
-- A **type badge** for non-text memories (`Large text`, `Image`, or `Blob`)
-- A preview of the **value** (first 160 characters for text memories; a placeholder or thumbnail for large/binary memories)
+- A **type badge** for non-inline or binary memories (`Large text`, `Image`, or `Blob`)
+- A preview of the **value** (first 160 characters for inline text memories; a placeholder or thumbnail for large text or binary memories)
 - Any **tags** attached to the memory
 - A **by {client name}** badge attributing the memory to the OAuth client that created it (falls back to the client id when the name has been deleted)
 

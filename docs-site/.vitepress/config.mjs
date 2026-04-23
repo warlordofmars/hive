@@ -77,7 +77,7 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/tools/overview" },
           { text: "remember", link: "/tools/remember" },
-          { text: "remember_blob", link: "/tools/remember_blob" },
+          { text: "remember_blob", link: "/tools/remember-blob" },
           { text: "recall", link: "/tools/recall" },
           { text: "forget", link: "/tools/forget" },
           { text: "list_memories", link: "/tools/list-memories" },

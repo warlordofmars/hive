@@ -44,7 +44,7 @@ Save this architecture PDF as "project/myapp/architecture-doc" with tag "docs".
 
 ## Retrieval
 
-Use [`recall`](/tools/recall) to retrieve a binary memory. For `value_type="image"`, the tool returns an `ImageContent` MCP response (the bytes, ready for the client to render). For `value_type="blob"`, it returns the raw bytes with the correct `Content-Type` header.
+Use [`recall`](/tools/recall) to retrieve a binary memory. For both `value_type="image"` and `value_type="blob"`, the tool returns an MCP `ImageContent` block whose `data` contains the Base64-encoded bytes and whose `mimeType` is set from the stored `content_type`.
 
 Binary memories are **not included** in semantic search (`search_memories`) results — retrieve them by key or tag only.
 

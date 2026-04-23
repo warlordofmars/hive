@@ -7,11 +7,9 @@ Hive stores three kinds of non-standard memory alongside ordinary inline text. U
 | `value_type` | Stored where | How it arrives | Max size |
 | --- | --- | --- | --- |
 | `text` | DynamoDB (inline) | `remember` with a short value | ~100 KB |
-| `text-large` | S3 (auto-promoted) | `remember` with a long value | No hard limit\* |
+| `text-large` | S3 (auto-promoted) | `remember` with a long value | 10 MB |
 | `image` | S3 | `remember_blob` with an `image/*` MIME type | 10 MB |
 | `blob` | S3 | `remember_blob` with any other MIME type | 10 MB |
-
-\* Practical upper bound is the Lambda request payload size (~6 MB for synchronous invocations). Large documents should be split into sections.
 
 ## Inline threshold — when text spills to S3
 
@@ -27,7 +25,7 @@ The promotion to `text-large` is **transparent**: you call `remember` and `recal
 
 ## Binary memories — images and blobs
 
-Use [`remember_blob`](/tools/remember_blob) to store images, PDFs, audio, or any other binary content. Pass the bytes as standard Base64 and specify a MIME type.
+Use [`remember_blob`](/tools/remember-blob) to store images, PDFs, audio, or any other binary content. Pass the bytes as standard Base64 and specify a MIME type.
 
 Hive routes by MIME prefix:
 
@@ -43,23 +41,24 @@ Semantic search (via `search_memories`) operates on **text embeddings**:
 | `value_type` | Embedded? | Notes |
 | --- | --- | --- |
 | `text` | Yes | Full inline value is embedded |
-| `text-large` | No | S3 content is not embedded (no vectors for large text) |
+| `text-large` | Yes | Large text is embedded; full S3 value is not fetched for list/search previews |
 | `image` | No | Binary content is not embedded |
 | `blob` | No | Binary content is not embedded |
 
-`text-large` and binary memories are excluded from semantic search results. They are still reachable via `recall` (by key) and `list_memories` (by tag).
+`text-large` memories can appear in semantic search results. Binary memories (`image` and `blob`) are excluded from semantic search. For large text, `search_memories` and `list_memories` may omit the full value preview; use `recall` to fetch the complete content by key.
 
 ## Size limits summary
 
 | Limit | Value |
 | --- | --- |
 | Inline text threshold (auto S3 promotion) | 100 KB |
-| Maximum blob / `remember_blob` payload | 10 MB |
+| Maximum text value (`remember`, including S3-promoted) | 10 MB |
+| Maximum binary payload (`remember_blob`) | 10 MB |
 | DynamoDB item ceiling (hard) | 400 KB |
 
 ## Related pages
 
 - [`remember`](/tools/remember) — store text memories (handles text-large transparently)
-- [`remember_blob`](/tools/remember_blob) — store binary content
+- [`remember_blob`](/tools/remember-blob) — store binary content
 - [`recall`](/tools/recall) — retrieve any memory by key
 - [Memory Browser](/ui-guide/memory-browser) — view and download large memories in the UI
