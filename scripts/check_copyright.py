@@ -64,7 +64,8 @@ def _collect_files() -> list[Path]:
     files.extend(p for p in SINGLE_FILES if p.exists())
     # Exclude caches, generated dirs, and empty init files
     return [
-        f for f in files
+        f
+        for f in files
         if "__pycache__" not in f.parts
         and "node_modules" not in f.parts
         and ".venv" not in f.parts

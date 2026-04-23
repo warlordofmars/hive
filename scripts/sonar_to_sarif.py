@@ -14,8 +14,7 @@ import json
 import sys
 
 _SARIF_SCHEMA = (
-    "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/"
-    "Schemata/sarif-schema-2.1.0.json"
+    "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 )
 
 _SEVERITY_MAP: dict[str, str] = {
@@ -43,7 +42,7 @@ def convert(issues_data: dict[str, object], project_key: str) -> dict[str, objec
         component: str = str(issue.get("component", ""))
         prefix = f"{project_key}:"
         if component.startswith(prefix):
-            component = component[len(prefix):]
+            component = component[len(prefix) :]
 
         line: int = int(issue.get("line", 1) or 1)
 
