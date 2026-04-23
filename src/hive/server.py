@@ -32,6 +32,7 @@ from fastmcp.server.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
 from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.tools.tool import ToolResult
+from mcp.types import ImageContent
 from pydantic import AnyHttpUrl
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -657,6 +658,146 @@ async def remember_if_absent(
     return _tool_result(f"Stored memory '{key}'.", storage, client_id)
 
 
+_BLOB_MAX_BYTES = 10 * 1024 * 1024  # 10 MB hard cap, matches Lambda payload ceiling
+
+
+@mcp.tool(
+    title="Remember blob",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def remember_blob(
+    key: Annotated[str, "Unique key to store the binary memory under"],
+    data: Annotated[str, "Base64-encoded binary content"],
+    content_type: Annotated[str, "MIME type of the content (e.g. image/png, application/pdf)"],
+    tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ctx: Context | None = None,
+) -> str:
+    """Store a binary memory (image, PDF, or other binary file) identified by key.
+
+    ``data`` must be standard Base64-encoded bytes. ``content_type`` must be a
+    valid MIME type — memories whose type begins with ``image/`` are stored as
+    ``value_type="image"``; all others use ``value_type="blob"``. The encoded
+    payload may not exceed 10 MB.
+
+    Calling ``remember_blob`` with the same key again replaces the existing
+    blob (upsert semantics).  Use ``recall(key)`` to retrieve the blob as an
+    MCP ``ImageContent`` block.
+    """
+    import base64
+
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
+
+    content_type = content_type.strip()
+    if not content_type:
+        await emit_metric("ToolErrors", operation="remember_blob")
+        raise ToolError("content_type must be a non-empty MIME type string.")
+
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except Exception as exc:
+        await emit_metric("ToolErrors", operation="remember_blob")
+        raise ToolError(f"data is not valid Base64: {exc}") from exc
+
+    if len(raw) > _BLOB_MAX_BYTES:
+        await emit_metric("ToolErrors", operation="remember_blob")
+        raise ToolError(f"Binary payload exceeds the 10 MB limit ({len(raw)} bytes provided).")
+
+    value_type: str = "image" if content_type.startswith("image/") else "blob"
+    tags = tags or []
+
+    existing = storage.get_memory_by_key(key)
+    if existing:
+        owner = existing.owner_user_id or existing.owner_client_id
+        s3_uri = storage.blob_store.put(
+            owner=owner,
+            memory_id=existing.memory_id,
+            body=raw,
+            content_type=content_type,
+        )
+        existing.value = ""
+        existing.value_type = value_type  # type: ignore[assignment]
+        existing.content_type = content_type
+        existing.s3_uri = s3_uri
+        existing.size_bytes = len(raw)
+        existing.tags = tags
+        existing.updated_at = datetime.now(timezone.utc)
+        try:
+            storage.put_memory(existing)
+        except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember_blob")
+            raise ToolError(str(exc)) from exc
+        event_type = EventType.memory_updated
+        action = "Updated"
+    else:
+        client = storage.get_client(client_id)
+        if client is None:
+            raise ToolError("Unable to load client record for authenticated caller.")
+        owner_user_id = client.owner_user_id
+        try:
+            check_memory_quota(owner_user_id, storage)
+        except QuotaExceeded as exc:
+            raise ToolError(exc.detail) from exc
+        memory = Memory(
+            key=key,
+            value="",
+            tags=tags,
+            owner_client_id=client_id,
+            owner_user_id=owner_user_id,
+            value_type=value_type,  # type: ignore[arg-type]
+            content_type=content_type,
+            size_bytes=len(raw),
+        )
+        owner = owner_user_id or client_id
+        s3_uri = storage.blob_store.put(
+            owner=owner,
+            memory_id=memory.memory_id,
+            body=raw,
+            content_type=content_type,
+        )
+        memory.s3_uri = s3_uri
+        try:
+            storage.put_memory(memory)
+        except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember_blob")
+            raise ToolError(str(exc)) from exc
+        event_type = EventType.memory_created
+        action = "Stored"
+
+    _log(
+        storage,
+        ActivityEvent(
+            event_type=event_type,
+            client_id=client_id,
+            metadata={"key": key, "tags": tags, "content_type": content_type},
+        ),
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "%s blob memory '%s'",
+        action,
+        key,
+        extra={
+            "tool": "remember_blob",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="remember_blob")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="remember_blob",
+    )
+    return _tool_result(f"{action} blob memory '{key}'.", storage, client_id)
+
+
 @mcp.tool(
     title="Recall",
     annotations={"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
@@ -734,8 +875,31 @@ async def recall(
                 exc_info=True,
             )
             recalled_value = f"[memory content unavailable — blob fetch failed for key '{key}']"
-    else:
-        recalled_value = memory.value or ""
+        return _tool_result(recalled_value, storage, client_id, memory=memory)
+    if memory.value_type in ("image", "blob"):
+        import base64
+
+        try:
+            raw = storage.fetch_blob_bytes(memory)
+            b64 = base64.b64encode(raw).decode("ascii")
+            mime = memory.content_type or "application/octet-stream"
+            meta = _quota_meta(storage, client_id)
+            meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
+            return ToolResult(
+                content=[ImageContent(type="image", data=b64, mimeType=mime)],
+                meta=meta,
+            )
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for recall key='%s'",
+                key,
+                exc_info=True,
+            )
+            recalled_value = (
+                f"[binary memory content unavailable — blob fetch failed for key '{key}']"
+            )
+            return _tool_result(recalled_value, storage, client_id, memory=memory)
+    recalled_value = memory.value or ""
     return _tool_result(recalled_value, storage, client_id, memory=memory)
 
 
@@ -1081,7 +1245,10 @@ async def list_memories(
         "items": [
             {
                 "key": m.key,
-                "value": m.value,
+                "value": m.value if m.value_type not in ("image", "blob") else None,
+                "value_type": m.value_type,
+                "content_type": m.content_type,
+                "size_bytes": m.size_bytes,
                 "tags": m.tags,
                 "owner_client_id": m.owner_client_id,
                 "recall_count": m.recall_count,

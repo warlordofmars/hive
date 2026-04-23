@@ -1867,6 +1867,333 @@ class TestTextLargeRouting:
 
 
 # ---------------------------------------------------------------------------
+# remember_blob / recall binary
+# ---------------------------------------------------------------------------
+
+
+class TestRememberBlob:
+    """#499 — remember_blob stores binary content in S3; recall returns ImageContent."""
+
+    _PNG_1PX = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
+        "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )  # 1×1 transparent PNG, base64-encoded
+
+    def _setup_blob_bucket(self, monkeypatch):
+        bucket = "test-blob-499"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+        return bucket
+
+    async def test_store_new_image_blob(self, server_env, monkeypatch):
+        """remember_blob stores an image memory and returns a success message."""
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import remember_blob
+
+        result = await remember_blob(
+            "blob-img", self._PNG_1PX, "image/png", ["img"], ctx=_make_ctx(jwt)
+        )
+        assert "Stored blob memory 'blob-img'" in _text(result)
+
+        m = storage.get_memory_by_key("blob-img")
+        assert m is not None
+        assert m.value_type == "image"
+        assert m.content_type == "image/png"
+        assert m.s3_uri is not None
+        assert m.size_bytes is not None
+        assert m.size_bytes > 0
+        assert m.value == ""
+
+    async def test_store_non_image_blob(self, server_env, monkeypatch):
+        """remember_blob with non-image MIME uses value_type='blob'."""
+        import base64
+
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import remember_blob
+
+        pdf_data = base64.b64encode(b"%PDF-1.4 fake").decode()
+        result = await remember_blob("blob-pdf", pdf_data, "application/pdf", ctx=_make_ctx(jwt))
+        assert "Stored blob memory 'blob-pdf'" in _text(result)
+
+        m = storage.get_memory_by_key("blob-pdf")
+        assert m.value_type == "blob"
+        assert m.content_type == "application/pdf"
+
+    async def test_update_existing_blob(self, server_env, monkeypatch):
+        """remember_blob with an existing key replaces the blob (upsert)."""
+        import base64
+
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import remember_blob
+
+        await remember_blob("blob-upd", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        first = storage.get_memory_by_key("blob-upd")
+
+        new_data = base64.b64encode(b"updated binary").decode()
+        result = await remember_blob(
+            "blob-upd", new_data, "image/jpeg", ["new-tag"], ctx=_make_ctx(jwt)
+        )
+        assert "Updated blob memory 'blob-upd'" in _text(result)
+
+        updated = storage.get_memory_by_key("blob-upd")
+        assert updated.memory_id == first.memory_id
+        assert updated.content_type == "image/jpeg"
+        assert updated.tags == ["new-tag"]
+
+    async def test_invalid_base64_raises_tool_error(self, server_env):
+        """Non-base64 data raises ToolError with a useful message."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="not valid Base64"):
+            await remember_blob("blob-bad", "!!!not base64!!!", "image/png", ctx=_make_ctx(jwt))
+
+    async def test_empty_content_type_raises_tool_error(self, server_env):
+        """Empty content_type raises ToolError."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="non-empty MIME type"):
+            await remember_blob("blob-ct", self._PNG_1PX, "   ", ctx=_make_ctx(jwt))
+
+    async def test_oversized_blob_raises_tool_error(self, server_env):
+        """Payload > 10 MB raises ToolError."""
+        import base64
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        big = base64.b64encode(b"x" * (10 * 1024 * 1024 + 1)).decode()
+        with pytest.raises(ToolError, match="10 MB limit"):
+            await remember_blob("blob-big", big, "application/octet-stream", ctx=_make_ctx(jwt))
+
+    async def test_missing_auth_raises_tool_error(self, server_env):
+        """Missing Bearer token raises ToolError."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        ctx = MagicMock()
+        ctx.request_context.meta = {}
+        with pytest.raises(ToolError, match="Unauthorized"):
+            await remember_blob("blob-auth", self._PNG_1PX, "image/png", ctx=ctx)
+
+    async def test_missing_client_record_raises_tool_error(self, server_env, monkeypatch):
+        """remember_blob fails closed when client record is missing."""
+        self._setup_blob_bucket(monkeypatch)
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember_blob
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Blob Client", owner_user_id="ghost-blob-user")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember_blob("blob-ghost", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_quota_exceeded_raises_tool_error(self, server_env, monkeypatch):
+        """Quota exceeded on new blob raises ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with (
+            patch("hive.server.check_memory_quota", side_effect=QuotaExceeded("quota hit")),
+            pytest.raises(ToolError, match="quota hit"),
+        ):
+            await remember_blob("blob-quota", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_storage_error_on_new_becomes_tool_error(self, server_env, monkeypatch):
+        """put_memory ValueError on new blob surfaces as ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with (
+            patch("hive.storage.HiveStorage.put_memory", side_effect=ValueError("ddb error")),
+            pytest.raises(ToolError, match="ddb error"),
+        ):
+            await remember_blob("blob-err", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_storage_error_on_update_becomes_tool_error(self, server_env, monkeypatch):
+        """put_memory ValueError on update blob surfaces as ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        # Store first so we hit the update path
+        await remember_blob("blob-upd-err", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        with (
+            patch("hive.storage.HiveStorage.put_memory", side_effect=ValueError("ddb error")),
+            pytest.raises(ToolError, match="ddb error"),
+        ):
+            await remember_blob("blob-upd-err", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+
+class TestRecallBinary:
+    """#499 — recall returns ImageContent for image/blob memories."""
+
+    _PNG_1PX = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
+        "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+
+    def _setup_blob_bucket(self, monkeypatch):
+        bucket = "test-recall-blob-499"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+
+    async def test_recall_image_returns_image_content(self, server_env, monkeypatch):
+        """recall() returns ImageContent with base64 data for image/* blobs."""
+        from mcp.types import ImageContent
+
+        from hive.server import recall, remember_blob
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        await remember_blob("img-recall", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+        result = await recall("img-recall", ctx=_make_ctx(jwt))
+        assert len(result.content) == 1
+        block = result.content[0]
+        assert isinstance(block, ImageContent)
+        assert block.mimeType == "image/png"
+        assert block.data == self._PNG_1PX
+
+    async def test_recall_non_image_blob_returns_image_content(self, server_env, monkeypatch):
+        """recall() returns ImageContent for non-image binary blobs."""
+        import base64
+
+        from mcp.types import ImageContent
+
+        from hive.server import recall, remember_blob
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        raw = b"%PDF-1.4 fake pdf"
+        pdf_b64 = base64.b64encode(raw).decode()
+        await remember_blob("pdf-recall", pdf_b64, "application/pdf", ctx=_make_ctx(jwt))
+
+        result = await recall("pdf-recall", ctx=_make_ctx(jwt))
+        assert len(result.content) == 1
+        block = result.content[0]
+        assert isinstance(block, ImageContent)
+        assert block.mimeType == "application/pdf"
+        assert block.data == pdf_b64
+
+    async def test_recall_blob_s3_error_returns_unavailable_text(self, server_env, monkeypatch):
+        """recall() returns unavailable message when S3 fetch fails for blob."""
+        from hive.models import Memory
+        from hive.server import recall
+
+        storage, client_id, jwt = server_env
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="blob-err-recall",
+            value="",
+            value_type="image",
+            content_type="image/png",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        result = await recall("blob-err-recall", ctx=_make_ctx(jwt))
+        assert "unavailable" in _text(result)
+
+    async def test_recall_blob_result_carries_meta(self, server_env, monkeypatch):
+        """Successful binary recall carries quota meta like text recall."""
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        from hive.server import recall, remember_blob
+
+        await remember_blob("img-meta", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        result = await recall("img-meta", ctx=_make_ctx(jwt))
+        meta = _hive_meta(result)
+        assert "memory_quota" in meta
+        assert "rate_limit" in meta
+
+
+class TestListMemoriesBinaryFields:
+    """#499 — list_memories includes value_type/content_type/size_bytes; omits value for binary."""
+
+    _PNG_1PX = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
+        "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+
+    def _setup_blob_bucket(self, monkeypatch):
+        bucket = "test-list-blob-499"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+
+    async def test_text_memory_has_value_type_text(self, server_env):
+        """Text memories carry value_type='text' in list output."""
+        _, _, jwt = server_env
+        from hive.server import list_memories, remember
+
+        await remember("txt-list-type", "hello", ["list-type-tag"], ctx=_make_ctx(jwt))
+        result = await list_memories("list-type-tag", ctx=_make_ctx(jwt))
+        items = _body(result)["items"]
+        assert len(items) == 1
+        assert items[0]["value_type"] == "text"
+        assert items[0]["value"] == "hello"
+
+    async def test_image_memory_omits_value_in_list(self, server_env, monkeypatch):
+        """Binary memories have value=None and carry content_type/size_bytes in list."""
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        from hive.server import list_memories, remember_blob
+
+        await remember_blob(
+            "img-list-499", self._PNG_1PX, "image/png", ["img-list-tag-499"], ctx=_make_ctx(jwt)
+        )
+        result = await list_memories("img-list-tag-499", ctx=_make_ctx(jwt))
+        items = _body(result)["items"]
+        assert len(items) == 1
+        item = items[0]
+        assert item["value"] is None
+        assert item["value_type"] == "image"
+        assert item["content_type"] == "image/png"
+        assert item["size_bytes"] is not None
+
+
+# ---------------------------------------------------------------------------
 # forget_all
 # ---------------------------------------------------------------------------
 
