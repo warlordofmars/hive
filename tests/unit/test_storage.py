@@ -606,6 +606,69 @@ class TestLargeMemoryRouting:
         storage.delete_memories_by_tag("bulk")
         assert ("u1", m.memory_id) not in fake.objects
 
+    def test_update_text_large_memory_re_uploads_new_value(self, storage_with_blob_store):
+        # Updating a text-large memory's value re-uploads to S3, overwriting
+        # the old blob at the same key.
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="re-upload", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+        assert ("u1", m.memory_id) in fake.objects
+        assert fake.objects[("u1", m.memory_id)] == big_value.encode()
+
+        updated_big = "y" * (200 * 1024)
+        m.value = updated_big
+        storage.put_memory(m)
+        assert fake.objects[("u1", m.memory_id)] == updated_big.encode()
+
+    def test_update_text_large_empty_value_skips_routing(self, storage_with_blob_store):
+        # A text-large memory fetched from DynamoDB (value="") goes through
+        # put_memory for metadata-only updates (e.g. tag changes). The router
+        # must leave it untouched — the blob is already in S3.
+        storage, fake = storage_with_blob_store
+        big_value = "z" * (200 * 1024)
+        m = Memory(
+            key="skip-reupload",
+            value=big_value,
+            tags=["old"],
+            owner_user_id="u1",
+            owner_client_id="c1",
+        )
+        storage.put_memory(m)
+        initial_calls = dict(fake.objects)
+
+        # Simulate a tag-only update: fetch the memory (value="" in DynamoDB),
+        # change tags, then put again. The router must not re-upload the blob.
+        fetched = storage.get_memory_by_key("skip-reupload")
+        assert fetched.value == ""  # inline value is empty for text-large
+        fetched.tags = ["new"]
+        storage.put_memory(fetched)
+        # The S3 object is unchanged — the router skipped the empty-value memory
+        assert fake.objects == initial_calls
+
+    def test_fetch_blob_value_returns_full_text(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "hello blob " * 10_000
+        m = Memory(key="fetch-test", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+        assert m.value_type == "text-large"
+
+        fetched = storage.fetch_blob_value(m)
+        assert fetched == big_value
+
+    def test_fetch_blob_value_propagates_s3_error(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="fetch-fail", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+
+        def _raise(owner, memory_id):
+            raise RuntimeError("S3 unavailable")
+
+        fake.get = _raise
+        with pytest.raises(RuntimeError, match="S3 unavailable"):
+            storage.fetch_blob_value(m)
+
 
 class TestMemoryVersionStorage:
     def test_list_versions_newest_first(self, storage):

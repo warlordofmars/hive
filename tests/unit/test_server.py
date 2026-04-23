@@ -1446,6 +1446,208 @@ class TestRelateMemories:
 
 
 # ---------------------------------------------------------------------------
+# Text-large transparent routing (#498)
+# ---------------------------------------------------------------------------
+
+
+class TestTextLargeRouting:
+    """#498 — recall, relate_memories, read_memory_resource, and vector upsert
+    work transparently for text-large memories stored in S3."""
+
+    _BIG = "z" * (150 * 1024)  # 150 KB — above 100 KB inline threshold
+
+    def _setup_blob_bucket(self, monkeypatch):
+        """Create a moto S3 bucket and point HIVE_BLOBS_BUCKET at it."""
+        bucket = "test-text-large-498"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+        return bucket
+
+    async def test_recall_text_large_returns_full_value(self, server_env, monkeypatch):
+        """recall() transparently fetches the blob and returns the full text."""
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import recall, remember
+
+        await remember("tl-recall", self._BIG, [], ctx=_make_ctx(jwt))
+        stored = storage.get_memory_by_key("tl-recall")
+        assert stored.value_type == "text-large"
+
+        result = await recall("tl-recall", ctx=_make_ctx(jwt))
+        assert _text(result) == self._BIG
+
+    async def test_recall_text_large_s3_error_returns_unavailable(self, server_env, monkeypatch):
+        """S3 fetch failure surfaces as 'unavailable' rather than crashing."""
+        from hive.models import Memory
+        from hive.server import recall
+
+        storage, client_id, jwt = server_env
+        # Insert a text-large memory directly without putting a blob in S3.
+        # No HIVE_BLOBS_BUCKET set → BlobStore() raises, which our except catches.
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="tl-error",
+            value="",
+            value_type="text-large",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        result = await recall("tl-error", ctx=_make_ctx(jwt))
+        assert "unavailable" in _text(result)
+
+    async def test_remember_text_large_embeds_full_value_new_memory(self, server_env, monkeypatch):
+        """remember() passes full text to VectorStore.upsert_memory for new text-large."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("tl-embed-new", self._BIG, [], ctx=_make_ctx(jwt))
+
+        mock_vs.upsert_memory.assert_called_once()
+        embedded_memory = mock_vs.upsert_memory.call_args[0][0]
+        assert embedded_memory.value == self._BIG
+
+    async def test_remember_text_large_embeds_full_value_on_update(self, server_env, monkeypatch):
+        """remember() passes full text to VectorStore.upsert_memory on update."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            # first write → creates
+            await remember("tl-embed-upd", self._BIG, [], ctx=_make_ctx(jwt))
+            # second write → updates
+            updated_big = "a" * (150 * 1024)
+            await remember("tl-embed-upd", updated_big, [], ctx=_make_ctx(jwt))
+
+        assert mock_vs.upsert_memory.call_count == 2
+        embedded_on_update = mock_vs.upsert_memory.call_args_list[1][0][0]
+        assert embedded_on_update.value == updated_big
+
+    async def test_remember_if_absent_text_large_embeds_full_value(self, server_env, monkeypatch):
+        """remember_if_absent() passes full text to upsert_memory for text-large."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember_if_absent
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember_if_absent("tl-absent", self._BIG, [], ctx=_make_ctx(jwt))
+
+        mock_vs.upsert_memory.assert_called_once()
+        embedded_memory = mock_vs.upsert_memory.call_args[0][0]
+        assert embedded_memory.value == self._BIG
+
+    async def test_relate_memories_text_large_uses_full_value(self, server_env, monkeypatch):
+        """relate_memories() fetches blob for source memory and uses it as query."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import relate_memories, remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+
+        await remember("tl-relate-src", self._BIG, [], ctx=_make_ctx(jwt))
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = []
+        mock_vs.upsert_memory.return_value = None
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("tl-relate-src", ctx=_make_ctx(jwt))
+
+        mock_vs.search.assert_called_once()
+        query_arg = mock_vs.search.call_args[0][0]
+        assert query_arg == self._BIG
+
+    async def test_relate_memories_text_large_s3_error_falls_back_to_empty(
+        self, server_env, monkeypatch
+    ):
+        """relate_memories() falls back to empty query string on S3 error."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+        from hive.server import relate_memories
+
+        storage, client_id, jwt = server_env
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="tl-relate-err",
+            value="",
+            value_type="text-large",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = []
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("tl-relate-err", ctx=_make_ctx(jwt))
+
+        query_arg = mock_vs.search.call_args[0][0]
+        assert query_arg == ""
+
+    async def test_read_memory_resource_text_large_fetches_blob(self, server_env, monkeypatch):
+        """read_memory_resource() returns the full blob content for text-large."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import read_memory_resource, remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, client_id, jwt = server_env
+        await remember("tl-resource", self._BIG, [], ctx=_make_ctx(jwt))
+
+        tok = MagicMock()
+        tok.client_id = client_id
+        tok.scopes = ["memories:read"]
+        with patch("hive.server.get_access_token", return_value=tok):
+            value = read_memory_resource("tl-resource")
+        assert value == self._BIG
+
+    async def test_read_memory_resource_text_large_s3_error_returns_unavailable(
+        self, server_env, monkeypatch
+    ):
+        """read_memory_resource() returns unavailable message on S3 error."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+        from hive.server import read_memory_resource
+
+        storage, client_id, jwt = server_env
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="tl-res-err",
+            value="",
+            value_type="text-large",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        tok = MagicMock()
+        tok.client_id = client_id
+        tok.scopes = ["memories:read"]
+        with patch("hive.server.get_access_token", return_value=tok):
+            value = read_memory_resource("tl-res-err")
+        assert "unavailable" in value
+
+
+# ---------------------------------------------------------------------------
 # forget_all
 # ---------------------------------------------------------------------------
 
