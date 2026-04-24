@@ -1425,6 +1425,23 @@ class TestUserStorage:
         with patch.object(storage.table, "update_item", side_effect=error):
             assert storage.update_user_limits(u.user_id, 50, None) is False
 
+    def test_update_user_limits_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        u = self._user()
+        storage.put_user(u)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.update_user_limits(u.user_id, 50, None)
+
     def test_list_users(self, storage):
         storage.put_user(self._user("a@example.com"))
         storage.put_user(self._user("b@example.com"))
