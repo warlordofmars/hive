@@ -6,7 +6,51 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.25.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.26.0. Will be rolled into the next release._
+
+## v0.26.0 — 2026-04-24
+
+Large-memory milestone (#451) — Hive now stores documents, images, and
+binary blobs alongside plain-text memories. Text over 100 KB routes
+transparently to S3, `remember_blob` accepts up to 10 MB of any MIME
+type, and the management UI renders each content type appropriately.
+A second storage-bytes dimension joins the existing memory-count
+quota, with admin override UI for both.
+
+### Added
+
+#### Large memory
+
+- **Foundation — data model, S3 bucket, storage routing.** `Memory` grows `value_type` (`text` / `text-large` / `image` / `blob`), `s3_uri`, `content_type`, and `size_bytes`. A new `hive-memory-blobs` S3 bucket (SSE-S3, block-public, enforce-ssl) is provisioned per environment with scoped IAM for both Lambda roles. Writes over 100 KB promote inline text to `text-large` and upload to S3; existing sub-threshold memories stay in DynamoDB untouched. (#497)
+- **Transparent large-text recall + full-text vector embedding.** `remember(key, value)` accepts any size — above the 100 KB threshold the value moves to S3 and `recall` transparently fetches it. `search_memories` embeds the full text (not just the first N bytes), so semantic search works on multi-hundred-KB documents. (#498)
+- **`remember_blob` tool + binary MCP content types.** New tool stores up to 10 MB of binary data (images, documents, archives) via MCP; `recall` returns `ImageContent` / `BlobContent` based on the MIME type. Oversized uploads fail with a clear error; list / search skip binary from semantic search and surface a type badge so agents know the memories exist. (#499)
+- **MemoryBrowser renders text-large, images, and blobs.** List view shows a type badge plus size; `text-large` shows the first ~500 chars with a "Show full content" affordance; images preview inline; blobs surface filename / MIME / size with a download button. (#501)
+
+#### Storage quota
+
+- **Two-dimension quota — memory count + storage bytes, admin override UI.** Quota accounting adds a `size_bytes` dimension summed across every `value_type`. Per-user override UI in the admin Users panel (`GET` / `PUT /api/users/{id}/limits`) lets admins bump individual users above the system default. `QuotaGauge` shows both dimensions side-by-side; the storage bar exposes `role="progressbar"` + `aria-valuenow/min/max` so screen readers report usage. Quota checks run delta-based on update paths (`remember`, `remember_if_absent`, `remember_blob`, and both API update endpoints), so growing an existing memory past the budget is rejected just like a new write. (#500, #636)
+
+#### Operations
+
+- **Blob cleanup.** `forget(key)` deletes the associated S3 object for non-text memories; a CDK S3 lifecycle rule sweeps orphaned objects after 30 days as a safety net. Every delete emits a structured log event so cleanup is auditable. (#502)
+
+#### Documentation
+
+- New docs pages: `concepts/large-memory.md` explains the text-large vs binary split and size limits; `tools/remember_blob.md` is a full tool reference; existing `tools/remember.md` and `ui-guide/memory-browser.md` note the transparent routing and new rendering. (#503)
+
+### Fixed
+
+#### Security
+
+- **`list_memories` and `summarize_context` now scope to the requesting user.** Both tools previously returned memories belonging to other users when called by a non-admin. Fixed plus fail-closed behaviour added across `remember`, `remember_if_absent`, `list_memories`, and `summarize_context` so missing or unscoped client records reject the call instead of silently widening scope. (#631)
+
+#### Reliability
+
+- **DCR clients created during OAuth bypass are associated with the test user.** Local e2e flows that mint new clients via the bypass no longer leave them orphaned. (#635)
+
+### Meta
+
+- Regenerated OpenAPI spec so `UpdateUserLimitsRequest.memory_limit` / `storage_bytes_limit` advertise their `minimum: 1` constraint to generated clients (`Field(ge=1)` replaces the prior `field_validator`). (#636)
 
 ## v0.25.0 — 2026-04-21
 
