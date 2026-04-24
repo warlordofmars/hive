@@ -106,6 +106,11 @@ export default function QuotaGauge({ quota }) {
           {storage_bytes_limit != null && (
             <div className="h-1.5 rounded-full bg-[var(--border)] overflow-hidden">
               <div
+                role="progressbar"
+                aria-valuenow={Math.min(100, storage_bytes_limit > 0 ? Math.round((storage_bytes / storage_bytes_limit) * 100) : 0)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Storage usage"
                 className="h-full rounded-full"
                 style={{
                   width: `${Math.min(100, storage_bytes_limit > 0 ? (storage_bytes / storage_bytes_limit) * 100 : 0)}%`,

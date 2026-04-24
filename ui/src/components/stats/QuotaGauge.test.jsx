@@ -87,7 +87,12 @@ describe("QuotaGauge", () => {
       />
     );
     expect(screen.getByTestId("storage-row")).toBeTruthy();
-    expect(screen.getByTestId("storage-bar")).toBeTruthy();
+    const bar = screen.getByTestId("storage-bar");
+    expect(bar).toBeTruthy();
+    expect(bar.getAttribute("role")).toBe("progressbar");
+    expect(bar.getAttribute("aria-valuemin")).toBe("0");
+    expect(bar.getAttribute("aria-valuemax")).toBe("100");
+    expect(bar.getAttribute("aria-valuenow")).toBe("1");
     // 1 MB / 100 MB
     expect(screen.getByText(/Storage/)).toBeTruthy();
   });

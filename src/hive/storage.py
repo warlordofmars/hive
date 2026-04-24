@@ -988,10 +988,6 @@ class HiveStorage:
         storage_bytes_limit: int | None,
     ) -> bool:
         """Set per-user quota overrides. Pass None to remove an override (revert to system default)."""
-        resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
-        if not resp.get("Item"):
-            return False
-
         set_parts: list[str] = []
         remove_parts: list[str] = []
         expr_vals: dict[str, Any] = {}
