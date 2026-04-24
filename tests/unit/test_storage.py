@@ -1412,6 +1412,19 @@ class TestUserStorage:
     def test_update_user_limits_nonexistent_returns_false(self, storage):
         assert storage.update_user_limits("no-such-id", 100, None) is False
 
+    def test_update_user_limits_conditional_check_failure_returns_false(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        u = self._user()
+        storage.put_user(u)
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}}, "UpdateItem"
+        )
+        with patch.object(storage.table, "update_item", side_effect=error):
+            assert storage.update_user_limits(u.user_id, 50, None) is False
+
     def test_list_users(self, storage):
         storage.put_user(self._user("a@example.com"))
         storage.put_user(self._user("b@example.com"))

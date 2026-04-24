@@ -1017,11 +1017,17 @@ class HiveStorage:
         update_kwargs: dict[str, Any] = {
             "Key": {"PK": f"USER#{user_id}", "SK": "META"},
             "UpdateExpression": " ".join(parts),
+            "ConditionExpression": "attribute_exists(PK)",
         }
         if expr_vals:
             update_kwargs["ExpressionAttributeValues"] = expr_vals
 
-        self.table.update_item(**update_kwargs)
+        try:
+            self.table.update_item(**update_kwargs)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
         return True
 
     # ------------------------------------------------------------------
