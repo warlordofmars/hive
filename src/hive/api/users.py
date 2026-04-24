@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field
 
 from hive.api._auth import require_admin, require_mgmt_user
 from hive.models import PagedResponse, UserResponse
@@ -166,15 +166,8 @@ class UserLimitsResponse(BaseModel):
 
 
 class UpdateUserLimitsRequest(BaseModel):
-    memory_limit: int | None = None  # None = revert to system default
-    storage_bytes_limit: int | None = None  # None = revert to system default
-
-    @field_validator("memory_limit", "storage_bytes_limit")
-    @classmethod
-    def must_be_positive(cls, v: int | None) -> int | None:
-        if v is not None and v < 1:
-            raise ValueError("Limit must be a positive integer")
-        return v
+    memory_limit: int | None = Field(default=None, ge=1)
+    storage_bytes_limit: int | None = Field(default=None, ge=1)
 
 
 def _user_limits_response(

@@ -137,11 +137,20 @@ async def create_memory(
         ):
             raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
 
+        old_size = existing.size_bytes or 0
         existing.value = body.value
         existing.tags = body.tags
         existing.updated_at = datetime.now(timezone.utc)
         if body.ttl_seconds is not None:
             existing.expires_at = datetime.now(timezone.utc) + timedelta(seconds=body.ttl_seconds)
+        delta = len(body.value.encode("utf-8")) - old_size
+        if delta > 0:
+            try:
+                check_storage_quota(owner_user_id, delta, storage)
+            except QuotaExceeded as exc:
+                await emit_metric("RateLimitedRequests")
+                await emit_metric("RateLimitedRequests", endpoint="/api/memories", reason="quota")
+                raise HTTPException(status_code=429, detail=exc.detail) from exc
         try:
             storage.put_memory(existing)
         except ValueError as exc:
@@ -365,6 +374,7 @@ async def update_memory(
     if owner_user_id and memory.owner_user_id != owner_user_id:
         raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
 
+    old_size = memory.size_bytes or 0
     if body.value is not None:
         memory.value = body.value
     if body.tags is not None:
@@ -376,6 +386,20 @@ async def update_memory(
             else datetime.now(timezone.utc) + timedelta(seconds=body.ttl_seconds)
         )
     memory.updated_at = datetime.now(timezone.utc)
+
+    if body.value is not None:
+        delta = len(body.value.encode("utf-8")) - old_size
+        if delta > 0 and memory.owner_user_id is not None:
+            try:
+                check_storage_quota(memory.owner_user_id, delta, storage)
+            except QuotaExceeded as exc:
+                await emit_metric("RateLimitedRequests")
+                await emit_metric(
+                    "RateLimitedRequests",
+                    endpoint="/api/memories/{memory_id}",
+                    reason="quota",
+                )
+                raise HTTPException(status_code=429, detail=exc.detail) from exc
 
     try:
         storage.put_memory(memory)

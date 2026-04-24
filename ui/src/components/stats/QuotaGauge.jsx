@@ -126,11 +126,13 @@ export default function QuotaGauge({ quota }) {
   );
 }
 
+const nullableNumber = PropTypes.oneOfType([PropTypes.number, PropTypes.oneOf([null])]);
+
 QuotaGauge.propTypes = {
   quota: PropTypes.shape({
     memory_count: PropTypes.number.isRequired,
-    memory_limit: PropTypes.number,
-    storage_bytes: PropTypes.number,
-    storage_bytes_limit: PropTypes.number,
+    memory_limit: nullableNumber,
+    storage_bytes: nullableNumber,
+    storage_bytes_limit: nullableNumber,
   }),
 };

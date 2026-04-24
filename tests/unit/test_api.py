@@ -311,6 +311,46 @@ class TestMemories:
             resp = tc.post("/api/memories", json={"key": "existing", "value": "v2"})
         assert resp.status_code == 200
 
+    def test_update_by_key_enforces_storage_quota_delta(self, client):
+        """Growing an existing memory beyond the user's storage budget returns 429."""
+        import os
+        from unittest.mock import AsyncMock, patch
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "grow", "value": "a" * 10})
+        mock_emit = AsyncMock()
+        with (
+            patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": "20"}),
+            patch("hive.api.memories.emit_metric", mock_emit),
+        ):
+            # New value is 100 bytes — delta of 90 exceeds the 20-byte cap.
+            resp = tc.post("/api/memories", json={"key": "grow", "value": "a" * 100})
+        assert resp.status_code == 429
+        assert "quota" in resp.json()["detail"].lower()
+
+    def test_update_by_key_same_or_smaller_skips_storage_quota(self, client):
+        """Shrinking / equal-size updates must not re-evaluate storage quota."""
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "shrink", "value": "a" * 100})
+        # Set a cap that the current item already exceeds; a smaller update must still succeed.
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": "1"}):
+            resp = tc.post("/api/memories", json={"key": "shrink", "value": "a" * 10})
+        assert resp.status_code == 200
+
+    def test_update_memory_endpoint_enforces_storage_quota_delta(self, client):
+        """PATCH /api/memories/{id} enforces storage quota on value growth."""
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "pb", "value": "a" * 10}).json()["memory_id"]
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": "20"}):
+            resp = tc.patch(f"/api/memories/{mid}", json={"value": "a" * 100})
+        assert resp.status_code == 429
+
     def test_update_oversized_returns_413(self, client):
         from unittest.mock import patch
 

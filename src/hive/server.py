@@ -457,7 +457,7 @@ async def remember(
         existing.tags = tags
         existing.expires_at = expires_at
         existing.updated_at = datetime.now(timezone.utc)
-        delta = len(value.encode("utf-8")) - old_size
+        delta = actual - old_size
         if delta > 0:
             try:
                 check_storage_quota(existing.owner_user_id, delta, storage)
@@ -492,7 +492,7 @@ async def remember(
         owner_user_id = client.owner_user_id
         try:
             check_memory_quota(owner_user_id, storage)
-            check_storage_quota(owner_user_id, len(value.encode("utf-8")), storage)
+            check_storage_quota(owner_user_id, actual, storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
         memory = Memory(
@@ -613,7 +613,7 @@ async def remember_if_absent(
     owner_user_id = client.owner_user_id
     try:
         check_memory_quota(owner_user_id, storage)
-        check_storage_quota(owner_user_id, len(value.encode("utf-8")), storage)
+        check_storage_quota(owner_user_id, actual, storage)
     except QuotaExceeded as exc:
         raise ToolError(exc.detail) from exc
 
