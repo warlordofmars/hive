@@ -414,6 +414,7 @@ class TestOAuthAuthorize:
         with (
             patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
             patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
         ):
             resp = tc.get(
                 "/oauth/authorize",

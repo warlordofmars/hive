@@ -164,7 +164,10 @@ class TestAuthorizationCodeFlow:
         client_id = reg.json()["client_id"]
 
         _, challenge = _pkce_pair()
-        with patch("hive.auth.google.is_email_allowed", return_value=True):
+        with (
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
             auth_resp = client.get(
                 "/oauth/authorize",
                 params={
