@@ -306,7 +306,7 @@ class TestMcpQuotaIntegration:
             assert "quota" in str(exc_info.value).lower()
 
     def test_remember_does_not_check_quota_on_update(self):
-        """Updating an existing memory must not trigger quota check."""
+        """Updating with a smaller value does not trigger any quota check."""
         import asyncio
 
         with (
@@ -327,6 +327,8 @@ class TestMcpQuotaIntegration:
             existing_memory = MagicMock()
             existing_memory.value = "old-value"
             existing_memory.tags = []
+            # Set a real int so delta = len("new-value") - 100 < 0; no storage check.
+            existing_memory.size_bytes = 100
             instance = MockStorage.return_value
             instance.get_memory_by_key.return_value = existing_memory
             # Response-meta builder reads count_memories; return a real int.
