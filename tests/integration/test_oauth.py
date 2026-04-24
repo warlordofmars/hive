@@ -147,6 +147,10 @@ class TestAuthorizationCodeFlow:
         )
         assert token_resp.status_code == 400
 
+    @pytest.mark.skipif(
+        not os.environ.get("HIVE_BYPASS_GOOGLE_AUTH"),
+        reason="HIVE_BYPASS_GOOGLE_AUTH not set — bypass user-association test requires bypass mode",
+    )
     def test_authorize_bypass_test_email_associates_user(self, client):
         """Passing test_email to /oauth/authorize in bypass mode sets owner_user_id."""
         from hive.storage import HiveStorage

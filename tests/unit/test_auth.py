@@ -432,6 +432,90 @@ class TestOAuthAuthorize:
         assert user is not None
         assert user.email == "bypass@example.com"
 
+    def test_bypass_test_email_disallowed_returns_403(self, oauth_client):
+        """test_email that fails the allowlist check returns 403."""
+        tc, _, client = oauth_client
+        _, challenge = _pkce_pair()
+        with (
+            patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
+            patch("hive.auth.google.is_email_allowed", return_value=False),
+        ):
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "test_email": "blocked@example.com",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+
+    def test_bypass_test_email_assigns_admin_role(self, oauth_client):
+        """test_email matching is_admin_email creates user with admin role."""
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        with (
+            patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
+            patch("hive.auth.google.is_admin_email", return_value=True),
+        ):
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "test_email": "admin@example.com",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        updated = storage.get_client(client.client_id)
+        user = storage.get_user_by_id(updated.owner_user_id)
+        assert user.role == "admin"
+
+    def test_bypass_test_email_updates_existing_user(self, oauth_client):
+        """test_email in bypass mode updates display_name and role for an existing user."""
+        tc, storage, client = oauth_client
+        now = datetime.now(timezone.utc)
+        from hive.models import User as UserModel
+
+        existing = UserModel(
+            email="existing@example.com",
+            display_name="oldname",
+            role="user",
+            created_at=now,
+        )
+        storage.put_user(existing)
+
+        _, challenge = _pkce_pair()
+        with (
+            patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
+            patch("hive.auth.google.is_admin_email", return_value=True),
+        ):
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "test_email": "existing@example.com",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        user = storage.get_user_by_email("existing@example.com")
+        assert user is not None
+        assert user.display_name == "existing"
+        assert user.role == "admin"
+
 
 # ---------------------------------------------------------------------------
 # Google OAuth callback endpoint tests
