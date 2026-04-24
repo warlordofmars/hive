@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import MemoryBrowser, { TagPicker } from "./MemoryBrowser.jsx";
+import MemoryBrowser, { MemoryImage, TagPicker, formatBytes, typeBadgeLabel } from "./MemoryBrowser.jsx";
 
 vi.mock("../api.js", () => ({
   api: {
@@ -13,6 +13,7 @@ vi.mock("../api.js", () => ({
     listMemoryVersions: vi.fn(),
     restoreMemoryVersion: vi.fn(),
     listClients: vi.fn(),
+    getMemoryContent: vi.fn(),
   },
 }));
 
@@ -1689,5 +1690,430 @@ describe("MemoryBrowser", () => {
     });
     const input = await screen.findByPlaceholderText(/search by meaning/i);
     expect(input.value).toBe("my-key");
+  });
+});
+
+// ------------------------------------------------------------------
+// typeBadgeLabel helper
+// ------------------------------------------------------------------
+
+describe("typeBadgeLabel", () => {
+  it("returns 'Large text' for text-large", () => {
+    expect(typeBadgeLabel("text-large")).toBe("Large text");
+  });
+
+  it("returns 'Image' for image", () => {
+    expect(typeBadgeLabel("image")).toBe("Image");
+  });
+
+  it("returns 'Blob' for blob", () => {
+    expect(typeBadgeLabel("blob")).toBe("Blob");
+  });
+
+  it("returns the raw type for unknown values", () => {
+    expect(typeBadgeLabel("video")).toBe("video");
+  });
+});
+
+// ------------------------------------------------------------------
+// formatBytes helper
+// ------------------------------------------------------------------
+
+describe("formatBytes", () => {
+  it("shows bytes below 1 KB", () => {
+    expect(formatBytes(512)).toBe("512 B");
+  });
+
+  it("shows KB between 1024 and 1 MB", () => {
+    expect(formatBytes(1536)).toBe("1.5 KB");
+  });
+
+  it("shows MB for 1 MB and above", () => {
+    expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MB");
+  });
+});
+
+// ------------------------------------------------------------------
+// MemoryImage component
+// ------------------------------------------------------------------
+
+describe("MemoryImage", () => {
+  beforeEach(() => {
+    URL.createObjectURL.mockReturnValue("blob:fake-url");
+    URL.revokeObjectURL.mockClear();
+  });
+
+  afterEach(() => {
+    URL.createObjectURL.mockReset();
+    URL.revokeObjectURL.mockReset();
+    URL.createObjectURL.mockReturnValue("blob:test-url");
+  });
+
+  it("shows loading state while fetch is pending", async () => {
+    api.getMemoryContent.mockReturnValue(new Promise(() => {}));
+    await act(async () =>
+      render(<MemoryImage memoryId="m1" alt="img" className="rounded" />),
+    );
+    expect(screen.getByText("Loading preview…")).toBeTruthy();
+  });
+
+  it("renders img element after successful fetch", async () => {
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    api.getMemoryContent.mockResolvedValue(blob);
+    await act(async () =>
+      render(<MemoryImage memoryId="m1" alt="my image" className="rounded" />),
+    );
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy());
+    expect(screen.getByRole("img").getAttribute("src")).toBe("blob:fake-url");
+    expect(screen.getByRole("img").getAttribute("alt")).toBe("my image");
+  });
+
+  it("shows error state when fetch fails", async () => {
+    api.getMemoryContent.mockRejectedValue(new Error("S3 error"));
+    await act(async () =>
+      render(<MemoryImage memoryId="m1" alt="img" />),
+    );
+    await waitFor(() => expect(screen.getByText("Preview unavailable")).toBeTruthy());
+  });
+
+  it("revokes object URL on unmount", async () => {
+    const blob = new Blob([], { type: "image/png" });
+    api.getMemoryContent.mockResolvedValue(blob);
+    const { unmount } = await act(async () =>
+      render(<MemoryImage memoryId="m1" alt="img" />),
+    );
+    await waitFor(() => screen.getByRole("img"));
+    unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:fake-url");
+  });
+});
+
+// ------------------------------------------------------------------
+// Binary memory type rendering in list view
+// ------------------------------------------------------------------
+
+describe("Binary memory list view", () => {
+  beforeEach(() => {
+    api.listClients.mockResolvedValue({ items: [] });
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => "blob:fake-url"),
+      revokeObjectURL: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows type badge for image memory", async () => {
+    const img = makeMemory({ value_type: "image", value: "", content_type: "image/png", size_bytes: 2048 });
+    api.listMemories.mockResolvedValue({ items: [img], next_cursor: null });
+    api.getMemoryContent.mockReturnValue(new Promise(() => {}));
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("type-badge"));
+    expect(screen.getByTestId("type-badge").textContent).toBe("Image");
+  });
+
+  it("shows type badge for blob memory", async () => {
+    const blob = makeMemory({ value_type: "blob", value: "", content_type: "application/pdf", size_bytes: 4096 });
+    api.listMemories.mockResolvedValue({ items: [blob], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("type-badge"));
+    expect(screen.getByTestId("type-badge").textContent).toBe("Blob");
+  });
+
+  it("shows type badge for text-large memory", async () => {
+    const large = makeMemory({ value_type: "text-large", value: "", size_bytes: 150000 });
+    api.listMemories.mockResolvedValue({ items: [large], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("type-badge"));
+    expect(screen.getByTestId("type-badge").textContent).toBe("Large text");
+  });
+
+  it("shows no type badge for regular text memory", async () => {
+    const text = makeMemory({ value_type: "text", value: "hello" });
+    api.listMemories.mockResolvedValue({ items: [text], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("hello"));
+    expect(screen.queryByTestId("type-badge")).toBeNull();
+  });
+
+  it("shows no type badge when value_type is absent (legacy memory)", async () => {
+    const text = makeMemory({ value: "legacy" });
+    api.listMemories.mockResolvedValue({ items: [text], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("legacy"));
+    expect(screen.queryByTestId("type-badge")).toBeNull();
+  });
+
+  it("truncates text value longer than 160 chars in list view", async () => {
+    const longValue = "a".repeat(200);
+    const text = makeMemory({ value_type: "text", value: longValue });
+    api.listMemories.mockResolvedValue({ items: [text], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText(/a{160}…/));
+    expect(screen.queryByText(longValue)).toBeNull();
+  });
+
+  it("shows empty string for text memory with null value in list view", async () => {
+    const text = makeMemory({ value_type: "text", value: null });
+    api.listMemories.mockResolvedValue({ items: [text], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    // No crash; the memory card renders with an empty value paragraph
+    await waitFor(() => screen.getByTestId("memory-card"));
+    expect(screen.queryByTestId("type-badge")).toBeNull();
+  });
+
+  it("shows blob content type and formatted size for blob memory", async () => {
+    const blob = makeMemory({ value_type: "blob", value: "", content_type: "application/pdf", size_bytes: 4096 });
+    api.listMemories.mockResolvedValue({ items: [blob], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText(/application\/pdf/));
+    expect(screen.getByText(/4\.0 KB/)).toBeTruthy();
+  });
+
+  it("shows 'Binary file' when blob has no content_type", async () => {
+    const blob = makeMemory({ value_type: "blob", value: "", size_bytes: null });
+    api.listMemories.mockResolvedValue({ items: [blob], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("Binary file"));
+  });
+
+  it("shows large text placeholder with size for text-large memory", async () => {
+    const large = makeMemory({ value_type: "text-large", value: "", size_bytes: 150000 });
+    api.listMemories.mockResolvedValue({ items: [large], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    // "Large text" appears in both the type badge and the placeholder; wait for the unique size text
+    await waitFor(() => screen.getByText(/146\.5 KB/));
+    expect(screen.getByText(/146\.5 KB/)).toBeTruthy();
+  });
+
+  it("shows large text without size when size_bytes is null", async () => {
+    const large = makeMemory({ value_type: "text-large", value: "", size_bytes: null });
+    api.listMemories.mockResolvedValue({ items: [large], next_cursor: null });
+    await act(async () => render(<MemoryBrowser />));
+    // "Large text" appears in both the type badge and the placeholder — assert no size is shown
+    await waitFor(() => screen.getByTestId("type-badge"));
+    expect(screen.queryByText(/KB/)).toBeNull();
+  });
+
+  it("shows MemoryImage loading state for image memory", async () => {
+    const img = makeMemory({ value_type: "image", value: "", content_type: "image/png" });
+    api.listMemories.mockResolvedValue({ items: [img], next_cursor: null });
+    api.getMemoryContent.mockReturnValue(new Promise(() => {}));
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("Loading preview…"));
+  });
+});
+
+// ------------------------------------------------------------------
+// Binary memory edit panel
+// ------------------------------------------------------------------
+
+describe("Binary memory edit panel", () => {
+  beforeEach(() => {
+    api.listClients.mockResolvedValue({ items: [] });
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => "blob:fake-url"),
+      revokeObjectURL: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("clicking image memory shows image detail panel", async () => {
+    const img = makeMemory({
+      value_type: "image",
+      value: "",
+      content_type: "image/png",
+      size_bytes: 2048,
+      tags: ["photo"],
+    });
+    api.listMemories.mockResolvedValue({ items: [img], next_cursor: null });
+    api.getMemoryContent.mockReturnValue(new Promise(() => {}));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+
+    await waitFor(() => screen.getByText(/Image: test-key/));
+    expect(screen.getByText("image/png · 2.0 KB")).toBeTruthy();
+    // "photo" tag appears in both list card and detail panel — just assert it's present
+    expect(screen.getAllByText("photo").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+  });
+
+  it("image panel with no content_type or size_bytes shows only the image", async () => {
+    const img = makeMemory({ value_type: "image", value: "", tags: [] });
+    api.listMemories.mockResolvedValue({ items: [img], next_cursor: null });
+    api.getMemoryContent.mockReturnValue(new Promise(() => {}));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+
+    await waitFor(() => screen.getByText(/Image: test-key/));
+    // No metadata line, no tags
+    expect(screen.queryByText(/KB/)).toBeNull();
+  });
+
+  it("clicking blob memory shows blob detail panel with download button", async () => {
+    const blob = makeMemory({
+      value_type: "blob",
+      value: "",
+      content_type: "application/pdf",
+      size_bytes: 8192,
+      tags: ["docs"],
+    });
+    api.listMemories.mockResolvedValue({ items: [blob], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+
+    await waitFor(() => screen.getByText(/Blob: test-key/));
+    expect(screen.getByText("application/pdf")).toBeTruthy();
+    expect(screen.getByText("8.0 KB")).toBeTruthy();
+    // "docs" tag appears in both list card and detail panel — just assert it's present
+    expect(screen.getAllByText("docs").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /Download/ })).toBeTruthy();
+  });
+
+  it("blob panel without size_bytes omits the size line", async () => {
+    const blob = makeMemory({ value_type: "blob", value: "", tags: [] });
+    api.listMemories.mockResolvedValue({ items: [blob], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+
+    // "Binary file" appears in both list and detail panel; wait for the panel heading instead
+    await waitFor(() => screen.getByText(/Blob: test-key/));
+    expect(screen.queryByText(/KB/)).toBeNull();
+  });
+
+  it("blob download triggers file download via anchor click", async () => {
+    const blob = makeMemory({
+      value_type: "blob",
+      value: "",
+      content_type: "application/pdf",
+      tags: [],
+    });
+    api.listMemories.mockResolvedValue({ items: [blob], next_cursor: null });
+    const fakeBlob = new Blob(["pdf"], { type: "application/pdf" });
+    api.getMemoryContent.mockResolvedValue(fakeBlob);
+
+    // Render first so React's own createElement calls are not intercepted by our spy
+    await act(async () => render(<MemoryBrowser />));
+
+    const fakeAnchor = { href: "", download: "", click: vi.fn() };
+    const origCreateElement = document.createElement.bind(document);
+    const createElementSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tag, ...args) =>
+        tag === "a" ? fakeAnchor : origCreateElement(tag, ...args),
+      );
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+    await waitFor(() => screen.getByRole("button", { name: /Download/ }));
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: /Download/ })),
+    );
+
+    await waitFor(() => expect(fakeAnchor.click).toHaveBeenCalled());
+    expect(fakeAnchor.download).toBe("test-key");
+    expect(fakeAnchor.href).toBe("blob:fake-url");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:fake-url");
+    createElementSpy.mockRestore();
+  });
+
+  it("blob download error shows error message", async () => {
+    const blob = makeMemory({ value_type: "blob", value: "", tags: [] });
+    api.listMemories.mockResolvedValue({ items: [blob], next_cursor: null });
+    api.getMemoryContent.mockRejectedValue(new Error("S3 failure"));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+    await waitFor(() => screen.getByRole("button", { name: /Download/ }));
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: /Download/ })),
+    );
+
+    await waitFor(() => screen.getByText("S3 failure"));
+  });
+
+  it("clicking text-large memory shows loading then populated textarea", async () => {
+    const large = makeMemory({ value_type: "text-large", value: "", size_bytes: 200000 });
+    api.listMemories.mockResolvedValue({ items: [large], next_cursor: null });
+
+    let resolveBlob;
+    const blobPromise = new Promise((res) => { resolveBlob = res; });
+    api.getMemoryContent.mockReturnValue(blobPromise);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    act(() => { fireEvent.click(screen.getByTestId("memory-card")); });
+
+    await waitFor(() => screen.getByText("Loading content…"));
+
+    const fakeBlob = { text: () => Promise.resolve("the full text content") };
+    await act(async () => { resolveBlob(fakeBlob); });
+
+    await waitFor(() => {
+      const ta = screen.getByRole("textbox", { name: /Value/ });
+      expect(ta.value).toBe("the full text content");
+    });
+  });
+
+  it("text-large content fetch error still shows editable textarea", async () => {
+    const large = makeMemory({ value_type: "text-large", value: "" });
+    api.listMemories.mockResolvedValue({ items: [large], next_cursor: null });
+    api.getMemoryContent.mockRejectedValue(new Error("S3 error"));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+
+    await waitFor(() => {
+      const ta = screen.queryByRole("textbox", { name: /Value/ });
+      expect(ta).toBeTruthy();
+    });
+  });
+
+  it("opening a text memory with null value populates form with empty string", async () => {
+    const mem = makeMemory({ value: null, value_type: "text" });
+    api.listMemories.mockResolvedValue({ items: [mem], next_cursor: null });
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+
+    await waitFor(() => {
+      const ta = screen.getByRole("textbox", { name: /Value/ });
+      expect(ta.value).toBe("");
+    });
+  });
+
+  it("image panel with content_type but no size_bytes shows type without size", async () => {
+    const img = makeMemory({
+      value_type: "image",
+      value: "",
+      content_type: "image/png",
+      size_bytes: null,
+      tags: [],
+    });
+    api.listMemories.mockResolvedValue({ items: [img], next_cursor: null });
+    api.getMemoryContent.mockReturnValue(new Promise(() => {}));
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByTestId("memory-card"));
+    await act(async () => fireEvent.click(screen.getByTestId("memory-card")));
+
+    await waitFor(() => screen.getByText(/Image: test-key/));
+    expect(screen.getByText("image/png")).toBeTruthy();
+    expect(screen.queryByText(/KB/)).toBeNull();
   });
 });

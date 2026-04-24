@@ -15,6 +15,7 @@ Store or update a memory.
 - If no memory with the given `key` exists, a new memory is created.
 - If a memory with that `key` already exists, it is **updated** in place (same `memory_id`, new `value` and `tags`).
 - If the value and tags are identical to the existing memory, no write occurs (idempotent).
+- Values larger than **100 KB** are automatically stored in S3 (`value_type="text-large"`). The promotion is transparent — you still call `remember` and `recall` as normal. See [Large memory](/concepts/large-memory) for details.
 
 ## Examples
 
@@ -33,7 +34,7 @@ Update the memory at key "project/deadline" — the deadline has moved to April 
 
 ## Limits
 
-- **Value size**: up to ~380 KB of text
+- **Value size**: up to ~100 KB stored inline; values above that are transparently promoted to S3-backed `text-large` storage, up to a maximum of **10 MB** (see [Large memory](/concepts/large-memory))
 - **Tags per memory**: no hard limit, but keep it reasonable
 - **Key length**: up to 512 characters
 
@@ -41,3 +42,4 @@ Update the memory at key "project/deadline" — the deadline has moved to April 
 
 - [`recall`](/tools/recall) — retrieve a memory by key
 - [`forget`](/tools/forget) — delete a memory
+- [`remember_blob`](/tools/remember-blob) — store binary content (images, PDFs, etc.)

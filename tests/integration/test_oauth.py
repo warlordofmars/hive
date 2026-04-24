@@ -10,6 +10,7 @@ import base64
 import hashlib
 import os
 import secrets
+from unittest.mock import patch
 
 import pytest
 
@@ -146,3 +147,44 @@ class TestAuthorizationCodeFlow:
             },
         )
         assert token_resp.status_code == 400
+
+    @pytest.mark.skipif(
+        not os.environ.get("HIVE_BYPASS_GOOGLE_AUTH"),
+        reason="HIVE_BYPASS_GOOGLE_AUTH not set — bypass user-association test requires bypass mode",
+    )
+    def test_authorize_bypass_test_email_associates_user(self, client):
+        """Passing test_email to /oauth/authorize in bypass mode sets owner_user_id."""
+        from hive.storage import HiveStorage
+
+        reg = client.post(
+            "/oauth/register",
+            json={"client_name": "Email Assoc Client", "redirect_uris": ["http://localhost/cb"]},
+        )
+        assert reg.status_code == 201
+        client_id = reg.json()["client_id"]
+
+        _, challenge = _pkce_pair()
+        with (
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            auth_resp = client.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client_id,
+                    "redirect_uri": "http://localhost/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "test_email": "e2e-test@example.com",
+                },
+            )
+        assert auth_resp.status_code == 302
+
+        storage = HiveStorage()
+        oauth_client = storage.get_client(client_id)
+        assert oauth_client is not None
+        assert oauth_client.owner_user_id is not None
+        user = storage.get_user_by_id(oauth_client.owner_user_id)
+        assert user is not None
+        assert user.email == "e2e-test@example.com"

@@ -62,6 +62,22 @@ export const api = {
   listMemoryVersions: (id) => request("GET", `/api/memories/${id}/versions`),
   restoreMemoryVersion: (id, versionTimestamp) =>
     request("POST", `/api/memories/${id}/restore?version_timestamp=${encodeURIComponent(versionTimestamp)}`),
+  getMemoryContent: async (id) => {
+    const token = getToken();
+    const headers = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/api/memories/${id}/content`, { headers });
+    if (res.status === 401) {
+      localStorage.removeItem("hive_mgmt_token");
+      globalThis.location.replace("/");
+      return null;
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail ?? "Failed to fetch content");
+    }
+    return res.blob();
+  },
 
   // Clients
   listClients: ({ limit = 50, cursor } = {}) => {
@@ -100,6 +116,8 @@ export const api = {
   },
   updateUserRole: (id, role) => request("PATCH", `/api/users/${id}`, { role }),
   getUserStats: (id) => request("GET", `/api/users/${id}/stats`),
+  getUserLimits: (id) => request("GET", `/api/users/${id}/limits`),
+  updateUserLimits: (id, body) => request("PUT", `/api/users/${id}/limits`, body),
   deleteUser: (id) => request("DELETE", `/api/users/${id}`),
 
   // API Keys

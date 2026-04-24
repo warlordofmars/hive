@@ -24,6 +24,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+from hive.logging_config import get_logger
 from hive.models import (
     ActivityEvent,
     ApiKey,
@@ -37,6 +38,8 @@ from hive.models import (
     TokenType,
     User,
 )
+
+logger = get_logger("hive.storage")
 
 TABLE_NAME = os.environ.get("HIVE_TABLE_NAME", "hive")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -118,7 +121,11 @@ class HiveStorage:
     """All DynamoDB read/write operations for Hive."""
 
     def __init__(
-        self, table_name: str | None = None, region: str | None = None, **kwargs: Any
+        self,
+        table_name: str | None = None,
+        region: str | None = None,
+        blob_store: Any = None,
+        **kwargs: Any,
     ) -> None:
         # Read env vars at call time so tests can override them after import
         table_name = table_name or os.environ.get("HIVE_TABLE_NAME", "hive")
@@ -127,6 +134,24 @@ class HiveStorage:
         kwargs.setdefault("endpoint_url", os.environ.get("DYNAMODB_ENDPOINT"))
         dynamodb = boto3.resource("dynamodb", region_name=region, **kwargs)
         self.table = dynamodb.Table(table_name)
+        # Lazily-instantiated BlobStore — we only need it on the
+        # text-large / binary path so tests that never exercise that
+        # branch can leave HIVE_BLOBS_BUCKET unset. Inject a mock via
+        # the ``blob_store`` kwarg in tests.
+        self._blob_store_override = blob_store
+        self._blob_store: Any = None
+
+    @property
+    def blob_store(self) -> Any:
+        """Lazy BlobStore handle — constructed on first use."""
+        if self._blob_store_override is not None:
+            return self._blob_store_override
+        # Import inline to avoid circular-import risk at module load.
+        if self._blob_store is None:
+            from hive.blob_store import BlobStore
+
+            self._blob_store = BlobStore()
+        return self._blob_store
 
     # ------------------------------------------------------------------
     # Memory CRUD
@@ -142,7 +167,14 @@ class HiveStorage:
         conditional expression requiring the stored ``updated_at`` to match
         — supporting optimistic locking (#391). Raises ``VersionConflict``
         if the stored version has moved on since the caller read it.
+
+        Large-memory routing (#497): text values over the inline
+        threshold are uploaded to S3 and the META item stores only
+        ``s3_uri`` + ``size_bytes``. The routing happens in-place on
+        the passed ``memory`` so callers always see the persisted
+        shape.
         """
+        self._route_large_value(memory)
         existing_raw = self._get_memory_meta(memory.memory_id)
         if expected_version is not None:
             if existing_raw is None:
@@ -199,6 +231,63 @@ class HiveStorage:
                     "Memory value is too large to store (DynamoDB 400 KB item limit exceeded)."
                 ) from exc
             raise
+
+    def _route_large_value(self, memory: Memory) -> None:
+        """Offload oversized text to S3, leaving a pointer in DynamoDB.
+
+        Handles both initial writes and updates for text and text-large
+        memories. Binary types (image/blob, arriving via #499) are expected
+        to already carry an ``s3_uri`` — this router only handles the
+        transparent-text path where a caller hands us a string and expects
+        the right backend to be chosen automatically.
+        """
+        from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES, MAX_BLOB_SIZE_BYTES
+
+        # Binary paths (image, blob) have their own upload lifecycle (#499).
+        if memory.value_type not in ("text", "text-large"):
+            return
+
+        # A text-large memory fetched from DynamoDB has value="" (blob already
+        # in S3). Re-route only when the caller has provided a new value (the
+        # remember-update path). An empty value means the existing S3 object
+        # is unchanged.
+        if memory.value_type == "text-large":
+            if not memory.value:
+                return
+            memory.value_type = "text"
+
+        if memory.value is None:
+            return
+
+        encoded = memory.value.encode("utf-8")
+        if len(encoded) > MAX_BLOB_SIZE_BYTES:
+            raise ValueError(
+                f"Value size {len(encoded)} bytes exceeds the maximum of "
+                f"{MAX_BLOB_SIZE_BYTES} bytes."
+            )
+        if len(encoded) <= INLINE_TEXT_THRESHOLD_BYTES:
+            # Inline path: unchanged. Capture size_bytes for the
+            # forthcoming two-dimension quota (#500) even on the
+            # small path so rollups are consistent.
+            memory.size_bytes = len(encoded)
+            return
+
+        # Promote to text-large — write body to S3 under the
+        # workspace-equivalent prefix (user id today, workspace id
+        # post-#482).
+        owner = memory.owner_user_id or memory.owner_client_id
+        s3_uri = self.blob_store.put(
+            owner=owner,
+            memory_id=memory.memory_id,
+            body=encoded,
+            content_type="text/plain; charset=utf-8",
+        )
+        memory.value_type = "text-large"
+        memory.s3_uri = s3_uri
+        memory.size_bytes = len(encoded)
+        memory.content_type = "text/plain; charset=utf-8"
+        # Drop the inline value — DynamoDB only keeps the pointer.
+        memory.value = ""
 
     def get_memory_by_id(self, memory_id: str) -> Memory | None:
         item = self._get_memory_meta(memory_id)
@@ -262,6 +351,7 @@ class HiveStorage:
         memory = Memory.from_dynamo(existing)
         self._delete_tag_items(memory)
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
+        self._delete_blob_if_needed(memory)
         return True
 
     # ------------------------------------------------------------------
@@ -346,8 +436,13 @@ class HiveStorage:
         tag: str,
         limit: int = 100,
         cursor: str | None = None,
+        owner_user_id: str | None = None,
     ) -> tuple[list[Memory], str | None]:
         """Query TagIndex GSI to find memories with a given tag.
+
+        When owner_user_id is provided, only memories belonging to that user
+        are returned (within-user cross-client sharing is intentional product
+        behaviour; cross-user isolation is enforced here).
 
         Returns (memories, next_cursor). next_cursor is None when exhausted.
         """
@@ -363,7 +458,7 @@ class HiveStorage:
         memories: list[Memory] = []
         for item in resp.get("Items", []):
             m = self.get_memory_by_id(item["memory_id"])
-            if m is not None:
+            if m is not None and (owner_user_id is None or m.owner_user_id == owner_user_id):
                 memories.append(m)
 
         lek = resp.get("LastEvaluatedKey")
@@ -433,12 +528,13 @@ class HiveStorage:
         deleted = 0
         cursor: str | None = None
         while True:
-            items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
+            items, cursor = self.list_memories_by_tag(
+                tag, limit=100, cursor=cursor, owner_user_id=owner_user_id
+            )
             for memory in items:
-                if owner_user_id and memory.owner_user_id != owner_user_id:
-                    continue
                 self._delete_tag_items(memory)
                 self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
+                self._delete_blob_if_needed(memory)
                 deleted += 1
             if cursor is None:
                 break
@@ -458,11 +554,10 @@ class HiveStorage:
         if tag:
             cursor: str | None = None
             while True:
-                items, cursor = self.list_memories_by_tag(tag, limit=100, cursor=cursor)
-                for memory in items:
-                    if owner_user_id and memory.owner_user_id != owner_user_id:
-                        continue
-                    yield memory
+                items, cursor = self.list_memories_by_tag(
+                    tag, limit=100, cursor=cursor, owner_user_id=owner_user_id
+                )
+                yield from items
                 if cursor is None:
                     break
         else:
@@ -863,6 +958,74 @@ class HiveStorage:
         )
         return resp.get("Count", 0)
 
+    def sum_storage_bytes(self, owner_user_id: str | None = None) -> int:
+        """Return the total stored bytes across all memories for the given user (or all users)."""
+        filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
+        expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "MEMORY#"}
+        if owner_user_id:
+            filter_expr += _UID_FILTER
+            expr_vals[":uid"] = owner_user_id
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": filter_expr,
+            "ExpressionAttributeValues": expr_vals,
+            "ProjectionExpression": "#sb",
+            "ExpressionAttributeNames": {"#sb": "size_bytes"},
+        }
+        total = 0
+        resp = self.table.scan(**scan_kwargs)
+        while True:
+            total += sum(int(item.get("size_bytes", 0)) for item in resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if last_key is None:
+                break
+            resp = self.table.scan(**scan_kwargs, ExclusiveStartKey=last_key)
+        return total
+
+    def update_user_limits(
+        self,
+        user_id: str,
+        memory_limit: int | None,
+        storage_bytes_limit: int | None,
+    ) -> bool:
+        """Set per-user quota overrides. Pass None to remove an override (revert to system default)."""
+        set_parts: list[str] = []
+        remove_parts: list[str] = []
+        expr_vals: dict[str, Any] = {}
+
+        if memory_limit is not None:
+            set_parts.append("memory_limit = :ml")
+            expr_vals[":ml"] = memory_limit
+        else:
+            remove_parts.append("memory_limit")
+
+        if storage_bytes_limit is not None:
+            set_parts.append("storage_bytes_limit = :sbl")
+            expr_vals[":sbl"] = storage_bytes_limit
+        else:
+            remove_parts.append("storage_bytes_limit")
+
+        parts: list[str] = []
+        if set_parts:
+            parts.append("SET " + ", ".join(set_parts))
+        if remove_parts:
+            parts.append("REMOVE " + ", ".join(remove_parts))
+
+        update_kwargs: dict[str, Any] = {
+            "Key": {"PK": f"USER#{user_id}", "SK": "META"},
+            "UpdateExpression": " ".join(parts),
+            "ConditionExpression": "attribute_exists(PK)",
+        }
+        if expr_vals:
+            update_kwargs["ExpressionAttributeValues"] = expr_vals
+
+        try:
+            self.table.update_item(**update_kwargs)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
     # ------------------------------------------------------------------
     # API Keys
     # ------------------------------------------------------------------
@@ -1032,6 +1195,47 @@ class HiveStorage:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _delete_blob_if_needed(self, memory: Memory) -> None:
+        """Delete the S3 blob for a memory if one exists.
+
+        Called after the DynamoDB item is already removed. Failures are
+        logged as warnings and swallowed — the memory is already gone from
+        DynamoDB so it's inaccessible regardless. The configured S3
+        lifecycle rule only aborts incomplete multipart uploads; it does
+        not clean up orphaned objects left behind by failed deletes.
+        """
+        if memory.s3_uri is None:
+            return
+        owner = memory.owner_user_id or memory.owner_client_id or ""
+        try:
+            self.blob_store.delete(owner=owner, memory_id=memory.memory_id)
+        except Exception:
+            logger.warning(
+                "blob_delete_failed memory_id=%s s3_uri=%s",
+                memory.memory_id,
+                memory.s3_uri,
+                exc_info=True,
+            )
+
+    def fetch_blob_value(self, memory: Memory) -> str:
+        """Fetch the full text content from S3 for a ``text-large`` memory.
+
+        Raises whatever the underlying blob store raises so the caller can
+        decide whether to propagate or surface a user-facing fallback.
+        """
+        owner = memory.owner_user_id or memory.owner_client_id or ""
+        data = self.blob_store.get(owner=owner, memory_id=memory.memory_id)
+        return data.decode("utf-8")
+
+    def fetch_blob_bytes(self, memory: Memory) -> bytes:
+        """Fetch raw binary content from S3 for an ``image`` or ``blob`` memory.
+
+        Raises whatever the underlying blob store raises so the caller can
+        decide whether to propagate or surface a user-facing fallback.
+        """
+        owner = memory.owner_user_id or memory.owner_client_id or ""
+        return self.blob_store.get(owner=owner, memory_id=memory.memory_id)
 
     def _get_memory_meta(self, memory_id: str) -> dict[str, Any] | None:
         resp = self.table.get_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})

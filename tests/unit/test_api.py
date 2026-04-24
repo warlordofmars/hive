@@ -21,6 +21,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("HIVE_JWT_SECRET", "unit-test-secret")
+os.environ.setdefault("HIVE_VECTORS_BUCKET", "hive-unit-vectors")
 # Ensure unit tests never try to hit a real DynamoDB endpoint
 os.environ.pop("DYNAMODB_ENDPOINT", None)
 
@@ -102,7 +103,13 @@ def _setup_app_overrides(app, storage, claims):
     def _override_storage():
         return storage
 
+    from unittest.mock import MagicMock
+
+    mock_vs = MagicMock()
+    mock_vs.search.return_value = []
+
     app.dependency_overrides[auth_mod.require_mgmt_user] = _override_mgmt_user
+    app.dependency_overrides[memories_mod._vector_store] = lambda: mock_vs
     for mod in (memories_mod, clients_mod, stats_mod, users_mod, versions_mod):
         app.dependency_overrides[mod._storage] = _override_storage
 
@@ -304,6 +311,46 @@ class TestMemories:
             resp = tc.post("/api/memories", json={"key": "existing", "value": "v2"})
         assert resp.status_code == 200
 
+    def test_update_by_key_enforces_storage_quota_delta(self, client):
+        """Growing an existing memory beyond the user's storage budget returns 429."""
+        import os
+        from unittest.mock import AsyncMock, patch
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "grow", "value": "a" * 10})
+        mock_emit = AsyncMock()
+        with (
+            patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": "20"}),
+            patch("hive.api.memories.emit_metric", mock_emit),
+        ):
+            # New value is 100 bytes — delta of 90 exceeds the 20-byte cap.
+            resp = tc.post("/api/memories", json={"key": "grow", "value": "a" * 100})
+        assert resp.status_code == 429
+        assert "quota" in resp.json()["detail"].lower()
+
+    def test_update_by_key_same_or_smaller_skips_storage_quota(self, client):
+        """Shrinking / equal-size updates must not re-evaluate storage quota."""
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        tc.post("/api/memories", json={"key": "shrink", "value": "a" * 100})
+        # Set a cap that the current item already exceeds; a smaller update must still succeed.
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": "1"}):
+            resp = tc.post("/api/memories", json={"key": "shrink", "value": "a" * 10})
+        assert resp.status_code == 200
+
+    def test_update_memory_endpoint_enforces_storage_quota_delta(self, client):
+        """PATCH /api/memories/{id} enforces storage quota on value growth."""
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "pb", "value": "a" * 10}).json()["memory_id"]
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": "20"}):
+            resp = tc.patch(f"/api/memories/{mid}", json={"value": "a" * 100})
+        assert resp.status_code == 429
+
     def test_update_oversized_returns_413(self, client):
         from unittest.mock import patch
 
@@ -490,6 +537,121 @@ class TestMemoryTTL:
         resp = tc.patch(f"/api/memories/{mid}", json={"ttl_seconds": 0})
         assert resp.status_code == 200
         assert resp.json()["expires_at"] is None
+
+    def test_response_includes_value_type_fields(self, client):
+        tc, *_ = client
+        resp = tc.post("/api/memories", json={"key": "vt-k", "value": "v"})
+        data = resp.json()
+        assert data["value_type"] == "text"
+        assert data["content_type"] is None
+        assert data["size_bytes"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Memory content endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryContentEndpoint:
+    def test_inline_memory_returns_409(self, client):
+        tc, *_ = client
+        mid = tc.post("/api/memories", json={"key": "inline-k", "value": "hi"}).json()["memory_id"]
+        resp = tc.get(f"/api/memories/{mid}/content")
+        assert resp.status_code == 409
+
+    def test_nonexistent_memory_returns_404(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/memories/no-such-id/content")
+        assert resp.status_code == 404
+
+    def test_non_admin_cannot_access_other_users_content(self, client):
+        from hive.models import Memory
+
+        tc, storage, _ = client
+        other = Memory(
+            key="other-bin",
+            value_type="blob",
+            owner_client_id="x",
+            owner_user_id="other-user",
+            s3_uri="s3://bucket/other-user/mem-id",
+        )
+        storage.put_memory(other)
+        resp = tc.get(f"/api/memories/{other.memory_id}/content")
+        assert resp.status_code == 404
+
+    def test_streams_image_content_with_correct_type(self, client):
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+
+        tc, storage, user_id = client
+        mem = Memory(
+            key="img.png",
+            value_type="image",
+            owner_client_id=user_id,
+            owner_user_id=user_id,
+            s3_uri=f"s3://bucket/{user_id}/img-id",
+            content_type="image/png",
+        )
+        storage.put_memory(mem)
+
+        mock_bs = MagicMock()
+        mock_bs.get.return_value = b"\x89PNG\r\n"
+        with patch("hive.blob_store.BlobStore", return_value=mock_bs):
+            resp = tc.get(f"/api/memories/{mem.memory_id}/content")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/png")
+        assert resp.content == b"\x89PNG\r\n"
+        mock_bs.get.assert_called_once_with(user_id, mem.memory_id)
+
+    def test_admin_can_access_other_users_content(self, admin_client):
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+
+        tc, storage, _ = admin_client
+        mem = Memory(
+            key="other-pdf",
+            value_type="blob",
+            owner_client_id="x",
+            owner_user_id="other-user",
+            s3_uri="s3://bucket/other-user/pdf-id",
+            content_type="application/pdf",
+        )
+        storage.put_memory(mem)
+
+        mock_bs = MagicMock()
+        mock_bs.get.return_value = b"%PDF-1.4"
+        with patch("hive.blob_store.BlobStore", return_value=mock_bs):
+            resp = tc.get(f"/api/memories/{mem.memory_id}/content")
+
+        assert resp.status_code == 200
+        assert resp.content == b"%PDF-1.4"
+
+    def test_missing_content_type_defaults_to_octet_stream(self, client):
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+
+        tc, storage, user_id = client
+        mem = Memory(
+            key="unknown-blob",
+            value_type="blob",
+            owner_client_id=user_id,
+            owner_user_id=user_id,
+            s3_uri=f"s3://bucket/{user_id}/unknown-id",
+        )
+        storage.put_memory(mem)
+
+        mock_bs = MagicMock()
+        mock_bs.get.return_value = b"raw bytes"
+        with patch("hive.blob_store.BlobStore", return_value=mock_bs):
+            resp = tc.get(f"/api/memories/{mem.memory_id}/content")
+
+        assert resp.status_code == 200
+        assert "application/octet-stream" in resp.headers["content-type"]
+        assert resp.content == b"raw bytes"
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +987,117 @@ class TestUsers:
         tc, _, user_id = client
         resp = tc.get(f"/api/users/{user_id}/stats")
         assert resp.status_code == 403
+
+    def test_get_user_limits_returns_effective_defaults(self, admin_client):
+        tc, storage, admin_id = admin_client
+        resp = tc.get(f"/api/users/{admin_id}/limits")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == admin_id
+        assert data["memory_limit"] is None
+        assert data["storage_bytes_limit"] is None
+        assert isinstance(data["effective_memory_limit"], int)
+        assert isinstance(data["effective_storage_bytes_limit"], int)
+
+    def test_get_user_limits_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/users/no-such-user/limits")
+        assert resp.status_code == 404
+
+    def test_get_user_limits_non_admin_returns_403(self, client):
+        tc, _, user_id = client
+        resp = tc.get(f"/api/users/{user_id}/limits")
+        assert resp.status_code == 403
+
+    def test_put_user_limits_sets_overrides(self, admin_client):
+        from hive.models import User
+
+        tc, storage, admin_id = admin_client
+        u = User(email="target@example.com", display_name="Target")
+        storage.put_user(u)
+        resp = tc.put(
+            f"/api/users/{u.user_id}/limits",
+            json={"memory_limit": 100, "storage_bytes_limit": 5242880},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] == 100
+        assert data["storage_bytes_limit"] == 5242880
+        assert data["effective_memory_limit"] == 100
+        assert data["effective_storage_bytes_limit"] == 5242880
+
+    def test_put_user_limits_clears_overrides_with_null(self, admin_client):
+        from hive.models import User
+
+        tc, storage, admin_id = admin_client
+        u = User(email="target2@example.com", display_name="Target2", memory_limit=50)
+        storage.put_user(u)
+        resp = tc.put(
+            f"/api/users/{u.user_id}/limits",
+            json={"memory_limit": None, "storage_bytes_limit": None},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] is None
+        # effective falls back to system default
+        assert data["effective_memory_limit"] > 0
+
+    def test_put_user_limits_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.put("/api/users/no-such-user/limits", json={"memory_limit": 100})
+        assert resp.status_code == 404
+
+    def test_put_user_limits_non_admin_returns_403(self, client):
+        tc, *_ = client
+        resp = tc.put("/api/users/any-user/limits", json={"memory_limit": 100})
+        assert resp.status_code == 403
+
+    def test_put_user_limits_rejects_zero(self, admin_client):
+        from hive.models import User
+
+        tc, storage, _ = admin_client
+        u = User(email="t3@example.com", display_name="T3")
+        storage.put_user(u)
+        resp = tc.put(f"/api/users/{u.user_id}/limits", json={"memory_limit": 0})
+        assert resp.status_code == 422
+
+    def test_put_user_limits_rejects_negative(self, admin_client):
+        from hive.models import User
+
+        tc, storage, _ = admin_client
+        u = User(email="t4@example.com", display_name="T4")
+        storage.put_user(u)
+        resp = tc.put(f"/api/users/{u.user_id}/limits", json={"storage_bytes_limit": -1})
+        assert resp.status_code == 422
+
+
+class TestStatsStorageBytes:
+    def test_stats_includes_storage_bytes_fields(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_storage_bytes" in data
+        assert isinstance(data["total_storage_bytes"], int)
+        assert "storage_bytes_limit" in data
+
+    def test_stats_storage_bytes_limit_for_non_admin(self, client):
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": str(50 * 1024 * 1024)}):
+            resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["storage_bytes_limit"] == 50 * 1024 * 1024
+
+    def test_stats_storage_bytes_limit_null_for_admin(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["storage_bytes_limit"] is None
 
 
 # ---------------------------------------------------------------------------

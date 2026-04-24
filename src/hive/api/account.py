@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from hive.api._auth import require_mgmt_user
 from hive.models import ActivityEvent, EventType
-from hive.quota import _exempt_users, get_memory_limit
+from hive.quota import _exempt_users, get_memory_limit, get_storage_bytes_limit
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["account"])
@@ -306,9 +306,23 @@ def _compute_account_stats(
     # Admins and explicitly-exempted users both get an unbounded limit —
     # matches the exemption logic in /api/stats (#535 follow-up).
     is_exempt = is_admin or user_id in _exempt_users()
+    # Per-user limit overrides (None = no override, use system default).
+    acct_user = storage.get_user_by_id(user_id) if not is_exempt else None
+    effective_memory_limit = (
+        acct_user.memory_limit
+        if acct_user and acct_user.memory_limit is not None
+        else get_memory_limit()
+    )
+    effective_storage_limit = (
+        acct_user.storage_bytes_limit
+        if acct_user and acct_user.storage_bytes_limit is not None
+        else get_storage_bytes_limit()
+    )
     quota = {
         "memory_count": len(memories),
-        "memory_limit": None if is_exempt else get_memory_limit(),
+        "memory_limit": None if is_exempt else effective_memory_limit,
+        "storage_bytes": sum(m.size_bytes or 0 for m in memories),
+        "storage_bytes_limit": None if is_exempt else effective_storage_limit,
     }
 
     # freshness — days since creation + days since last access per memory.

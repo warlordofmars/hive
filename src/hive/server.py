@@ -32,6 +32,7 @@ from fastmcp.server.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth import RemoteAuthProvider, TokenVerifier
 from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.tools.tool import ToolResult
+from mcp.types import ImageContent
 from pydantic import AnyHttpUrl
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -50,7 +51,7 @@ from hive.hybrid_search import (
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
-from hive.quota import QuotaExceeded, check_memory_quota, get_memory_limit
+from hive.quota import QuotaExceeded, check_memory_quota, check_storage_quota, get_memory_limit
 from hive.rate_limiter import (
     DEFAULT_RATE_LIMIT_RPD,
     DEFAULT_RATE_LIMIT_RPM,
@@ -65,7 +66,7 @@ logger = get_logger("hive.server")
 
 _MEMORIES_READ_SCOPE = "memories:read"
 
-DEFAULT_MAX_VALUE_BYTES = 10 * 1024
+DEFAULT_MAX_VALUE_BYTES = 10 * 1024 * 1024
 
 
 def _max_value_bytes() -> int:
@@ -451,10 +452,17 @@ async def remember(
                 },
             )
             return _tool_result(f"Memory '{key}' unchanged.", storage, client_id)
+        old_size = existing.size_bytes or 0
         existing.value = value
         existing.tags = tags
         existing.expires_at = expires_at
         existing.updated_at = datetime.now(timezone.utc)
+        delta = actual - old_size
+        if delta > 0:
+            try:
+                check_storage_quota(existing.owner_user_id, delta, storage)
+            except QuotaExceeded as exc:
+                raise ToolError(exc.detail) from exc
         try:
             storage.put_memory(existing, expected_version=version)
         except VersionConflict as exc:
@@ -470,18 +478,30 @@ async def remember(
         event_type = EventType.memory_updated
         action = "Updated"
         try:
-            _vector_store().upsert_memory(existing)
+            _vector_store().upsert_memory(
+                existing.model_copy(update={"value": value})
+                if existing.value_type == "text-large"
+                else existing
+            )
         except Exception:
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
     else:
         client = storage.get_client(client_id)
-        owner_user_id = client.owner_user_id if client else None
+        if client is None:
+            raise ToolError("Unable to load client record for authenticated caller.")
+        owner_user_id = client.owner_user_id
         try:
             check_memory_quota(owner_user_id, storage)
+            check_storage_quota(owner_user_id, actual, storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
         memory = Memory(
-            key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+            key=key,
+            value=value,
+            tags=tags,
+            owner_client_id=client_id,
+            owner_user_id=owner_user_id,
+            expires_at=expires_at,
         )
         try:
             storage.put_memory(memory)
@@ -491,7 +511,11 @@ async def remember(
         event_type = EventType.memory_created
         action = "Stored"
         try:
-            _vector_store().upsert_memory(memory)
+            _vector_store().upsert_memory(
+                memory.model_copy(update={"value": value})
+                if memory.value_type == "text-large"
+                else memory
+            )
         except Exception:
             logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
@@ -584,14 +608,22 @@ async def remember_if_absent(
         return _tool_result(f"Memory '{key}' already exists — not overwritten.", storage, client_id)
 
     client = storage.get_client(client_id)
-    owner_user_id = client.owner_user_id if client else None
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    owner_user_id = client.owner_user_id
     try:
         check_memory_quota(owner_user_id, storage)
+        check_storage_quota(owner_user_id, actual, storage)
     except QuotaExceeded as exc:
         raise ToolError(exc.detail) from exc
 
     memory = Memory(
-        key=key, value=value, tags=tags, owner_client_id=client_id, expires_at=expires_at
+        key=key,
+        value=value,
+        tags=tags,
+        owner_client_id=client_id,
+        owner_user_id=owner_user_id,
+        expires_at=expires_at,
     )
     try:
         storage.put_memory(memory)
@@ -599,7 +631,11 @@ async def remember_if_absent(
         await emit_metric("ToolErrors", operation="remember_if_absent")
         raise ToolError(str(exc)) from exc
     try:
-        _vector_store().upsert_memory(memory)
+        _vector_store().upsert_memory(
+            memory.model_copy(update={"value": value})
+            if memory.value_type == "text-large"
+            else memory
+        )
     except Exception:
         logger.warning("Vector upsert failed (non-fatal)", exc_info=True)
 
@@ -629,6 +665,154 @@ async def remember_if_absent(
         operation="remember_if_absent",
     )
     return _tool_result(f"Stored memory '{key}'.", storage, client_id)
+
+
+_BLOB_MAX_BYTES = 10 * 1024 * 1024  # 10 MB hard cap, matches Lambda payload ceiling
+
+
+@mcp.tool(
+    title="Remember blob",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def remember_blob(
+    key: Annotated[str, "Unique key to store the binary memory under"],
+    data: Annotated[str, "Base64-encoded binary content"],
+    content_type: Annotated[str, "MIME type of the content (e.g. image/png, application/pdf)"],
+    tags: Annotated[list[str] | None, "Optional tags for categorisation"] = None,
+    ctx: Context | None = None,
+) -> str:
+    """Store a binary memory (image, PDF, or other binary file) identified by key.
+
+    ``data`` must be standard Base64-encoded bytes. ``content_type`` must be a
+    valid MIME type — memories whose type begins with ``image/`` are stored as
+    ``value_type="image"``; all others use ``value_type="blob"``. The encoded
+    payload may not exceed 10 MB.
+
+    Calling ``remember_blob`` with the same key again replaces the existing
+    blob (upsert semantics).  Use ``recall(key)`` to retrieve the blob as an
+    MCP ``ImageContent`` block.
+    """
+    import base64
+
+    t0 = time.monotonic()
+    storage, client_id = await _auth(ctx, required_scope="memories:write")
+
+    content_type = content_type.strip()
+    if not content_type:
+        await emit_metric("ToolErrors", operation="remember_blob")
+        raise ToolError("content_type must be a non-empty MIME type string.")
+
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except Exception as exc:
+        await emit_metric("ToolErrors", operation="remember_blob")
+        raise ToolError(f"data is not valid Base64: {exc}") from exc
+
+    if len(raw) > _BLOB_MAX_BYTES:
+        await emit_metric("ToolErrors", operation="remember_blob")
+        raise ToolError(f"Binary payload exceeds the 10 MB limit ({len(raw)} bytes provided).")
+
+    value_type: str = "image" if content_type.startswith("image/") else "blob"
+    tags = tags or []
+
+    existing = storage.get_memory_by_key(key)
+    if existing:
+        old_blob_size = existing.size_bytes or 0
+        delta = len(raw) - old_blob_size
+        if delta > 0:
+            try:
+                check_storage_quota(existing.owner_user_id, delta, storage)
+            except QuotaExceeded as exc:
+                raise ToolError(exc.detail) from exc
+        owner = existing.owner_user_id or existing.owner_client_id
+        s3_uri = storage.blob_store.put(
+            owner=owner,
+            memory_id=existing.memory_id,
+            body=raw,
+            content_type=content_type,
+        )
+        existing.value = ""
+        existing.value_type = value_type  # type: ignore[assignment]
+        existing.content_type = content_type
+        existing.s3_uri = s3_uri
+        existing.size_bytes = len(raw)
+        existing.tags = tags
+        existing.updated_at = datetime.now(timezone.utc)
+        try:
+            storage.put_memory(existing)
+        except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember_blob")
+            raise ToolError(str(exc)) from exc
+        event_type = EventType.memory_updated
+        action = "Updated"
+    else:
+        client = storage.get_client(client_id)
+        if client is None:
+            raise ToolError("Unable to load client record for authenticated caller.")
+        owner_user_id = client.owner_user_id
+        try:
+            check_memory_quota(owner_user_id, storage)
+            check_storage_quota(owner_user_id, len(raw), storage)
+        except QuotaExceeded as exc:
+            raise ToolError(exc.detail) from exc
+        memory = Memory(
+            key=key,
+            value="",
+            tags=tags,
+            owner_client_id=client_id,
+            owner_user_id=owner_user_id,
+            value_type=value_type,  # type: ignore[arg-type]
+            content_type=content_type,
+            size_bytes=len(raw),
+        )
+        owner = owner_user_id or client_id
+        s3_uri = storage.blob_store.put(
+            owner=owner,
+            memory_id=memory.memory_id,
+            body=raw,
+            content_type=content_type,
+        )
+        memory.s3_uri = s3_uri
+        try:
+            storage.put_memory(memory)
+        except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember_blob")
+            raise ToolError(str(exc)) from exc
+        event_type = EventType.memory_created
+        action = "Stored"
+
+    _log(
+        storage,
+        ActivityEvent(
+            event_type=event_type,
+            client_id=client_id,
+            metadata={"key": key, "tags": tags, "content_type": content_type},
+        ),
+    )
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "%s blob memory '%s'",
+        action,
+        key,
+        extra={
+            "tool": "remember_blob",
+            "duration_ms": duration_ms,
+            "status": "success",
+        },
+    )
+    await emit_metric("ToolInvocations", operation="remember_blob")
+    await emit_metric(
+        "StorageLatencyMs",
+        value=float(duration_ms),
+        unit="Milliseconds",
+        operation="remember_blob",
+    )
+    return _tool_result(f"{action} blob memory '{key}'.", storage, client_id)
 
 
 @mcp.tool(
@@ -698,7 +882,42 @@ async def recall(
     await emit_metric(
         "StorageLatencyMs", value=float(duration_ms), unit="Milliseconds", operation="recall"
     )
-    return _tool_result(memory.value, storage, client_id, memory=memory)
+    if memory.value_type == "text-large":
+        try:
+            recalled_value = storage.fetch_blob_value(memory)
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for recall key='%s'",
+                key,
+                exc_info=True,
+            )
+            recalled_value = f"[memory content unavailable — blob fetch failed for key '{key}']"
+        return _tool_result(recalled_value, storage, client_id, memory=memory)
+    if memory.value_type in ("image", "blob"):
+        import base64
+
+        try:
+            raw = storage.fetch_blob_bytes(memory)
+            b64 = base64.b64encode(raw).decode("ascii")
+            mime = memory.content_type or "application/octet-stream"
+            meta = _quota_meta(storage, client_id)
+            meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
+            return ToolResult(
+                content=[ImageContent(type="image", data=b64, mimeType=mime)],
+                meta=meta,
+            )
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for recall key='%s'",
+                key,
+                exc_info=True,
+            )
+            recalled_value = (
+                f"[binary memory content unavailable — blob fetch failed for key '{key}']"
+            )
+            return _tool_result(recalled_value, storage, client_id, memory=memory)
+    recalled_value = memory.value or ""
+    return _tool_result(recalled_value, storage, client_id, memory=memory)
 
 
 @mcp.tool(
@@ -1001,9 +1220,19 @@ async def list_memories(
     """List memories that have a specific tag, with optional pagination."""
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    owner_user_id = client.owner_user_id
 
     limit = max(1, min(limit, 500))
-    memories, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
+    memories, next_cursor = storage.list_memories_by_tag(
+        tag, limit=limit, cursor=cursor, owner_user_id=owner_user_id
+    )
     if not include_redacted:
         memories = [m for m in memories if not m.is_redacted]
     _log(
@@ -1033,7 +1262,10 @@ async def list_memories(
         "items": [
             {
                 "key": m.key,
-                "value": m.value,
+                "value": m.value if m.value_type not in ("image", "blob") else None,
+                "value_type": m.value_type,
+                "content_type": m.content_type,
+                "size_bytes": m.size_bytes,
                 "tags": m.tags,
                 "owner_client_id": m.owner_client_id,
                 "recall_count": m.recall_count,
@@ -1098,9 +1330,17 @@ async def summarize_context(
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    owner_user_id = client.owner_user_id
 
     await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
-    memories, _ = storage.list_memories_by_tag(topic, limit=500)
+    memories, _ = storage.list_memories_by_tag(topic, limit=500, owner_user_id=owner_user_id)
     await _report_progress(
         ctx, 1, 2, f"Retrieved {len(memories)} memories; synthesising summary..."
     )
@@ -1231,7 +1471,11 @@ async def search_memories(
     now = datetime.now(timezone.utc)
     scored: list[tuple[Memory, float, float, float, float]] = []
     for m, sem in hydrated:
-        kw = keyword_score(query_tokens, m.value)
+        # For text-large memories, keyword scoring uses the empty inline
+        # placeholder — fetching S3 blobs per candidate would be too
+        # expensive. Semantic relevance from the vector index covers the
+        # large-document recall path.
+        kw = keyword_score(query_tokens, m.value or "")
         rec = recency_score(m, now=now)
         blended = blend_score(
             semantic=sem,
@@ -1325,9 +1569,20 @@ async def relate_memories(
     if memory is None:
         raise ToolError(f"No memory found for key '{key}'.")
 
+    query_value = memory.value or ""
+    if memory.value_type == "text-large":
+        try:
+            query_value = storage.fetch_blob_value(memory)
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for relate_memories key='%s'",
+                key,
+                exc_info=True,
+            )
+
     try:
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
-        pairs = _vector_store().search(memory.value, client_id, top_k=top_k + 1)
+        pairs = _vector_store().search(query_value, client_id, top_k=top_k + 1)
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
@@ -1569,7 +1824,7 @@ async def pack_context(
     for memory, sem in hydrated:
         if memory.is_redacted:
             continue
-        kw = keyword_score(query_tokens, memory.value)
+        kw = keyword_score(query_tokens, memory.value or "")
         rec = recency_score(memory, now=now)
         blended = blend_score(semantic=sem, keyword=kw, recency=rec)
         scored.append(
@@ -1894,7 +2149,17 @@ def read_memory_resource(key: str) -> str:
         raise ValueError(f"Memory not found: {decoded_key!r}")
     if memory.is_redacted:
         raise ValueError(f"Memory has been redacted: {decoded_key!r}")
-    return memory.value
+    if memory.value_type == "text-large":
+        try:
+            return storage.fetch_blob_value(memory)
+        except Exception:
+            logger.warning(
+                "blob_fetch_failed for resource key='%s'",
+                decoded_key,
+                exc_info=True,
+            )
+            return f"[memory content unavailable — blob fetch failed for key {decoded_key!r}]"
+    return memory.value or ""
 
 
 # ---------------------------------------------------------------------------

@@ -122,7 +122,7 @@ def server_env():
             from hive.storage import HiveStorage
 
             storage = HiveStorage(table_name="hive-unit-server", region="us-east-1")
-            client = OAuthClient(client_name="MCP Test Client")
+            client = OAuthClient(client_name="MCP Test Client", owner_user_id="test-user")
             storage.put_client(client)
 
             now = datetime.now(timezone.utc)
@@ -294,8 +294,16 @@ class TestRemember:
         ):
             await remember("big-key", "x" * 1000, [], ctx=_make_ctx(jwt))
 
-    async def test_value_at_limit_succeeds(self, server_env):
+    async def test_value_at_limit_succeeds(self, server_env, monkeypatch):
+        import boto3
+
         from hive.server import DEFAULT_MAX_VALUE_BYTES, remember
+
+        # With the new 10 MB default, a value at the limit exceeds the
+        # inline threshold and routes to S3. Create the bucket inside
+        # the existing mock_aws() context so the routing path succeeds.
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", "test-blobs-at-limit")
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-blobs-at-limit")
 
         storage, _, jwt = server_env
         value = "x" * DEFAULT_MAX_VALUE_BYTES
@@ -593,6 +601,225 @@ class TestListMemories:
         assert body["has_more"] is False
 
 
+def _make_user_jwt(storage, owner_user_id: str) -> str:
+    """Issue a full-scope JWT for a new client belonging to ``owner_user_id``."""
+    from hive.auth.tokens import issue_jwt
+    from hive.models import OAuthClient, Token
+
+    client = OAuthClient(client_name=f"User {owner_user_id}", owner_user_id=owner_user_id)
+    storage.put_client(client)
+    now = datetime.now(timezone.utc)
+    token = Token(
+        client_id=client.client_id,
+        scope="memories:read memories:write",
+        issued_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    storage.put_token(token)
+    return issue_jwt(token)
+
+
+class TestListMemoriesUserScoping:
+    """Cross-user isolation for the list_memories MCP tool."""
+
+    async def test_cross_user_isolation(self, server_env):
+        """User B cannot see User A's memories even if they share a tag."""
+        storage, _, _ = server_env
+        from hive.server import list_memories, remember
+
+        jwt_a = _make_user_jwt(storage, "user-alice")
+        jwt_b = _make_user_jwt(storage, "user-bob")
+
+        await remember("secret-alice", "alice-value", ["shared-tag"], ctx=_make_ctx(jwt_a))
+        await remember("secret-bob", "bob-value", ["shared-tag"], ctx=_make_ctx(jwt_b))
+
+        result_a = await list_memories("shared-tag", ctx=_make_ctx(jwt_a))
+        keys_a = [m["key"] for m in _body(result_a)["items"]]
+        assert "secret-alice" in keys_a
+        assert "secret-bob" not in keys_a
+
+        result_b = await list_memories("shared-tag", ctx=_make_ctx(jwt_b))
+        keys_b = [m["key"] for m in _body(result_b)["items"]]
+        assert "secret-bob" in keys_b
+        assert "secret-alice" not in keys_b
+
+    async def test_within_user_cross_client_sharing(self, server_env):
+        """Two clients owned by the same user can see each other's tagged memories."""
+        storage, _, _ = server_env
+        from hive.server import list_memories, remember
+
+        jwt_c1 = _make_user_jwt(storage, "user-charlie")
+        jwt_c2 = _make_user_jwt(storage, "user-charlie")
+
+        await remember("from-client1", "v1", ["proj"], ctx=_make_ctx(jwt_c1))
+        await remember("from-client2", "v2", ["proj"], ctx=_make_ctx(jwt_c2))
+
+        result = await list_memories("proj", ctx=_make_ctx(jwt_c2))
+        keys = [m["key"] for m in _body(result)["items"]]
+        assert "from-client1" in keys
+        assert "from-client2" in keys
+
+
+class TestSummarizeContextUserScoping:
+    """Cross-user isolation for the summarize_context MCP tool."""
+
+    async def test_cross_user_isolation(self, server_env):
+        """summarize_context must not include memories from a different user."""
+        storage, _, _ = server_env
+        from hive.server import remember, summarize_context
+
+        jwt_a = _make_user_jwt(storage, "user-diana")
+        jwt_b = _make_user_jwt(storage, "user-eve")
+
+        await remember("diana-note", "diana-private", ["project-x"], ctx=_make_ctx(jwt_a))
+        await remember("eve-note", "eve-private", ["project-x"], ctx=_make_ctx(jwt_b))
+
+        result = await summarize_context("project-x", ctx=_make_ctx(jwt_a))
+        text = _text(result)
+        assert "diana-private" in text
+        assert "eve-private" not in text
+
+
+class TestUnscopedClientRejected:
+    """list_memories and summarize_context must fail closed when owner_user_id is missing."""
+
+    def _make_unscoped_jwt(self, storage) -> str:
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+
+        client = OAuthClient(client_name="Unscoped Client")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        return issue_jwt(token)
+
+    async def test_list_memories_rejects_unscoped_client(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import list_memories
+
+        storage, _, _ = server_env
+        jwt = self._make_unscoped_jwt(storage)
+        with pytest.raises(ToolError, match="per-user memory scoping is required"):
+            await list_memories("any-tag", ctx=_make_ctx(jwt))
+
+    async def test_summarize_context_rejects_unscoped_client(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import summarize_context
+
+        storage, _, _ = server_env
+        jwt = self._make_unscoped_jwt(storage)
+        with pytest.raises(ToolError, match="per-user memory scoping is required"):
+            await summarize_context("any-topic", ctx=_make_ctx(jwt))
+
+    async def test_remember_rejects_missing_client_record(self, server_env):
+        """remember fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client", owner_user_id="ghost-user")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember("key", "value", ctx=_make_ctx(jwt))
+
+    async def test_remember_if_absent_rejects_missing_client_record(self, server_env):
+        """remember_if_absent fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember_if_absent
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client IA", owner_user_id="ghost-user-ia")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember_if_absent("key", "value", ctx=_make_ctx(jwt))
+
+    async def test_list_memories_rejects_missing_client_record(self, server_env):
+        """list_memories fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import list_memories
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client LM", owner_user_id="ghost-user-lm")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await list_memories("any-tag", ctx=_make_ctx(jwt))
+
+    async def test_summarize_context_rejects_missing_client_record(self, server_env):
+        """summarize_context fails closed when the authenticated client record has been deleted."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import summarize_context
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client SC", owner_user_id="ghost-user-sc")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await summarize_context("any-topic", ctx=_make_ctx(jwt))
+
+
 # ---------------------------------------------------------------------------
 # list_tags
 # ---------------------------------------------------------------------------
@@ -819,6 +1046,52 @@ class TestRememberUpdateError:
             pytest.raises(ToolError, match="too large"),
         ):
             await remember("upd-err-key", "updated-value", [], ctx=_make_ctx(jwt))
+
+    async def test_update_larger_value_triggers_storage_quota_check(self, server_env):
+        """Storage quota is checked when updating a memory with a larger value."""
+        from unittest.mock import patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        await remember("upd-quota-larger", "x", [], ctx=_make_ctx(jwt))
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember("upd-quota-larger", "x" * 100, [], ctx=_make_ctx(jwt))
+
+        mock_check.assert_called_once()
+
+    async def test_update_smaller_value_skips_storage_quota_check(self, server_env):
+        """Storage quota is not rechecked when update reduces memory size."""
+        from unittest.mock import patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        await remember("upd-quota-smaller", "x" * 100, [], ctx=_make_ctx(jwt))
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember("upd-quota-smaller", "x", [], ctx=_make_ctx(jwt))
+
+        mock_check.assert_not_called()
+
+    async def test_update_storage_quota_exceeded_raises_tool_error(self, server_env):
+        """QuotaExceeded on storage check during update is converted to ToolError."""
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        await remember("upd-quota-exc", "x", [], ctx=_make_ctx(jwt))
+
+        with (
+            patch("hive.server.check_storage_quota", side_effect=QuotaExceeded("storage full")),
+            pytest.raises(ToolError, match="storage full"),
+        ):
+            await remember("upd-quota-exc", "xx", [], ctx=_make_ctx(jwt))
 
 
 # ---------------------------------------------------------------------------
@@ -1435,6 +1708,592 @@ class TestRelateMemories:
         write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
         with pytest.raises(ToolError, match="Insufficient scope"):
             await relate_memories("any", ctx=_make_ctx(write_only_jwt))
+
+
+# ---------------------------------------------------------------------------
+# Text-large transparent routing (#498)
+# ---------------------------------------------------------------------------
+
+
+class TestTextLargeRouting:
+    """#498 — recall, relate_memories, read_memory_resource, and vector upsert
+    work transparently for text-large memories stored in S3."""
+
+    _BIG = "z" * (150 * 1024)  # 150 KB — above 100 KB inline threshold
+
+    def _setup_blob_bucket(self, monkeypatch):
+        """Create a moto S3 bucket and point HIVE_BLOBS_BUCKET at it."""
+        bucket = "test-text-large-498"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+        return bucket
+
+    async def test_recall_text_large_returns_full_value(self, server_env, monkeypatch):
+        """recall() transparently fetches the blob and returns the full text."""
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import recall, remember
+
+        await remember("tl-recall", self._BIG, [], ctx=_make_ctx(jwt))
+        stored = storage.get_memory_by_key("tl-recall")
+        assert stored.value_type == "text-large"
+
+        result = await recall("tl-recall", ctx=_make_ctx(jwt))
+        assert _text(result) == self._BIG
+
+    async def test_recall_text_large_s3_error_returns_unavailable(self, server_env, monkeypatch):
+        """S3 fetch failure surfaces as 'unavailable' rather than crashing."""
+        from hive.models import Memory
+        from hive.server import recall
+
+        storage, client_id, jwt = server_env
+        # Insert a text-large memory directly without putting a blob in S3.
+        # No HIVE_BLOBS_BUCKET set → BlobStore() raises, which our except catches.
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="tl-error",
+            value="",
+            value_type="text-large",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        result = await recall("tl-error", ctx=_make_ctx(jwt))
+        assert "unavailable" in _text(result)
+
+    async def test_remember_text_large_embeds_full_value_new_memory(self, server_env, monkeypatch):
+        """remember() passes full text to VectorStore.upsert_memory for new text-large."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember("tl-embed-new", self._BIG, [], ctx=_make_ctx(jwt))
+
+        mock_vs.upsert_memory.assert_called_once()
+        embedded_memory = mock_vs.upsert_memory.call_args[0][0]
+        assert embedded_memory.value == self._BIG
+
+    async def test_remember_text_large_embeds_full_value_on_update(self, server_env, monkeypatch):
+        """remember() passes full text to VectorStore.upsert_memory on update."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            # first write → creates
+            await remember("tl-embed-upd", self._BIG, [], ctx=_make_ctx(jwt))
+            # second write → updates
+            updated_big = "a" * (150 * 1024)
+            await remember("tl-embed-upd", updated_big, [], ctx=_make_ctx(jwt))
+
+        assert mock_vs.upsert_memory.call_count == 2
+        embedded_on_update = mock_vs.upsert_memory.call_args_list[1][0][0]
+        assert embedded_on_update.value == updated_big
+
+    async def test_remember_if_absent_text_large_embeds_full_value(self, server_env, monkeypatch):
+        """remember_if_absent() passes full text to upsert_memory for text-large."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import remember_if_absent
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        mock_vs = MagicMock()
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await remember_if_absent("tl-absent", self._BIG, [], ctx=_make_ctx(jwt))
+
+        mock_vs.upsert_memory.assert_called_once()
+        embedded_memory = mock_vs.upsert_memory.call_args[0][0]
+        assert embedded_memory.value == self._BIG
+
+    async def test_relate_memories_text_large_uses_full_value(self, server_env, monkeypatch):
+        """relate_memories() fetches blob for source memory and uses it as query."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import relate_memories, remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+
+        await remember("tl-relate-src", self._BIG, [], ctx=_make_ctx(jwt))
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = []
+        mock_vs.upsert_memory.return_value = None
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("tl-relate-src", ctx=_make_ctx(jwt))
+
+        mock_vs.search.assert_called_once()
+        query_arg = mock_vs.search.call_args[0][0]
+        assert query_arg == self._BIG
+
+    async def test_relate_memories_text_large_s3_error_falls_back_to_empty(
+        self, server_env, monkeypatch
+    ):
+        """relate_memories() falls back to empty query string on S3 error."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+        from hive.server import relate_memories
+
+        storage, client_id, jwt = server_env
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="tl-relate-err",
+            value="",
+            value_type="text-large",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        mock_vs = MagicMock()
+        mock_vs.search.return_value = []
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            await relate_memories("tl-relate-err", ctx=_make_ctx(jwt))
+
+        query_arg = mock_vs.search.call_args[0][0]
+        assert query_arg == ""
+
+    async def test_read_memory_resource_text_large_fetches_blob(self, server_env, monkeypatch):
+        """read_memory_resource() returns the full blob content for text-large."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.server import read_memory_resource, remember
+
+        self._setup_blob_bucket(monkeypatch)
+        _, client_id, jwt = server_env
+        await remember("tl-resource", self._BIG, [], ctx=_make_ctx(jwt))
+
+        tok = MagicMock()
+        tok.client_id = client_id
+        tok.scopes = ["memories:read"]
+        with patch("hive.server.get_access_token", return_value=tok):
+            value = read_memory_resource("tl-resource")
+        assert value == self._BIG
+
+    async def test_read_memory_resource_text_large_s3_error_returns_unavailable(
+        self, server_env, monkeypatch
+    ):
+        """read_memory_resource() returns unavailable message on S3 error."""
+        from unittest.mock import MagicMock, patch
+
+        from hive.models import Memory
+        from hive.server import read_memory_resource
+
+        storage, client_id, jwt = server_env
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="tl-res-err",
+            value="",
+            value_type="text-large",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        tok = MagicMock()
+        tok.client_id = client_id
+        tok.scopes = ["memories:read"]
+        with patch("hive.server.get_access_token", return_value=tok):
+            value = read_memory_resource("tl-res-err")
+        assert "unavailable" in value
+
+
+# ---------------------------------------------------------------------------
+# remember_blob / recall binary
+# ---------------------------------------------------------------------------
+
+
+class TestRememberBlob:
+    """#499 — remember_blob stores binary content in S3; recall returns ImageContent."""
+
+    _PNG_1PX = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
+        "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )  # 1×1 transparent PNG, base64-encoded
+
+    def _setup_blob_bucket(self, monkeypatch):
+        bucket = "test-blob-499"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+        return bucket
+
+    async def test_store_new_image_blob(self, server_env, monkeypatch):
+        """remember_blob stores an image memory and returns a success message."""
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import remember_blob
+
+        result = await remember_blob(
+            "blob-img", self._PNG_1PX, "image/png", ["img"], ctx=_make_ctx(jwt)
+        )
+        assert "Stored blob memory 'blob-img'" in _text(result)
+
+        m = storage.get_memory_by_key("blob-img")
+        assert m is not None
+        assert m.value_type == "image"
+        assert m.content_type == "image/png"
+        assert m.s3_uri is not None
+        assert m.size_bytes is not None
+        assert m.size_bytes > 0
+        assert m.value == ""
+
+    async def test_store_non_image_blob(self, server_env, monkeypatch):
+        """remember_blob with non-image MIME uses value_type='blob'."""
+        import base64
+
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import remember_blob
+
+        pdf_data = base64.b64encode(b"%PDF-1.4 fake").decode()
+        result = await remember_blob("blob-pdf", pdf_data, "application/pdf", ctx=_make_ctx(jwt))
+        assert "Stored blob memory 'blob-pdf'" in _text(result)
+
+        m = storage.get_memory_by_key("blob-pdf")
+        assert m.value_type == "blob"
+        assert m.content_type == "application/pdf"
+
+    async def test_update_existing_blob(self, server_env, monkeypatch):
+        """remember_blob with an existing key replaces the blob (upsert)."""
+        import base64
+
+        self._setup_blob_bucket(monkeypatch)
+        storage, _, jwt = server_env
+        from hive.server import remember_blob
+
+        await remember_blob("blob-upd", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        first = storage.get_memory_by_key("blob-upd")
+
+        new_data = base64.b64encode(b"updated binary").decode()
+        result = await remember_blob(
+            "blob-upd", new_data, "image/jpeg", ["new-tag"], ctx=_make_ctx(jwt)
+        )
+        assert "Updated blob memory 'blob-upd'" in _text(result)
+
+        updated = storage.get_memory_by_key("blob-upd")
+        assert updated.memory_id == first.memory_id
+        assert updated.content_type == "image/jpeg"
+        assert updated.tags == ["new-tag"]
+
+    async def test_invalid_base64_raises_tool_error(self, server_env):
+        """Non-base64 data raises ToolError with a useful message."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="not valid Base64"):
+            await remember_blob("blob-bad", "!!!not base64!!!", "image/png", ctx=_make_ctx(jwt))
+
+    async def test_empty_content_type_raises_tool_error(self, server_env):
+        """Empty content_type raises ToolError."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with pytest.raises(ToolError, match="non-empty MIME type"):
+            await remember_blob("blob-ct", self._PNG_1PX, "   ", ctx=_make_ctx(jwt))
+
+    async def test_oversized_blob_raises_tool_error(self, server_env):
+        """Payload > 10 MB raises ToolError."""
+        import base64
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        big = base64.b64encode(b"x" * (10 * 1024 * 1024 + 1)).decode()
+        with pytest.raises(ToolError, match="10 MB limit"):
+            await remember_blob("blob-big", big, "application/octet-stream", ctx=_make_ctx(jwt))
+
+    async def test_missing_auth_raises_tool_error(self, server_env):
+        """Missing Bearer token raises ToolError."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        ctx = MagicMock()
+        ctx.request_context.meta = {}
+        with pytest.raises(ToolError, match="Unauthorized"):
+            await remember_blob("blob-auth", self._PNG_1PX, "image/png", ctx=ctx)
+
+    async def test_missing_client_record_raises_tool_error(self, server_env, monkeypatch):
+        """remember_blob fails closed when client record is missing."""
+        self._setup_blob_bucket(monkeypatch)
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import remember_blob
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Blob Client", owner_user_id="ghost-blob-user")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await remember_blob("blob-ghost", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_quota_exceeded_raises_tool_error(self, server_env, monkeypatch):
+        """Quota exceeded on new blob raises ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with (
+            patch("hive.server.check_memory_quota", side_effect=QuotaExceeded("quota hit")),
+            pytest.raises(ToolError, match="quota hit"),
+        ):
+            await remember_blob("blob-quota", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_storage_error_on_new_becomes_tool_error(self, server_env, monkeypatch):
+        """put_memory ValueError on new blob surfaces as ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        with (
+            patch("hive.storage.HiveStorage.put_memory", side_effect=ValueError("ddb error")),
+            pytest.raises(ToolError, match="ddb error"),
+        ):
+            await remember_blob("blob-err", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_storage_error_on_update_becomes_tool_error(self, server_env, monkeypatch):
+        """put_memory ValueError on update blob surfaces as ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        # Store first so we hit the update path
+        await remember_blob("blob-upd-err", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        with (
+            patch("hive.storage.HiveStorage.put_memory", side_effect=ValueError("ddb error")),
+            pytest.raises(ToolError, match="ddb error"),
+        ):
+            await remember_blob("blob-upd-err", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_blob_update_larger_triggers_storage_quota_check(self, server_env, monkeypatch):
+        """Storage quota is checked when blob update increases size."""
+        self._setup_blob_bucket(monkeypatch)
+        import base64
+        from unittest.mock import patch
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        await remember_blob("blob-upd-q-large", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        larger = base64.b64encode(b"\x00" * 200).decode()
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember_blob("blob-upd-q-large", larger, "image/png", ctx=_make_ctx(jwt))
+
+        mock_check.assert_called_once()
+
+    async def test_blob_update_smaller_skips_storage_quota_check(self, server_env, monkeypatch):
+        """Storage quota is not rechecked when blob update shrinks size."""
+        self._setup_blob_bucket(monkeypatch)
+        import base64
+        from unittest.mock import patch
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        larger = base64.b64encode(b"\x00" * 200).decode()
+        await remember_blob("blob-upd-q-small", larger, "image/png", ctx=_make_ctx(jwt))
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember_blob("blob-upd-q-small", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+        mock_check.assert_not_called()
+
+    async def test_blob_update_storage_quota_exceeded_raises_tool_error(
+        self, server_env, monkeypatch
+    ):
+        """QuotaExceeded on storage check during blob update is converted to ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        import base64
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        await remember_blob("blob-upd-q-exc", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        larger = base64.b64encode(b"\x00" * 200).decode()
+
+        with (
+            patch("hive.server.check_storage_quota", side_effect=QuotaExceeded("blob over limit")),
+            pytest.raises(ToolError, match="blob over limit"),
+        ):
+            await remember_blob("blob-upd-q-exc", larger, "image/png", ctx=_make_ctx(jwt))
+
+
+class TestRecallBinary:
+    """#499 — recall returns ImageContent for image/blob memories."""
+
+    _PNG_1PX = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
+        "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+
+    def _setup_blob_bucket(self, monkeypatch):
+        bucket = "test-recall-blob-499"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+
+    async def test_recall_image_returns_image_content(self, server_env, monkeypatch):
+        """recall() returns ImageContent with base64 data for image/* blobs."""
+        from mcp.types import ImageContent
+
+        from hive.server import recall, remember_blob
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        await remember_blob("img-recall", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+        result = await recall("img-recall", ctx=_make_ctx(jwt))
+        assert len(result.content) == 1
+        block = result.content[0]
+        assert isinstance(block, ImageContent)
+        assert block.mimeType == "image/png"
+        assert block.data == self._PNG_1PX
+
+    async def test_recall_non_image_blob_returns_image_content(self, server_env, monkeypatch):
+        """recall() returns ImageContent for non-image binary blobs."""
+        import base64
+
+        from mcp.types import ImageContent
+
+        from hive.server import recall, remember_blob
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        raw = b"%PDF-1.4 fake pdf"
+        pdf_b64 = base64.b64encode(raw).decode()
+        await remember_blob("pdf-recall", pdf_b64, "application/pdf", ctx=_make_ctx(jwt))
+
+        result = await recall("pdf-recall", ctx=_make_ctx(jwt))
+        assert len(result.content) == 1
+        block = result.content[0]
+        assert isinstance(block, ImageContent)
+        assert block.mimeType == "application/pdf"
+        assert block.data == pdf_b64
+
+    async def test_recall_blob_s3_error_returns_unavailable_text(self, server_env, monkeypatch):
+        """recall() returns unavailable message when S3 fetch fails for blob."""
+        from hive.models import Memory
+        from hive.server import recall
+
+        storage, client_id, jwt = server_env
+        monkeypatch.delenv("HIVE_BLOBS_BUCKET", raising=False)
+        m = Memory(
+            key="blob-err-recall",
+            value="",
+            value_type="image",
+            content_type="image/png",
+            s3_uri="s3://missing/key",
+            owner_client_id=client_id,
+        )
+        storage.put_memory(m)
+
+        result = await recall("blob-err-recall", ctx=_make_ctx(jwt))
+        assert "unavailable" in _text(result)
+
+    async def test_recall_blob_result_carries_meta(self, server_env, monkeypatch):
+        """Successful binary recall carries quota meta like text recall."""
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        from hive.server import recall, remember_blob
+
+        await remember_blob("img-meta", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        result = await recall("img-meta", ctx=_make_ctx(jwt))
+        meta = _hive_meta(result)
+        assert "memory_quota" in meta
+        assert "rate_limit" in meta
+
+
+class TestListMemoriesBinaryFields:
+    """#499 — list_memories includes value_type/content_type/size_bytes; omits value for binary."""
+
+    _PNG_1PX = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
+        "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+
+    def _setup_blob_bucket(self, monkeypatch):
+        bucket = "test-list-blob-499"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+
+    async def test_text_memory_has_value_type_text(self, server_env):
+        """Text memories carry value_type='text' in list output."""
+        _, _, jwt = server_env
+        from hive.server import list_memories, remember
+
+        await remember("txt-list-type", "hello", ["list-type-tag"], ctx=_make_ctx(jwt))
+        result = await list_memories("list-type-tag", ctx=_make_ctx(jwt))
+        items = _body(result)["items"]
+        assert len(items) == 1
+        assert items[0]["value_type"] == "text"
+        assert items[0]["value"] == "hello"
+
+    async def test_image_memory_omits_value_in_list(self, server_env, monkeypatch):
+        """Binary memories have value=None and carry content_type/size_bytes in list."""
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        from hive.server import list_memories, remember_blob
+
+        await remember_blob(
+            "img-list-499", self._PNG_1PX, "image/png", ["img-list-tag-499"], ctx=_make_ctx(jwt)
+        )
+        result = await list_memories("img-list-tag-499", ctx=_make_ctx(jwt))
+        items = _body(result)["items"]
+        assert len(items) == 1
+        item = items[0]
+        assert item["value"] is None
+        assert item["value_type"] == "image"
+        assert item["content_type"] == "image/png"
+        assert item["size_bytes"] is not None
 
 
 # ---------------------------------------------------------------------------

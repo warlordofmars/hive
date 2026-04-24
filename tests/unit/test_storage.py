@@ -422,8 +422,252 @@ class TestMemoryStorage:
 
 
 # ---------------------------------------------------------------------------
-# Memory version tests
+# Large-memory routing tests (#497)
 # ---------------------------------------------------------------------------
+
+
+class _FakeBlobStore:
+    """In-memory stand-in for BlobStore — records put/get/delete."""
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.content_types: dict[tuple[str, str], str] = {}
+
+    def put(self, owner, memory_id, body, content_type="text/plain; charset=utf-8"):
+        self.objects[(owner, memory_id)] = body
+        self.content_types[(owner, memory_id)] = content_type
+        return f"s3://fake-bucket/{owner}/{memory_id}"
+
+    def get(self, owner, memory_id):
+        return self.objects[(owner, memory_id)]
+
+    def delete(self, owner, memory_id):
+        self.objects.pop((owner, memory_id), None)
+
+
+@pytest.fixture()
+def storage_with_blob_store(storage):
+    """Storage fixture with a fake BlobStore wired in."""
+    fake = _FakeBlobStore()
+    storage._blob_store_override = fake
+    return storage, fake
+
+
+class TestLargeMemoryRouting:
+    """#497 — oversized text values get offloaded to the blob store."""
+
+    def test_small_text_memory_stays_inline(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        m = Memory(key="small", value="hello", owner_client_id="c1")
+        storage.put_memory(m)
+
+        # No S3 object — stayed inline in DynamoDB.
+        assert fake.objects == {}
+
+        stored = storage.get_memory_by_key("small")
+        assert stored is not None
+        assert stored.value == "hello"
+        assert stored.value_type == "text"
+        assert stored.s3_uri is None
+        # size_bytes gets set for future quota rollups (#500) even
+        # on the inline path.
+        assert stored.size_bytes == 5
+
+    def test_large_text_memory_routes_to_s3(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        # 500 KB > 100 KB threshold → gets promoted to text-large.
+        big_value = "x" * (500 * 1024)
+        m = Memory(
+            key="big-doc",
+            value=big_value,
+            owner_client_id="c1",
+            owner_user_id="u-1",
+        )
+        storage.put_memory(m)
+
+        # Exactly one S3 object stored under owner_user_id / memory_id.
+        assert list(fake.objects.keys()) == [("u-1", m.memory_id)]
+        assert fake.objects[("u-1", m.memory_id)] == big_value.encode("utf-8")
+
+        stored = storage.get_memory_by_key("big-doc")
+        assert stored is not None
+        assert stored.value_type == "text-large"
+        assert stored.s3_uri == f"s3://fake-bucket/u-1/{m.memory_id}"
+        assert stored.size_bytes == 500 * 1024
+        assert stored.content_type == "text/plain; charset=utf-8"
+        # Inline DynamoDB value is empty — authoritative bytes live in S3.
+        assert stored.value == ""
+
+    def test_owner_prefix_falls_back_to_client_when_user_missing(self, storage_with_blob_store):
+        # Pre-user-migration memories (#482 pending) don't carry
+        # owner_user_id. The routing uses owner_client_id so those
+        # memories still land in a tenant-scoped prefix.
+        storage, fake = storage_with_blob_store
+        big_value = "y" * (200 * 1024)
+        m = Memory(key="pre-user", value=big_value, owner_client_id="legacy-client")
+        storage.put_memory(m)
+        assert ("legacy-client", m.memory_id) in fake.objects
+
+    def test_non_text_value_type_skips_the_router(self, storage_with_blob_store):
+        # #499's remember_blob path supplies an image/blob with its
+        # own s3_uri already set — the transparent-text router must
+        # leave those alone.
+        storage, fake = storage_with_blob_store
+        m = Memory(
+            key="img",
+            value="",
+            value_type="image",
+            s3_uri="s3://some/other/path",
+            content_type="image/png",
+            size_bytes=1234,
+            owner_client_id="c1",
+        )
+        storage.put_memory(m)
+        # Router did not upload anything — binary upload is the
+        # caller's responsibility for non-text types.
+        assert fake.objects == {}
+
+        stored = storage.get_memory_by_key("img")
+        assert stored is not None
+        assert stored.value_type == "image"
+        assert stored.s3_uri == "s3://some/other/path"
+        assert stored.content_type == "image/png"
+        assert stored.size_bytes == 1234
+
+    def test_value_type_text_with_none_value_skips_upload(self, storage_with_blob_store):
+        # Defensive — Pydantic would coerce this to the default
+        # empty string, but an explicit None must not crash the
+        # router.
+        storage, fake = storage_with_blob_store
+        m = Memory(key="edge", owner_client_id="c1")
+        m.value = None  # bypass pydantic default
+        storage.put_memory(m)
+        assert fake.objects == {}
+
+    def test_value_exceeding_max_blob_size_raises(self, storage_with_blob_store):
+        from hive.blob_store import INLINE_TEXT_THRESHOLD_BYTES, MAX_BLOB_SIZE_BYTES
+
+        storage, _ = storage_with_blob_store
+        big_value = "x" * (MAX_BLOB_SIZE_BYTES + 1)
+        m = Memory(key="too-big", value=big_value, owner_client_id="c1")
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            storage._route_large_value(m)
+        # Inline-threshold check must still pass before the size guard triggers.
+        assert len(big_value.encode("utf-8")) > INLINE_TEXT_THRESHOLD_BYTES
+
+    def test_blob_store_property_lazy_instantiates_real_blob_store(self, storage, monkeypatch):
+        # Covers the lazy-init path (lines 147-151) when no override
+        # is injected — the real BlobStore is constructed on first
+        # access and cached for subsequent calls.
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", "lazy-init-bucket")
+        from hive.blob_store import BlobStore
+
+        first = storage.blob_store
+        assert isinstance(first, BlobStore)
+        assert storage.blob_store is first  # cached — not re-created
+
+    def test_delete_memory_removes_s3_blob(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="big", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+        assert ("u1", m.memory_id) in fake.objects
+
+        storage.delete_memory(m.memory_id)
+        assert ("u1", m.memory_id) not in fake.objects
+
+    def test_delete_memory_s3_failure_is_nonfatal(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="big2", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+
+        def _raise(owner, memory_id):
+            raise RuntimeError("S3 unavailable")
+
+        fake.delete = _raise
+        # Should not raise — DynamoDB item is gone; S3 failure is logged
+        assert storage.delete_memory(m.memory_id)
+        assert storage.get_memory_by_key("big2") is None
+
+    def test_delete_memories_by_tag_removes_blobs(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(
+            key="bulk-big",
+            value=big_value,
+            tags=["bulk"],
+            owner_user_id="u1",
+            owner_client_id="c1",
+        )
+        storage.put_memory(m)
+        assert ("u1", m.memory_id) in fake.objects
+
+        storage.delete_memories_by_tag("bulk")
+        assert ("u1", m.memory_id) not in fake.objects
+
+    def test_update_text_large_memory_re_uploads_new_value(self, storage_with_blob_store):
+        # Updating a text-large memory's value re-uploads to S3, overwriting
+        # the old blob at the same key.
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="re-upload", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+        assert ("u1", m.memory_id) in fake.objects
+        assert fake.objects[("u1", m.memory_id)] == big_value.encode()
+
+        updated_big = "y" * (200 * 1024)
+        m.value = updated_big
+        storage.put_memory(m)
+        assert fake.objects[("u1", m.memory_id)] == updated_big.encode()
+
+    def test_update_text_large_empty_value_skips_routing(self, storage_with_blob_store):
+        # A text-large memory fetched from DynamoDB (value="") goes through
+        # put_memory for metadata-only updates (e.g. tag changes). The router
+        # must leave it untouched — the blob is already in S3.
+        storage, fake = storage_with_blob_store
+        big_value = "z" * (200 * 1024)
+        m = Memory(
+            key="skip-reupload",
+            value=big_value,
+            tags=["old"],
+            owner_user_id="u1",
+            owner_client_id="c1",
+        )
+        storage.put_memory(m)
+        initial_calls = dict(fake.objects)
+
+        # Simulate a tag-only update: fetch the memory (value="" in DynamoDB),
+        # change tags, then put again. The router must not re-upload the blob.
+        fetched = storage.get_memory_by_key("skip-reupload")
+        assert fetched.value == ""  # inline value is empty for text-large
+        fetched.tags = ["new"]
+        storage.put_memory(fetched)
+        # The S3 object is unchanged — the router skipped the empty-value memory
+        assert fake.objects == initial_calls
+
+    def test_fetch_blob_value_returns_full_text(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "hello blob " * 10_000
+        m = Memory(key="fetch-test", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+        assert m.value_type == "text-large"
+
+        fetched = storage.fetch_blob_value(m)
+        assert fetched == big_value
+
+    def test_fetch_blob_value_propagates_s3_error(self, storage_with_blob_store):
+        storage, fake = storage_with_blob_store
+        big_value = "x" * (200 * 1024)
+        m = Memory(key="fetch-fail", value=big_value, owner_user_id="u1", owner_client_id="c1")
+        storage.put_memory(m)
+
+        def _raise(owner, memory_id):
+            raise RuntimeError("S3 unavailable")
+
+        fake.get = _raise
+        with pytest.raises(RuntimeError, match="S3 unavailable"):
+            storage.fetch_blob_value(m)
 
 
 class TestMemoryVersionStorage:
@@ -825,6 +1069,54 @@ class TestListAllAndCounts:
         storage.put_user(User(email="b@x.com", display_name="B"))
         assert storage.count_users() == 2
 
+    def test_sum_storage_bytes_empty(self, storage):
+        assert storage.sum_storage_bytes() == 0
+
+    def test_sum_storage_bytes_sums_all(self, storage):
+        # put_memory calls _route_large_value which sets size_bytes = len(encoded)
+        m1 = Memory(key="s1", value="hi", owner_client_id="c1")  # 2 bytes
+        m2 = Memory(key="s2", value="bye", owner_client_id="c1")  # 3 bytes
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        assert storage.sum_storage_bytes() == 5
+
+    def test_sum_storage_bytes_filtered_by_user(self, storage):
+        m1 = Memory(key="su1", value="ab", owner_client_id="c1", owner_user_id="user-1")  # 2 bytes
+        m2 = Memory(key="su2", value="xyz", owner_client_id="c1", owner_user_id="user-2")  # 3 bytes
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        assert storage.sum_storage_bytes(owner_user_id="user-1") == 2
+        assert storage.sum_storage_bytes() == 5
+
+    def test_sum_storage_bytes_treats_missing_size_bytes_as_zero(self, storage):
+        # Insert a legacy item directly (no size_bytes attribute) to simulate pre-migration data.
+        storage.table.put_item(
+            Item={
+                "PK": "MEMORY#legacy-test",
+                "SK": "META",
+                "memory_id": "legacy-test",
+                "owner_client_id": "c1",
+                "key": "legacy-key",
+                "value": "v",
+                "value_type": "text",
+                "tags": [],
+            }
+        )
+        assert storage.sum_storage_bytes() == 0
+
+    def test_sum_storage_bytes_paginates(self, storage):
+        from unittest.mock import patch
+
+        page1 = {
+            "Items": [{"size_bytes": 10}],
+            "LastEvaluatedKey": {"PK": "MEMORY#x", "SK": "META"},
+        }
+        page2 = {"Items": [{"size_bytes": 20}]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            total = storage.sum_storage_bytes()
+        assert total == 30
+        assert mock_scan.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Pagination
@@ -860,6 +1152,89 @@ class TestPagination:
         page2, cursor2 = storage.list_memories_by_tag("page", limit=2, cursor=cursor1)
         assert len(page2) == 2
         assert cursor2 is None
+
+    def test_list_memories_by_tag_owner_user_id_filters_cross_user(self, storage):
+        """Cross-user memories sharing a tag must not be returned when owner_user_id is set."""
+        from hive.models import OAuthClient
+
+        client_a = OAuthClient(client_name="User-A Client", owner_user_id="user-a")
+        client_b = OAuthClient(client_name="User-B Client", owner_user_id="user-b")
+        storage.put_client(client_a)
+        storage.put_client(client_b)
+
+        storage.put_memory(
+            Memory(
+                key="a-mem",
+                value="user-a value",
+                tags=["shared"],
+                owner_client_id=client_a.client_id,
+                owner_user_id="user-a",
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="b-mem",
+                value="user-b value",
+                tags=["shared"],
+                owner_client_id=client_b.client_id,
+                owner_user_id="user-b",
+            )
+        )
+
+        # User A only sees their own memory
+        mems_a, _ = storage.list_memories_by_tag("shared", owner_user_id="user-a")
+        assert [m.key for m in mems_a] == ["a-mem"]
+
+        # User B only sees their own memory
+        mems_b, _ = storage.list_memories_by_tag("shared", owner_user_id="user-b")
+        assert [m.key for m in mems_b] == ["b-mem"]
+
+    def test_list_memories_by_tag_owner_user_id_cross_client_within_user(self, storage):
+        """Within-user cross-client sharing: both clients of the same user see all memories."""
+        from hive.models import OAuthClient
+
+        client_1 = OAuthClient(client_name="User-A Client-1", owner_user_id="user-a")
+        client_2 = OAuthClient(client_name="User-A Client-2", owner_user_id="user-a")
+        storage.put_client(client_1)
+        storage.put_client(client_2)
+
+        storage.put_memory(
+            Memory(
+                key="from-c1",
+                value="v1",
+                tags=["work"],
+                owner_client_id=client_1.client_id,
+                owner_user_id="user-a",
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="from-c2",
+                value="v2",
+                tags=["work"],
+                owner_client_id=client_2.client_id,
+                owner_user_id="user-a",
+            )
+        )
+
+        mems, _ = storage.list_memories_by_tag("work", owner_user_id="user-a")
+        assert {m.key for m in mems} == {"from-c1", "from-c2"}
+
+    def test_list_memories_by_tag_no_owner_filter_returns_all(self, storage):
+        """When owner_user_id is None, all memories matching the tag are returned."""
+        storage.put_memory(
+            Memory(
+                key="xa", value="v", tags=["open"], owner_client_id="c-x", owner_user_id="user-x"
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="ya", value="v", tags=["open"], owner_client_id="c-y", owner_user_id="user-y"
+            )
+        )
+
+        mems, _ = storage.list_memories_by_tag("open")
+        assert {m.key for m in mems} == {"xa", "ya"}
 
     def test_invalid_cursor_raises(self, storage):
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
@@ -1015,6 +1390,57 @@ class TestUserStorage:
 
     def test_update_user_role_nonexistent_returns_false(self, storage):
         assert storage.update_user_role("no-such-id", "admin") is False
+
+    def test_update_user_limits_sets_both_fields(self, storage):
+        u = self._user()
+        storage.put_user(u)
+        assert storage.update_user_limits(u.user_id, 100, 5 * 1024 * 1024) is True
+        fetched = storage.get_user_by_id(u.user_id)
+        assert fetched.memory_limit == 100
+        assert fetched.storage_bytes_limit == 5 * 1024 * 1024
+
+    def test_update_user_limits_clears_fields_when_none(self, storage):
+        u = User(
+            email="limtest@example.com", display_name="L", memory_limit=50, storage_bytes_limit=999
+        )
+        storage.put_user(u)
+        assert storage.update_user_limits(u.user_id, None, None) is True
+        fetched = storage.get_user_by_id(u.user_id)
+        assert fetched.memory_limit is None
+        assert fetched.storage_bytes_limit is None
+
+    def test_update_user_limits_nonexistent_returns_false(self, storage):
+        assert storage.update_user_limits("no-such-id", 100, None) is False
+
+    def test_update_user_limits_conditional_check_failure_returns_false(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        u = self._user()
+        storage.put_user(u)
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}}, "UpdateItem"
+        )
+        with patch.object(storage.table, "update_item", side_effect=error):
+            assert storage.update_user_limits(u.user_id, 50, None) is False
+
+    def test_update_user_limits_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        u = self._user()
+        storage.put_user(u)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.update_user_limits(u.user_id, 50, None)
 
     def test_list_users(self, storage):
         storage.put_user(self._user("a@example.com"))

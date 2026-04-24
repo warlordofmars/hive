@@ -45,10 +45,7 @@ def _has_copyright(path: Path) -> bool:
         lines = path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError:
         return True  # skip binary files
-    for line in lines[:5]:
-        if COPYRIGHT_RE.search(line):
-            return True
-    return False
+    return any(COPYRIGHT_RE.search(line) for line in lines[:5])
 
 
 def _add_copyright(path: Path) -> None:
@@ -67,7 +64,8 @@ def _collect_files() -> list[Path]:
     files.extend(p for p in SINGLE_FILES if p.exists())
     # Exclude caches, generated dirs, and empty init files
     return [
-        f for f in files
+        f
+        for f in files
         if "__pycache__" not in f.parts
         and "node_modules" not in f.parts
         and ".venv" not in f.parts

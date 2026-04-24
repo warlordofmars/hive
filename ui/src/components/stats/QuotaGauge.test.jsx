@@ -74,4 +74,85 @@ describe("QuotaGauge", () => {
     expect(screen.getByText("5")).toBeTruthy();
     expect(screen.getByText(/0 remaining/)).toBeTruthy();
   });
+
+  it("renders storage row when storage_bytes is provided", () => {
+    render(
+      <QuotaGauge
+        quota={{
+          memory_count: 10,
+          memory_limit: 100,
+          storage_bytes: 1048576,
+          storage_bytes_limit: 104857600,
+        }}
+      />
+    );
+    expect(screen.getByTestId("storage-row")).toBeTruthy();
+    const bar = screen.getByTestId("storage-bar");
+    expect(bar).toBeTruthy();
+    expect(bar.getAttribute("role")).toBe("progressbar");
+    expect(bar.getAttribute("aria-valuemin")).toBe("0");
+    expect(bar.getAttribute("aria-valuemax")).toBe("100");
+    expect(bar.getAttribute("aria-valuenow")).toBe("1");
+    // 1 MB / 100 MB
+    expect(screen.getByText(/Storage/)).toBeTruthy();
+  });
+
+  it("does not render storage row when storage_bytes is absent", () => {
+    render(<QuotaGauge quota={{ memory_count: 10, memory_limit: 100 }} />);
+    expect(screen.queryByTestId("storage-row")).toBeNull();
+  });
+
+  it("renders storage row in unbounded mode with storage_bytes", () => {
+    render(
+      <QuotaGauge
+        quota={{ memory_count: 5, memory_limit: null, storage_bytes: 2097152 }}
+      />
+    );
+    expect(screen.getByTestId("storage-unbounded")).toBeTruthy();
+  });
+
+  it("omits storage bar when storage_bytes_limit is null", () => {
+    render(
+      <QuotaGauge
+        quota={{
+          memory_count: 10,
+          memory_limit: 100,
+          storage_bytes: 1024,
+          storage_bytes_limit: null,
+        }}
+      />
+    );
+    expect(screen.getByTestId("storage-row")).toBeTruthy();
+    expect(screen.queryByTestId("storage-bar")).toBeNull();
+  });
+
+  it("clamps storage bar at 100% when over limit", () => {
+    const { container } = render(
+      <QuotaGauge
+        quota={{
+          memory_count: 10,
+          memory_limit: 100,
+          storage_bytes: 200 * 1024 * 1024,
+          storage_bytes_limit: 100 * 1024 * 1024,
+        }}
+      />
+    );
+    const bar = container.querySelector("[data-testid='storage-bar']");
+    expect(bar.style.width).toBe("100%");
+  });
+
+  it("renders storage bar at 0% when storage_bytes_limit is 0", () => {
+    const { container } = render(
+      <QuotaGauge
+        quota={{
+          memory_count: 10,
+          memory_limit: 100,
+          storage_bytes: 1024,
+          storage_bytes_limit: 0,
+        }}
+      />
+    );
+    const bar = container.querySelector("[data-testid='storage-bar']");
+    expect(bar.style.width).toBe("0%");
+  });
 });

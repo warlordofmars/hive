@@ -1,6 +1,7 @@
 // Copyright (c) 2026 John Carter. All rights reserved.
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
+import { formatBytes } from "../lib/limits.js";
 import EmptyState from "./EmptyState.jsx";
 import { AlertDialog } from "./ui/alert-dialog.jsx";
 import { Badge } from "./ui/badge.jsx";
@@ -24,6 +25,10 @@ export default function UsersPanel() {
   const [userStats, setUserStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [roleUpdating, setRoleUpdating] = useState(false);
+  const [userLimits, setUserLimits] = useState(null);
+  const [editMemoryLimit, setEditMemoryLimit] = useState("");
+  const [editStorageBytesLimit, setEditStorageBytesLimit] = useState("");
+  const [limitsSaving, setLimitsSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,12 +78,26 @@ export default function UsersPanel() {
   async function openDetail(user) {
     setSelectedUser(user);
     setUserStats(null);
+    setUserLimits(null);
     setStatsLoading(true);
+    const [statsResult, limitsResult] = await Promise.allSettled([
+      api.getUserStats(user.user_id),
+      api.getUserLimits(user.user_id),
+    ]);
     try {
-      const stats = await api.getUserStats(user.user_id);
-      setUserStats(stats);
-    } catch {
-      setUserStats(null);
+      setUserStats(statsResult.status === "fulfilled" ? statsResult.value : null);
+      if (limitsResult.status === "fulfilled") {
+        const limits = limitsResult.value;
+        setUserLimits(limits);
+        setEditMemoryLimit(limits?.memory_limit != null ? String(limits.memory_limit) : "");
+        setEditStorageBytesLimit(
+          limits?.storage_bytes_limit != null ? String(limits.storage_bytes_limit) : ""
+        );
+      } else {
+        setUserLimits(null);
+        setEditMemoryLimit("");
+        setEditStorageBytesLimit("");
+      }
     } finally {
       setStatsLoading(false);
     }
@@ -95,6 +114,24 @@ export default function UsersPanel() {
       setError(e.message);
     } finally {
       setRoleUpdating(false);
+    }
+  }
+
+  async function handleSaveLimits() {
+    setLimitsSaving(true);
+    setError(null);
+    try {
+      const body = {
+        memory_limit: editMemoryLimit !== "" ? parseInt(editMemoryLimit, 10) : null,
+        storage_bytes_limit:
+          editStorageBytesLimit !== "" ? parseInt(editStorageBytesLimit, 10) : null,
+      };
+      const updated = await api.updateUserLimits(selectedUser.user_id, body);
+      setUserLimits(updated);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLimitsSaving(false);
     }
   }
 
@@ -254,6 +291,54 @@ export default function UsersPanel() {
                 <option value="admin">admin</option>
               </Select>
             </div>
+
+            {userLimits && (
+              <div className="mt-4" data-testid="limits-section">
+                <p className="text-xs font-semibold mb-1">Quota overrides</p>
+                <p className="text-xs text-[var(--text-muted)] mb-2">
+                  Effective: {userLimits.effective_memory_limit} memories /{" "}
+                  {formatBytes(userLimits.effective_storage_bytes_limit)}
+                </p>
+                <div className="flex flex-col gap-2">
+                  <div>
+                    <Label htmlFor="mem-limit-input" className="text-xs">
+                      Memory limit (blank = default)
+                    </Label>
+                    <Input
+                      id="mem-limit-input"
+                      data-testid="memory-limit-input"
+                      type="number"
+                      min="1"
+                      placeholder={String(userLimits.effective_memory_limit)}
+                      value={editMemoryLimit}
+                      onChange={(e) => setEditMemoryLimit(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="storage-limit-input" className="text-xs">
+                      Storage limit bytes (blank = default)
+                    </Label>
+                    <Input
+                      id="storage-limit-input"
+                      data-testid="storage-limit-input"
+                      type="number"
+                      min="1"
+                      placeholder={String(userLimits.effective_storage_bytes_limit)}
+                      value={editStorageBytesLimit}
+                      onChange={(e) => setEditStorageBytesLimit(e.target.value)}
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    data-testid="save-limits-btn"
+                    onClick={handleSaveLimits}
+                    disabled={limitsSaving}
+                  >
+                    {limitsSaving ? "Saving…" : "Save limits"}
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <Button
               variant="danger"
