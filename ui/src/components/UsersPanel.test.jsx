@@ -416,4 +416,36 @@ describe("UsersPanel", () => {
     expect(screen.getByTestId("memory-limit-input").value).toBe("250");
     expect(screen.getByTestId("storage-limit-input").value).toBe("52428800");
   });
+
+  it("saves limits with non-empty storage bytes value", async () => {
+    const updatedLimits = {
+      user_id: "u1",
+      memory_limit: null,
+      storage_bytes_limit: 52428800,
+      effective_memory_limit: 500,
+      effective_storage_bytes_limit: 52428800,
+    };
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 0, client_count: 0 });
+    api.getUserLimits.mockResolvedValue({
+      user_id: "u1",
+      memory_limit: null,
+      storage_bytes_limit: null,
+      effective_memory_limit: 500,
+      effective_storage_bytes_limit: 104857600,
+    });
+    api.updateUserLimits.mockResolvedValue(updatedLimits);
+
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    await waitFor(() => expect(screen.getByTestId("limits-section")).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId("storage-limit-input"), { target: { value: "52428800" } });
+    await act(async () => fireEvent.click(screen.getByTestId("save-limits-btn")));
+
+    expect(api.updateUserLimits).toHaveBeenCalledWith("u1", {
+      memory_limit: null,
+      storage_bytes_limit: 52428800,
+    });
+  });
 });

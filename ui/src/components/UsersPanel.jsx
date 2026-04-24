@@ -114,7 +114,6 @@ export default function UsersPanel() {
   }
 
   async function handleSaveLimits() {
-    if (!selectedUser) return;
     setLimitsSaving(true);
     setError(null);
     try {

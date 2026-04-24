@@ -135,4 +135,19 @@ describe("QuotaGauge", () => {
     const bar = container.querySelector("[data-testid='storage-bar']");
     expect(bar.style.width).toBe("100%");
   });
+
+  it("renders storage bar at 0% when storage_bytes_limit is 0", () => {
+    const { container } = render(
+      <QuotaGauge
+        quota={{
+          memory_count: 10,
+          memory_limit: 100,
+          storage_bytes: 1024,
+          storage_bytes_limit: 0,
+        }}
+      />
+    );
+    const bar = container.querySelector("[data-testid='storage-bar']");
+    expect(bar.style.width).toBe("0%");
+  });
 });
