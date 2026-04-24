@@ -1069,6 +1069,54 @@ class TestListAllAndCounts:
         storage.put_user(User(email="b@x.com", display_name="B"))
         assert storage.count_users() == 2
 
+    def test_sum_storage_bytes_empty(self, storage):
+        assert storage.sum_storage_bytes() == 0
+
+    def test_sum_storage_bytes_sums_all(self, storage):
+        # put_memory calls _route_large_value which sets size_bytes = len(encoded)
+        m1 = Memory(key="s1", value="hi", owner_client_id="c1")  # 2 bytes
+        m2 = Memory(key="s2", value="bye", owner_client_id="c1")  # 3 bytes
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        assert storage.sum_storage_bytes() == 5
+
+    def test_sum_storage_bytes_filtered_by_user(self, storage):
+        m1 = Memory(key="su1", value="ab", owner_client_id="c1", owner_user_id="user-1")  # 2 bytes
+        m2 = Memory(key="su2", value="xyz", owner_client_id="c1", owner_user_id="user-2")  # 3 bytes
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        assert storage.sum_storage_bytes(owner_user_id="user-1") == 2
+        assert storage.sum_storage_bytes() == 5
+
+    def test_sum_storage_bytes_treats_missing_size_bytes_as_zero(self, storage):
+        # Insert a legacy item directly (no size_bytes attribute) to simulate pre-migration data.
+        storage.table.put_item(
+            Item={
+                "PK": "MEMORY#legacy-test",
+                "SK": "META",
+                "memory_id": "legacy-test",
+                "owner_client_id": "c1",
+                "key": "legacy-key",
+                "value": "v",
+                "value_type": "text",
+                "tags": [],
+            }
+        )
+        assert storage.sum_storage_bytes() == 0
+
+    def test_sum_storage_bytes_paginates(self, storage):
+        from unittest.mock import patch
+
+        page1 = {
+            "Items": [{"size_bytes": 10}],
+            "LastEvaluatedKey": {"PK": "MEMORY#x", "SK": "META"},
+        }
+        page2 = {"Items": [{"size_bytes": 20}]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            total = storage.sum_storage_bytes()
+        assert total == 30
+        assert mock_scan.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Pagination
@@ -1342,6 +1390,57 @@ class TestUserStorage:
 
     def test_update_user_role_nonexistent_returns_false(self, storage):
         assert storage.update_user_role("no-such-id", "admin") is False
+
+    def test_update_user_limits_sets_both_fields(self, storage):
+        u = self._user()
+        storage.put_user(u)
+        assert storage.update_user_limits(u.user_id, 100, 5 * 1024 * 1024) is True
+        fetched = storage.get_user_by_id(u.user_id)
+        assert fetched.memory_limit == 100
+        assert fetched.storage_bytes_limit == 5 * 1024 * 1024
+
+    def test_update_user_limits_clears_fields_when_none(self, storage):
+        u = User(
+            email="limtest@example.com", display_name="L", memory_limit=50, storage_bytes_limit=999
+        )
+        storage.put_user(u)
+        assert storage.update_user_limits(u.user_id, None, None) is True
+        fetched = storage.get_user_by_id(u.user_id)
+        assert fetched.memory_limit is None
+        assert fetched.storage_bytes_limit is None
+
+    def test_update_user_limits_nonexistent_returns_false(self, storage):
+        assert storage.update_user_limits("no-such-id", 100, None) is False
+
+    def test_update_user_limits_conditional_check_failure_returns_false(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        u = self._user()
+        storage.put_user(u)
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}}, "UpdateItem"
+        )
+        with patch.object(storage.table, "update_item", side_effect=error):
+            assert storage.update_user_limits(u.user_id, 50, None) is False
+
+    def test_update_user_limits_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        u = self._user()
+        storage.put_user(u)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.update_user_limits(u.user_id, 50, None)
 
     def test_list_users(self, storage):
         storage.put_user(self._user("a@example.com"))

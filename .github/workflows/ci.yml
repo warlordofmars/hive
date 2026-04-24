@@ -80,7 +80,8 @@ jobs:
         run: npm install
 
       - name: pip-audit
-        run: uv run pip-audit --skip-editable
+        # CVE-2026-3219 affects pip 26.0.1 itself (no fix available yet)
+        run: uv run pip-audit --skip-editable --ignore-vuln CVE-2026-3219
 
       - name: npm audit
         working-directory: ui

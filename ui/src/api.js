@@ -116,6 +116,8 @@ export const api = {
   },
   updateUserRole: (id, role) => request("PATCH", `/api/users/${id}`, { role }),
   getUserStats: (id) => request("GET", `/api/users/${id}/stats`),
+  getUserLimits: (id) => request("GET", `/api/users/${id}/limits`),
+  updateUserLimits: (id, body) => request("PUT", `/api/users/${id}/limits`, body),
   deleteUser: (id) => request("DELETE", `/api/users/${id}`),
 
   // API Keys

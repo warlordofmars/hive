@@ -321,9 +321,12 @@ class User(BaseModel):
     role: str = "user"  # "admin" or "user"
     created_at: datetime = Field(default_factory=_now_utc)
     last_login_at: datetime = Field(default_factory=_now_utc)
+    # Per-user quota overrides set by admins; None = use system default.
+    memory_limit: int | None = None
+    storage_bytes_limit: int | None = None
 
     def to_dynamo(self) -> dict[str, Any]:
-        return {
+        item: dict[str, Any] = {
             "PK": f"USER#{self.user_id}",
             "SK": "META",
             "user_id": self.user_id,
@@ -335,6 +338,11 @@ class User(BaseModel):
             # GSI: look up user by email
             "GSI4PK": f"EMAIL#{self.email}",
         }
+        if self.memory_limit is not None:
+            item["memory_limit"] = self.memory_limit
+        if self.storage_bytes_limit is not None:
+            item["storage_bytes_limit"] = self.storage_bytes_limit
+        return item
 
     @classmethod
     def from_dynamo(cls, item: dict[str, Any]) -> User:
@@ -345,6 +353,8 @@ class User(BaseModel):
             role=item.get("role", "user"),
             created_at=datetime.fromisoformat(item["created_at"]),
             last_login_at=datetime.fromisoformat(item["last_login_at"]),
+            memory_limit=item.get("memory_limit"),
+            storage_bytes_limit=item.get("storage_bytes_limit"),
         )
 
 
@@ -731,6 +741,8 @@ class StatsResponse(BaseModel):
     events_last_7_days: int
     memory_limit: int | None = None  # None = unlimited (admin or exempt)
     client_limit: int | None = None  # None = unlimited (admin or exempt)
+    total_storage_bytes: int = 0
+    storage_bytes_limit: int | None = None  # None = unlimited (admin or exempt)
 
 
 class PagedResponse(BaseModel):

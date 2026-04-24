@@ -958,6 +958,74 @@ class HiveStorage:
         )
         return resp.get("Count", 0)
 
+    def sum_storage_bytes(self, owner_user_id: str | None = None) -> int:
+        """Return the total stored bytes across all memories for the given user (or all users)."""
+        filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
+        expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "MEMORY#"}
+        if owner_user_id:
+            filter_expr += _UID_FILTER
+            expr_vals[":uid"] = owner_user_id
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": filter_expr,
+            "ExpressionAttributeValues": expr_vals,
+            "ProjectionExpression": "#sb",
+            "ExpressionAttributeNames": {"#sb": "size_bytes"},
+        }
+        total = 0
+        resp = self.table.scan(**scan_kwargs)
+        while True:
+            total += sum(int(item.get("size_bytes", 0)) for item in resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if last_key is None:
+                break
+            resp = self.table.scan(**scan_kwargs, ExclusiveStartKey=last_key)
+        return total
+
+    def update_user_limits(
+        self,
+        user_id: str,
+        memory_limit: int | None,
+        storage_bytes_limit: int | None,
+    ) -> bool:
+        """Set per-user quota overrides. Pass None to remove an override (revert to system default)."""
+        set_parts: list[str] = []
+        remove_parts: list[str] = []
+        expr_vals: dict[str, Any] = {}
+
+        if memory_limit is not None:
+            set_parts.append("memory_limit = :ml")
+            expr_vals[":ml"] = memory_limit
+        else:
+            remove_parts.append("memory_limit")
+
+        if storage_bytes_limit is not None:
+            set_parts.append("storage_bytes_limit = :sbl")
+            expr_vals[":sbl"] = storage_bytes_limit
+        else:
+            remove_parts.append("storage_bytes_limit")
+
+        parts: list[str] = []
+        if set_parts:
+            parts.append("SET " + ", ".join(set_parts))
+        if remove_parts:
+            parts.append("REMOVE " + ", ".join(remove_parts))
+
+        update_kwargs: dict[str, Any] = {
+            "Key": {"PK": f"USER#{user_id}", "SK": "META"},
+            "UpdateExpression": " ".join(parts),
+            "ConditionExpression": "attribute_exists(PK)",
+        }
+        if expr_vals:
+            update_kwargs["ExpressionAttributeValues"] = expr_vals
+
+        try:
+            self.table.update_item(**update_kwargs)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
     # ------------------------------------------------------------------
     # API Keys
     # ------------------------------------------------------------------
