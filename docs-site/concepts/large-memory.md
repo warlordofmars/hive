@@ -20,7 +20,7 @@ When you call `remember` with a text value, Hive checks the encoded byte length 
 
 The promotion to `text-large` is **transparent**: you call `remember` and `recall` exactly as before. The only observable differences are:
 
-- `list_memories` omits the inline value for `text-large` memories (it shows metadata only).
+- `list_memories` returns an empty `value` string for `text-large` memories (the inline value is cleared on S3 promotion; use `recall` to fetch the full content).
 - Retrieval adds a small S3 latency (~50–200 ms) on top of the DynamoDB read.
 
 ## Binary memories — images and blobs
@@ -45,7 +45,7 @@ Semantic search (via `search_memories`) operates on **text embeddings**:
 | `image` | No | Binary content is not embedded |
 | `blob` | No | Binary content is not embedded |
 
-`text-large` memories can appear in semantic search results. Binary memories (`image` and `blob`) are excluded from semantic search. For large text, `search_memories` and `list_memories` may omit the full value preview; use `recall` to fetch the complete content by key.
+`text-large` memories can appear in semantic search results. Binary memories (`image` and `blob`) are excluded from semantic search. For large text, `search_memories` and `list_memories` return an empty `value` string; use `recall` to fetch the complete content by key.
 
 ## Size limits summary
 
