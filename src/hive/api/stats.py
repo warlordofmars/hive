@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query
 
 from hive.api._auth import require_mgmt_user
 from hive.models import PagedResponse, StatsResponse
-from hive.quota import _exempt_users, get_client_limit, get_memory_limit
+from hive.quota import _exempt_users, get_client_limit, get_memory_limit, get_storage_bytes_limit
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["stats"])
@@ -44,14 +44,29 @@ async def get_stats(
 
     is_admin = claims.get("role") == "admin"
     is_exempt = claims["sub"] in _exempt_users()
+    unlimited = is_admin or is_exempt
+
+    # Resolve per-user limit overrides for non-exempt users.
+    user = storage.get_user_by_id(claims["sub"]) if not unlimited else None
+    effective_memory_limit = (
+        user.memory_limit if (user and user.memory_limit is not None) else get_memory_limit()
+    )
+    effective_storage_bytes_limit = (
+        user.storage_bytes_limit
+        if (user and user.storage_bytes_limit is not None)
+        else get_storage_bytes_limit()
+    )
+
     return StatsResponse(
         total_memories=storage.count_memories(owner_user_id=owner_user_id),
         total_clients=storage.count_clients(owner_user_id=owner_user_id),
         total_users=storage.count_users() if is_admin else None,
         events_today=len(events_today),
         events_last_7_days=len(events_7),
-        memory_limit=None if (is_admin or is_exempt) else get_memory_limit(),
-        client_limit=None if (is_admin or is_exempt) else get_client_limit(),
+        memory_limit=None if unlimited else effective_memory_limit,
+        client_limit=None if unlimited else get_client_limit(),
+        total_storage_bytes=storage.sum_storage_bytes(owner_user_id=owner_user_id),
+        storage_bytes_limit=None if unlimited else effective_storage_bytes_limit,
     )
 
 

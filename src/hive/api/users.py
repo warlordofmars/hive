@@ -14,10 +14,11 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from hive.api._auth import require_admin, require_mgmt_user
 from hive.models import PagedResponse, UserResponse
+from hive.quota import get_memory_limit, get_storage_bytes_limit
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["users"])
@@ -154,3 +155,81 @@ async def delete_user(
     deleted = storage.delete_user(user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
+
+
+class UserLimitsResponse(BaseModel):
+    user_id: str
+    memory_limit: int | None  # per-user override; None = using system default
+    storage_bytes_limit: int | None  # per-user override; None = using system default
+    effective_memory_limit: int  # resolved limit (override or system default)
+    effective_storage_bytes_limit: int
+
+
+class UpdateUserLimitsRequest(BaseModel):
+    memory_limit: int | None = None  # None = revert to system default
+    storage_bytes_limit: int | None = None  # None = revert to system default
+
+    @field_validator("memory_limit", "storage_bytes_limit")
+    @classmethod
+    def must_be_positive(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("Limit must be a positive integer")
+        return v
+
+
+def _user_limits_response(
+    user_id: str, memory_limit: int | None, storage_bytes_limit: int | None
+) -> UserLimitsResponse:
+    return UserLimitsResponse(
+        user_id=user_id,
+        memory_limit=memory_limit,
+        storage_bytes_limit=storage_bytes_limit,
+        effective_memory_limit=memory_limit if memory_limit is not None else get_memory_limit(),
+        effective_storage_bytes_limit=(
+            storage_bytes_limit if storage_bytes_limit is not None else get_storage_bytes_limit()
+        ),
+    )
+
+
+@router.get(
+    "/users/{user_id}/limits",
+    summary="Get per-user quota limits",
+    description="Return the quota overrides set for a user, plus effective limits. Admin only.",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+    },
+)
+async def get_user_limits(
+    user_id: str,
+    claims: Annotated[dict[str, Any], Depends(require_admin)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+) -> UserLimitsResponse:
+    user = storage.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _user_limits_response(user.user_id, user.memory_limit, user.storage_bytes_limit)
+
+
+@router.put(
+    "/users/{user_id}/limits",
+    summary="Set per-user quota limits",
+    description="Override quota limits for a specific user. Pass null to revert to the system default. Admin only.",
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+        422: {"description": "Validation error"},
+    },
+)
+async def update_user_limits(
+    user_id: str,
+    body: UpdateUserLimitsRequest,
+    claims: Annotated[dict[str, Any], Depends(require_admin)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+) -> UserLimitsResponse:
+    updated = storage.update_user_limits(user_id, body.memory_limit, body.storage_bytes_limit)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _user_limits_response(user_id, body.memory_limit, body.storage_bytes_limit)

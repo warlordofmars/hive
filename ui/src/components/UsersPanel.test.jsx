@@ -7,6 +7,8 @@ vi.mock("../api.js", () => ({
     listUsers: vi.fn(),
     updateUserRole: vi.fn(),
     getUserStats: vi.fn(),
+    getUserLimits: vi.fn(),
+    updateUserLimits: vi.fn(),
     deleteUser: vi.fn(),
   },
 }));
@@ -316,5 +318,102 @@ describe("UsersPanel", () => {
     // Confirm
     await act(async () => fireEvent.click(screen.getAllByText("Delete").at(-1)));
     await waitFor(() => expect(screen.queryByTestId("user-detail")).toBeNull());
+  });
+
+  it("shows limits section when getUserLimits returns data", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 5, client_count: 2 });
+    api.getUserLimits.mockResolvedValue({
+      user_id: "u1",
+      memory_limit: null,
+      storage_bytes_limit: null,
+      effective_memory_limit: 500,
+      effective_storage_bytes_limit: 104857600,
+    });
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    await waitFor(() => expect(screen.getByTestId("limits-section")).toBeTruthy());
+    expect(screen.getByText(/Quota overrides/)).toBeTruthy();
+    expect(screen.getByTestId("memory-limit-input")).toBeTruthy();
+    expect(screen.getByTestId("storage-limit-input")).toBeTruthy();
+    expect(screen.getByTestId("save-limits-btn")).toBeTruthy();
+  });
+
+  it("hides limits section when getUserLimits fails", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockRejectedValue(new Error("fail"));
+    api.getUserLimits.mockRejectedValue(new Error("fail"));
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    await waitFor(() => expect(screen.queryByTestId("limits-section")).toBeNull());
+  });
+
+  it("saves limits on Save limits button click", async () => {
+    const updatedLimits = {
+      user_id: "u1",
+      memory_limit: 200,
+      storage_bytes_limit: null,
+      effective_memory_limit: 200,
+      effective_storage_bytes_limit: 104857600,
+    };
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 0, client_count: 0 });
+    api.getUserLimits.mockResolvedValue({
+      user_id: "u1",
+      memory_limit: null,
+      storage_bytes_limit: null,
+      effective_memory_limit: 500,
+      effective_storage_bytes_limit: 104857600,
+    });
+    api.updateUserLimits.mockResolvedValue(updatedLimits);
+
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    await waitFor(() => expect(screen.getByTestId("limits-section")).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId("memory-limit-input"), { target: { value: "200" } });
+    await act(async () => fireEvent.click(screen.getByTestId("save-limits-btn")));
+
+    expect(api.updateUserLimits).toHaveBeenCalledWith("u1", {
+      memory_limit: 200,
+      storage_bytes_limit: null,
+    });
+  });
+
+  it("shows error when save limits fails", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 0, client_count: 0 });
+    api.getUserLimits.mockResolvedValue({
+      user_id: "u1",
+      memory_limit: null,
+      storage_bytes_limit: null,
+      effective_memory_limit: 500,
+      effective_storage_bytes_limit: 104857600,
+    });
+    api.updateUserLimits.mockRejectedValue(new Error("Save failed"));
+
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    await waitFor(() => expect(screen.getByTestId("limits-section")).toBeTruthy());
+    await act(async () => fireEvent.click(screen.getByTestId("save-limits-btn")));
+
+    await waitFor(() => expect(screen.getByText("Save failed")).toBeTruthy());
+  });
+
+  it("populates input fields with existing overrides on open", async () => {
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 0, client_count: 0 });
+    api.getUserLimits.mockResolvedValue({
+      user_id: "u1",
+      memory_limit: 250,
+      storage_bytes_limit: 52428800,
+      effective_memory_limit: 250,
+      effective_storage_bytes_limit: 52428800,
+    });
+    await act(async () => render(<UsersPanel />));
+    await act(async () => fireEvent.click(screen.getByText("alice@example.com")));
+    await waitFor(() => expect(screen.getByTestId("limits-section")).toBeTruthy());
+    expect(screen.getByTestId("memory-limit-input").value).toBe("250");
+    expect(screen.getByTestId("storage-limit-input").value).toBe("52428800");
   });
 });

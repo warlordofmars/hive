@@ -51,7 +51,7 @@ from hive.hybrid_search import (
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
 from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
-from hive.quota import QuotaExceeded, check_memory_quota, get_memory_limit
+from hive.quota import QuotaExceeded, check_memory_quota, check_storage_quota, get_memory_limit
 from hive.rate_limiter import (
     DEFAULT_RATE_LIMIT_RPD,
     DEFAULT_RATE_LIMIT_RPM,
@@ -485,6 +485,7 @@ async def remember(
         owner_user_id = client.owner_user_id
         try:
             check_memory_quota(owner_user_id, storage)
+            check_storage_quota(owner_user_id, len(value.encode("utf-8")), storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
         memory = Memory(
@@ -605,6 +606,7 @@ async def remember_if_absent(
     owner_user_id = client.owner_user_id
     try:
         check_memory_quota(owner_user_id, storage)
+        check_storage_quota(owner_user_id, len(value.encode("utf-8")), storage)
     except QuotaExceeded as exc:
         raise ToolError(exc.detail) from exc
 
@@ -741,6 +743,7 @@ async def remember_blob(
         owner_user_id = client.owner_user_id
         try:
             check_memory_quota(owner_user_id, storage)
+            check_storage_quota(owner_user_id, len(raw), storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
         memory = Memory(

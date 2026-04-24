@@ -948,6 +948,117 @@ class TestUsers:
         resp = tc.get(f"/api/users/{user_id}/stats")
         assert resp.status_code == 403
 
+    def test_get_user_limits_returns_effective_defaults(self, admin_client):
+        tc, storage, admin_id = admin_client
+        resp = tc.get(f"/api/users/{admin_id}/limits")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_id"] == admin_id
+        assert data["memory_limit"] is None
+        assert data["storage_bytes_limit"] is None
+        assert isinstance(data["effective_memory_limit"], int)
+        assert isinstance(data["effective_storage_bytes_limit"], int)
+
+    def test_get_user_limits_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/users/no-such-user/limits")
+        assert resp.status_code == 404
+
+    def test_get_user_limits_non_admin_returns_403(self, client):
+        tc, _, user_id = client
+        resp = tc.get(f"/api/users/{user_id}/limits")
+        assert resp.status_code == 403
+
+    def test_put_user_limits_sets_overrides(self, admin_client):
+        from hive.models import User
+
+        tc, storage, admin_id = admin_client
+        u = User(email="target@example.com", display_name="Target")
+        storage.put_user(u)
+        resp = tc.put(
+            f"/api/users/{u.user_id}/limits",
+            json={"memory_limit": 100, "storage_bytes_limit": 5242880},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] == 100
+        assert data["storage_bytes_limit"] == 5242880
+        assert data["effective_memory_limit"] == 100
+        assert data["effective_storage_bytes_limit"] == 5242880
+
+    def test_put_user_limits_clears_overrides_with_null(self, admin_client):
+        from hive.models import User
+
+        tc, storage, admin_id = admin_client
+        u = User(email="target2@example.com", display_name="Target2", memory_limit=50)
+        storage.put_user(u)
+        resp = tc.put(
+            f"/api/users/{u.user_id}/limits",
+            json={"memory_limit": None, "storage_bytes_limit": None},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["memory_limit"] is None
+        # effective falls back to system default
+        assert data["effective_memory_limit"] > 0
+
+    def test_put_user_limits_not_found_returns_404(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.put("/api/users/no-such-user/limits", json={"memory_limit": 100})
+        assert resp.status_code == 404
+
+    def test_put_user_limits_non_admin_returns_403(self, client):
+        tc, *_ = client
+        resp = tc.put("/api/users/any-user/limits", json={"memory_limit": 100})
+        assert resp.status_code == 403
+
+    def test_put_user_limits_rejects_zero(self, admin_client):
+        from hive.models import User
+
+        tc, storage, _ = admin_client
+        u = User(email="t3@example.com", display_name="T3")
+        storage.put_user(u)
+        resp = tc.put(f"/api/users/{u.user_id}/limits", json={"memory_limit": 0})
+        assert resp.status_code == 422
+
+    def test_put_user_limits_rejects_negative(self, admin_client):
+        from hive.models import User
+
+        tc, storage, _ = admin_client
+        u = User(email="t4@example.com", display_name="T4")
+        storage.put_user(u)
+        resp = tc.put(f"/api/users/{u.user_id}/limits", json={"storage_bytes_limit": -1})
+        assert resp.status_code == 422
+
+
+class TestStatsStorageBytes:
+    def test_stats_includes_storage_bytes_fields(self, client):
+        tc, *_ = client
+        resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_storage_bytes" in data
+        assert isinstance(data["total_storage_bytes"], int)
+        assert "storage_bytes_limit" in data
+
+    def test_stats_storage_bytes_limit_for_non_admin(self, client):
+        import os
+        from unittest.mock import patch
+
+        tc, *_ = client
+        with patch.dict(os.environ, {"HIVE_QUOTA_MAX_STORAGE_BYTES": str(50 * 1024 * 1024)}):
+            resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["storage_bytes_limit"] == 50 * 1024 * 1024
+
+    def test_stats_storage_bytes_limit_null_for_admin(self, admin_client):
+        tc, *_ = admin_client
+        resp = tc.get("/api/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["storage_bytes_limit"] is None
+
 
 # ---------------------------------------------------------------------------
 # _app_version() branches — covers api/main.py:33 and 36-37

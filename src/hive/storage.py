@@ -958,6 +958,64 @@ class HiveStorage:
         )
         return resp.get("Count", 0)
 
+    def sum_storage_bytes(self, owner_user_id: str | None = None) -> int:
+        """Return the total stored bytes across all memories for the given user (or all users)."""
+        filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
+        expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "MEMORY#"}
+        if owner_user_id:
+            filter_expr += _UID_FILTER
+            expr_vals[":uid"] = owner_user_id
+        resp = self.table.scan(
+            FilterExpression=filter_expr,
+            ExpressionAttributeValues=expr_vals,
+            ProjectionExpression="#sb",
+            ExpressionAttributeNames={"#sb": "size_bytes"},
+        )
+        return sum(int(item.get("size_bytes", 0)) for item in resp.get("Items", []))
+
+    def update_user_limits(
+        self,
+        user_id: str,
+        memory_limit: int | None,
+        storage_bytes_limit: int | None,
+    ) -> bool:
+        """Set per-user quota overrides. Pass None to remove an override (revert to system default)."""
+        resp = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+
+        set_parts: list[str] = []
+        remove_parts: list[str] = []
+        expr_vals: dict[str, Any] = {}
+
+        if memory_limit is not None:
+            set_parts.append("memory_limit = :ml")
+            expr_vals[":ml"] = memory_limit
+        else:
+            remove_parts.append("memory_limit")
+
+        if storage_bytes_limit is not None:
+            set_parts.append("storage_bytes_limit = :sbl")
+            expr_vals[":sbl"] = storage_bytes_limit
+        else:
+            remove_parts.append("storage_bytes_limit")
+
+        parts: list[str] = []
+        if set_parts:
+            parts.append("SET " + ", ".join(set_parts))
+        if remove_parts:
+            parts.append("REMOVE " + ", ".join(remove_parts))
+
+        update_kwargs: dict[str, Any] = {
+            "Key": {"PK": f"USER#{user_id}", "SK": "META"},
+            "UpdateExpression": " ".join(parts),
+        }
+        if expr_vals:
+            update_kwargs["ExpressionAttributeValues"] = expr_vals
+
+        self.table.update_item(**update_kwargs)
+        return True
+
     # ------------------------------------------------------------------
     # API Keys
     # ------------------------------------------------------------------

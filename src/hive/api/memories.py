@@ -28,7 +28,7 @@ from hive.models import (
     MemoryUpdate,
     PagedResponse,
 )
-from hive.quota import QuotaExceeded, check_memory_quota
+from hive.quota import QuotaExceeded, check_memory_quota, check_storage_quota
 from hive.storage import HiveStorage
 from hive.vector_store import VectorIndexNotFoundError, VectorStore
 
@@ -158,6 +158,7 @@ async def create_memory(
 
     try:
         check_memory_quota(owner_user_id, storage)
+        check_storage_quota(owner_user_id, len(body.value.encode("utf-8")), storage)
     except QuotaExceeded as exc:
         # #367 — track 429s so admins can see quota pressure in the dashboard.
         # Emit twice: aggregate (Environment only) for the dashboard count, and

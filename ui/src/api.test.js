@@ -300,6 +300,21 @@ describe("api", () => {
     expect(fetchMock.mock.calls[0][1].method).toBe("GET");
   });
 
+  it("getUserLimits calls GET /api/users/{id}/limits", async () => {
+    mockOk({ user_id: "u1", memory_limit: null, storage_bytes_limit: null, effective_memory_limit: 500, effective_storage_bytes_limit: 104857600 });
+    await api.getUserLimits("u1");
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/u1/limits");
+    expect(fetchMock.mock.calls[0][1].method).toBe("GET");
+  });
+
+  it("updateUserLimits calls PUT /api/users/{id}/limits with body", async () => {
+    mockOk({ user_id: "u1", memory_limit: 100, storage_bytes_limit: null, effective_memory_limit: 100, effective_storage_bytes_limit: 104857600 });
+    await api.updateUserLimits("u1", { memory_limit: 100, storage_bytes_limit: null });
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/users/u1/limits");
+    expect(fetchMock.mock.calls[0][1].method).toBe("PUT");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ memory_limit: 100, storage_bytes_limit: null });
+  });
+
   it("listApiKeys calls GET /api/keys", async () => {
     mockOk([]);
     await api.listApiKeys();
