@@ -407,6 +407,31 @@ class TestOAuthAuthorize:
         assert "state=bypass-state" in location
         assert "accounts.google.com" not in location
 
+    def test_bypass_test_email_associates_user(self, oauth_client):
+        """test_email in bypass mode creates a user and sets client.owner_user_id."""
+        tc, storage, client = oauth_client
+        _, challenge = _pkce_pair()
+        with patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True):
+            resp = tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client.client_id,
+                    "redirect_uri": "https://app.example.com/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "test_email": "bypass@example.com",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        updated = storage.get_client(client.client_id)
+        assert updated is not None
+        assert updated.owner_user_id is not None
+        user = storage.get_user_by_id(updated.owner_user_id)
+        assert user is not None
+        assert user.email == "bypass@example.com"
+
 
 # ---------------------------------------------------------------------------
 # Google OAuth callback endpoint tests

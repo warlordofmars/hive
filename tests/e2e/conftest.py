@@ -17,6 +17,7 @@ import pytest
 
 API_URL = os.environ.get("HIVE_API_URL", "")
 ADMIN_EMAIL = os.environ.get("HIVE_ADMIN_EMAIL", "")
+E2E_EMAIL = os.environ.get("HIVE_E2E_EMAIL", "")
 
 # The deployed API runs on AWS Lambda, and the first request after a quiet
 # period pays a cold-start cost that can run 5–10s on a fresh container. The
@@ -55,16 +56,16 @@ async def _issue_token(client_name: str) -> str:
         reg.raise_for_status()
         client_id = reg.json()["client_id"]
 
-        auth = await http.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client_id,
-                "redirect_uri": "http://localhost/cb",
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            },
-        )
+        authorize_params: dict[str, str] = {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": "http://localhost/cb",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
+        if E2E_EMAIL:
+            authorize_params["test_email"] = E2E_EMAIL
+        auth = await http.get("/oauth/authorize", params=authorize_params)
         location = auth.headers.get("location", "")
         if "accounts.google.com" in location:
             pytest.fail(

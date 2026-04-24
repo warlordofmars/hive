@@ -632,6 +632,7 @@ jobs:
         env:
           HIVE_API_URL: ${{ needs.deploy-dev.outputs.api_url }}
           HIVE_MCP_URL: ${{ needs.deploy-dev.outputs.mcp_url }}
+          HIVE_E2E_EMAIL: ${{ vars.HIVE_ADMIN_EMAIL }}
         run: uv run pytest tests/e2e/test_auth_e2e.py tests/e2e/test_mcp_e2e.py -v
 
       - name: Run admin metrics e2e tests
