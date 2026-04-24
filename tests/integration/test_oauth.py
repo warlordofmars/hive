@@ -10,6 +10,7 @@ import base64
 import hashlib
 import os
 import secrets
+from unittest.mock import patch
 
 import pytest
 
@@ -163,17 +164,18 @@ class TestAuthorizationCodeFlow:
         client_id = reg.json()["client_id"]
 
         _, challenge = _pkce_pair()
-        auth_resp = client.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client_id,
-                "redirect_uri": "http://localhost/cb",
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-                "test_email": "e2e-test@example.com",
-            },
-        )
+        with patch("hive.auth.google.is_email_allowed", return_value=True):
+            auth_resp = client.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client_id,
+                    "redirect_uri": "http://localhost/cb",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "test_email": "e2e-test@example.com",
+                },
+            )
         assert auth_resp.status_code == 302
 
         storage = HiveStorage()

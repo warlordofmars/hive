@@ -411,7 +411,10 @@ class TestOAuthAuthorize:
         """test_email in bypass mode creates a user and sets client.owner_user_id."""
         tc, storage, client = oauth_client
         _, challenge = _pkce_pair()
-        with patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True):
+        with (
+            patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+        ):
             resp = tc.get(
                 "/oauth/authorize",
                 params={
@@ -460,6 +463,7 @@ class TestOAuthAuthorize:
         _, challenge = _pkce_pair()
         with (
             patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
             patch("hive.auth.google.is_admin_email", return_value=True),
         ):
             resp = tc.get(
@@ -496,6 +500,7 @@ class TestOAuthAuthorize:
         _, challenge = _pkce_pair()
         with (
             patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
             patch("hive.auth.google.is_admin_email", return_value=True),
         ):
             resp = tc.get(
