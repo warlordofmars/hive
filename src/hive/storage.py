@@ -29,6 +29,7 @@ from hive.models import (
     ActivityEvent,
     ApiKey,
     AuthorizationCode,
+    Invite,
     Memory,
     MemoryVersion,
     MgmtPendingState,
@@ -37,6 +38,9 @@ from hive.models import (
     Token,
     TokenType,
     User,
+    Workspace,
+    WorkspaceMember,
+    WorkspaceRole,
 )
 
 logger = get_logger("hive.storage")
@@ -47,6 +51,7 @@ DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
 # Reusable DynamoDB filter expression fragments
 _UID_FILTER = " AND owner_user_id = :uid"
+_WSID_FILTER = " AND workspace_id = :wsid"
 _PK_PREFIX_KEY = ":prefix"
 _SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
 
@@ -437,12 +442,15 @@ class HiveStorage:
         limit: int = 100,
         cursor: str | None = None,
         owner_user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> tuple[list[Memory], str | None]:
         """Query TagIndex GSI to find memories with a given tag.
 
-        When owner_user_id is provided, only memories belonging to that user
-        are returned (within-user cross-client sharing is intentional product
-        behaviour; cross-user isolation is enforced here).
+        ``owner_user_id`` and ``workspace_id`` are both optional scoping
+        filters — both are applied in-memory on the hydrated items. The
+        workspace_id path exists ahead of the migration (#490) so that
+        post-migration callers can scope by workspace while the
+        owner_user_id path keeps working for pre-cutover callers.
 
         Returns (memories, next_cursor). next_cursor is None when exhausted.
         """
@@ -458,8 +466,13 @@ class HiveStorage:
         memories: list[Memory] = []
         for item in resp.get("Items", []):
             m = self.get_memory_by_id(item["memory_id"])
-            if m is not None and (owner_user_id is None or m.owner_user_id == owner_user_id):
-                memories.append(m)
+            if m is None:
+                continue
+            if owner_user_id is not None and m.owner_user_id != owner_user_id:
+                continue
+            if workspace_id is not None and m.workspace_id != workspace_id:
+                continue
+            memories.append(m)
 
         lek = resp.get("LastEvaluatedKey")
         next_cursor = _encode_cursor(lek) if lek else None
@@ -469,10 +482,12 @@ class HiveStorage:
         self,
         client_id: str | None = None,
         owner_user_id: str | None = None,
+        workspace_id: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[Memory], str | None]:
-        """Scan for all META memory items (optionally filtered by owner_client_id or owner_user_id).
+        """Scan for all META memory items (optionally filtered by owner_client_id,
+        owner_user_id, or workspace_id).
 
         Returns (memories, next_cursor). Use sparingly — prefer tag-based queries.
 
@@ -488,6 +503,9 @@ class HiveStorage:
         if owner_user_id:
             filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
+        if workspace_id:
+            filter_expr += _WSID_FILTER
+            expr_vals[":wsid"] = workspace_id
 
         start_key = _decode_cursor(cursor) if cursor else None
         memories: list[Memory] = []
@@ -519,17 +537,22 @@ class HiveStorage:
         self,
         tag: str,
         owner_user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> int:
         """Delete all memories with the given tag.
 
-        If owner_user_id is provided, only memories owned by that user are deleted.
-        Returns the count of memories deleted.
+        If owner_user_id or workspace_id is provided, only memories matching
+        the filter are deleted. Returns the count of memories deleted.
         """
         deleted = 0
         cursor: str | None = None
         while True:
             items, cursor = self.list_memories_by_tag(
-                tag, limit=100, cursor=cursor, owner_user_id=owner_user_id
+                tag,
+                limit=100,
+                cursor=cursor,
+                owner_user_id=owner_user_id,
+                workspace_id=workspace_id,
             )
             for memory in items:
                 self._delete_tag_items(memory)
@@ -543,9 +566,10 @@ class HiveStorage:
     def iter_all_memories(
         self,
         owner_user_id: str | None = None,
+        workspace_id: str | None = None,
         tag: str | None = None,
     ) -> Iterator[Memory]:
-        """Yield all memories, optionally filtered by owner or tag.
+        """Yield all memories, optionally filtered by owner, workspace, or tag.
 
         For tag-filtered export, iterates TagIndex pages.
         For unfiltered export, scans all META items.
@@ -555,7 +579,11 @@ class HiveStorage:
             cursor: str | None = None
             while True:
                 items, cursor = self.list_memories_by_tag(
-                    tag, limit=100, cursor=cursor, owner_user_id=owner_user_id
+                    tag,
+                    limit=100,
+                    cursor=cursor,
+                    owner_user_id=owner_user_id,
+                    workspace_id=workspace_id,
                 )
                 yield from items
                 if cursor is None:
@@ -566,6 +594,9 @@ class HiveStorage:
             if owner_user_id:
                 filter_expr += _UID_FILTER
                 expr_vals[":uid"] = owner_user_id
+            if workspace_id:
+                filter_expr += _WSID_FILTER
+                expr_vals[":wsid"] = workspace_id
             start_key: dict[str, Any] | None = None
             while True:
                 kwargs: dict[str, Any] = {
@@ -603,6 +634,7 @@ class HiveStorage:
     def list_clients(
         self,
         owner_user_id: str | None = None,
+        workspace_id: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[OAuthClient], str | None]:
@@ -611,6 +643,9 @@ class HiveStorage:
         if owner_user_id:
             filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
+        if workspace_id:
+            filter_expr += _WSID_FILTER
+            expr_vals[":wsid"] = workspace_id
 
         start_key = _decode_cursor(cursor) if cursor else None
         clients: list[OAuthClient] = []
@@ -736,6 +771,32 @@ class HiveStorage:
             ExpressionAttributeValues={":t": True},
         )
 
+    def revoke_all_tokens(self) -> int:
+        """Mark every outstanding token as revoked.
+
+        Used by the workspaces migration (#490) — existing tokens don't carry
+        the ``workspace_id`` claim, so forcing a re-auth is the cheapest
+        correct cutover. Returns the count of tokens revoked.
+        """
+        revoked = 0
+        start_key: dict[str, Any] | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": "SK = :sk AND begins_with(PK, :prefix)",
+                "ExpressionAttributeValues": {":sk": "META", _PK_PREFIX_KEY: "TOKEN#"},
+                "ProjectionExpression": "jti",
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                self.revoke_token(item["jti"])
+                revoked += 1
+            start_key = resp.get("LastEvaluatedKey")
+            if start_key is None:
+                break
+        return revoked
+
     def create_token_pair(self, client_id: str, scope: str) -> tuple[Token, Token]:
         """Issue a new (access_token, refresh_token) pair."""
         now = _now()
@@ -855,6 +916,183 @@ class HiveStorage:
             start_key = lek
 
     # ------------------------------------------------------------------
+    # Workspaces (#490) — tenancy root; replaces per-user scoping post-cutover
+    # ------------------------------------------------------------------
+
+    def put_workspace(self, workspace: Workspace) -> None:
+        """Create or overwrite a workspace META item."""
+        self.table.put_item(Item=workspace.to_dynamo())
+
+    def get_workspace(self, workspace_id: str) -> Workspace | None:
+        resp = self.table.get_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"})
+        item = resp.get("Item")
+        return Workspace.from_dynamo(item) if item else None
+
+    def delete_workspace(self, workspace_id: str) -> bool:
+        """Delete the workspace META item and every MEMBER item under it.
+
+        Returns True when the META item existed, False when it was already
+        absent. Member items are deleted unconditionally — orphan members
+        under a deleted workspace would still surface through the
+        ``WorkspaceMemberIndex`` lookup and confuse the per-user list.
+        """
+        resp = self.table.get_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+        # Delete every MEMBER#{user_id} item in the partition, then the META.
+        members = self.list_workspace_members(workspace_id)
+        with self.table.batch_writer() as batch:
+            for m in members:
+                batch.delete_item(
+                    Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{m.user_id}"}
+                )
+            batch.delete_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"})
+        return True
+
+    def rename_workspace(self, workspace_id: str, name: str) -> bool:
+        """Update a workspace's display name. Returns False if missing."""
+        try:
+            self.table.update_item(
+                Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"},
+                UpdateExpression="SET #n = :name",
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames={"#n": "name"},
+                ExpressionAttributeValues={":name": name},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
+    def add_workspace_member(
+        self,
+        workspace_id: str,
+        user_id: str,
+        role: WorkspaceRole = WorkspaceRole.member,
+    ) -> WorkspaceMember:
+        """Insert a (workspace, user, role) binding. Overwrites if it exists."""
+        member = WorkspaceMember(workspace_id=workspace_id, user_id=user_id, role=role)
+        self.table.put_item(Item=member.to_dynamo())
+        return member
+
+    def get_workspace_member(self, workspace_id: str, user_id: str) -> WorkspaceMember | None:
+        resp = self.table.get_item(
+            Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{user_id}"}
+        )
+        item = resp.get("Item")
+        return WorkspaceMember.from_dynamo(item) if item else None
+
+    def list_workspace_members(self, workspace_id: str) -> list[WorkspaceMember]:
+        """List every member of a workspace (single partition query)."""
+        resp = self.table.query(
+            KeyConditionExpression=Key("PK").eq(f"WORKSPACE#{workspace_id}")
+            & Key("SK").begins_with("MEMBER#"),
+        )
+        return [WorkspaceMember.from_dynamo(item) for item in resp.get("Items", [])]
+
+    def remove_workspace_member(self, workspace_id: str, user_id: str) -> bool:
+        """Delete a (workspace, user) binding. Returns True if it existed."""
+        resp = self.table.get_item(
+            Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{user_id}"}
+        )
+        if not resp.get("Item"):
+            return False
+        self.table.delete_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{user_id}"})
+        return True
+
+    def update_workspace_member_role(
+        self,
+        workspace_id: str,
+        user_id: str,
+        role: WorkspaceRole,
+    ) -> bool:
+        """Change a member's role. Returns False if the membership is missing."""
+        try:
+            self.table.update_item(
+                Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{user_id}"},
+                UpdateExpression="SET #r = :role",
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames={"#r": "role"},
+                ExpressionAttributeValues={":role": role.value},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
+    def list_workspaces_for_user(self, user_id: str) -> list[Workspace]:
+        """Return every workspace the user is a member of.
+
+        Queries ``WorkspaceMemberIndex`` on ``USER#{user_id}`` to collect
+        workspace ids, then fetches the META item for each. Ordering is
+        stable by workspace_id (GSI5SK) so callers can rely on it for
+        deterministic UI rendering.
+        """
+        resp = self.table.query(
+            IndexName="WorkspaceMemberIndex",
+            KeyConditionExpression=Key("GSI5PK").eq(f"USER#{user_id}")
+            & Key("GSI5SK").begins_with("WORKSPACE#"),
+        )
+        workspaces: list[Workspace] = []
+        for item in resp.get("Items", []):
+            ws = self.get_workspace(item["workspace_id"])
+            if ws is not None:
+                workspaces.append(ws)
+        return workspaces
+
+    # ------------------------------------------------------------------
+    # Workspace invites (#490) — pending invitations to join a workspace
+    # ------------------------------------------------------------------
+
+    def put_invite(self, invite: Invite) -> None:
+        self.table.put_item(Item=invite.to_dynamo())
+
+    def get_invite(self, invite_id: str) -> Invite | None:
+        resp = self.table.get_item(Key={"PK": f"INVITE#{invite_id}", "SK": "META"})
+        item = resp.get("Item")
+        return Invite.from_dynamo(item) if item else None
+
+    def delete_invite(self, invite_id: str) -> bool:
+        resp = self.table.get_item(Key={"PK": f"INVITE#{invite_id}", "SK": "META"})
+        if not resp.get("Item"):
+            return False
+        self.table.delete_item(Key={"PK": f"INVITE#{invite_id}", "SK": "META"})
+        return True
+
+    def list_pending_invites_for_email(self, email: str) -> list[Invite]:
+        """Return every non-expired invite targeting the given email.
+
+        Scans the INVITE# partition with a filter — acceptable volume for
+        the invite-accept flow (user logs in, we surface pending invites).
+        If invite volume grows we'd back this with a GSI.
+        """
+        resp = self.table.scan(
+            FilterExpression="SK = :sk AND begins_with(PK, :prefix) AND email = :email",
+            ExpressionAttributeValues={
+                ":sk": "META",
+                _PK_PREFIX_KEY: "INVITE#",
+                ":email": email,
+            },
+        )
+        invites = [Invite.from_dynamo(item) for item in resp.get("Items", [])]
+        return [i for i in invites if not i.is_expired]
+
+    def list_pending_invites_for_workspace(self, workspace_id: str) -> list[Invite]:
+        """Return every non-expired invite for the given workspace."""
+        resp = self.table.scan(
+            FilterExpression=("SK = :sk AND begins_with(PK, :prefix) AND workspace_id = :wsid"),
+            ExpressionAttributeValues={
+                ":sk": "META",
+                _PK_PREFIX_KEY: "INVITE#",
+                ":wsid": workspace_id,
+            },
+        )
+        invites = [Invite.from_dynamo(item) for item in resp.get("Items", [])]
+        return [i for i in invites if not i.is_expired]
+
+    # ------------------------------------------------------------------
     # Management pending state (nonce for management UI Google login)
     # ------------------------------------------------------------------
 
@@ -924,12 +1162,19 @@ class HiveStorage:
     # Stats
     # ------------------------------------------------------------------
 
-    def count_memories(self, owner_user_id: str | None = None) -> int:
+    def count_memories(
+        self,
+        owner_user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> int:
         filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
         expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "MEMORY#"}
         if owner_user_id:
             filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
+        if workspace_id:
+            filter_expr += _WSID_FILTER
+            expr_vals[":wsid"] = workspace_id
         resp = self.table.scan(
             Select="COUNT",
             FilterExpression=filter_expr,
@@ -937,12 +1182,19 @@ class HiveStorage:
         )
         return resp.get("Count", 0)
 
-    def count_clients(self, owner_user_id: str | None = None) -> int:
+    def count_clients(
+        self,
+        owner_user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> int:
         filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
         expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "CLIENT#"}
         if owner_user_id:
             filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
+        if workspace_id:
+            filter_expr += _WSID_FILTER
+            expr_vals[":wsid"] = workspace_id
         resp = self.table.scan(
             Select="COUNT",
             FilterExpression=filter_expr,
@@ -958,13 +1210,21 @@ class HiveStorage:
         )
         return resp.get("Count", 0)
 
-    def sum_storage_bytes(self, owner_user_id: str | None = None) -> int:
-        """Return the total stored bytes across all memories for the given user (or all users)."""
+    def sum_storage_bytes(
+        self,
+        owner_user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> int:
+        """Return the total stored bytes across all memories for the given
+        user or workspace (or all memories if both are None)."""
         filter_expr = "SK = :sk AND begins_with(PK, :prefix)"
         expr_vals: dict[str, Any] = {":sk": "META", _PK_PREFIX_KEY: "MEMORY#"}
         if owner_user_id:
             filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
+        if workspace_id:
+            filter_expr += _WSID_FILTER
+            expr_vals[":wsid"] = workspace_id
         scan_kwargs: dict[str, Any] = {
             "FilterExpression": filter_expr,
             "ExpressionAttributeValues": expr_vals,

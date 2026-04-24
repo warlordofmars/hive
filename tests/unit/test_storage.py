@@ -22,11 +22,14 @@ from hive.models import (
     ActivityEvent,
     ApiKey,
     EventType,
+    Invite,
     Memory,
     OAuthClient,
     TokenType,
     User,
     UserResponse,
+    Workspace,
+    WorkspaceRole,
 )
 from hive.storage import HiveStorage
 
@@ -55,6 +58,8 @@ def _create_table():
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
             {"AttributeName": "GSI4PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5SK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -77,6 +82,14 @@ def _create_table():
                 "IndexName": "UserEmailIndex",
                 "KeySchema": [
                     {"AttributeName": "GSI4PK", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "WorkspaceMemberIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -1738,3 +1751,373 @@ class TestBulkMemoryOperations:
             result = list(storage.iter_all_memories())
 
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# Workspaces (#490) — tenancy root
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceStorage:
+    def test_put_and_get(self, storage):
+        ws = Workspace(name="Team Acme", owner_user_id="u1")
+        storage.put_workspace(ws)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched is not None
+        assert fetched.name == "Team Acme"
+        assert fetched.owner_user_id == "u1"
+        assert fetched.is_personal is False
+
+    def test_get_nonexistent_returns_none(self, storage):
+        assert storage.get_workspace("no-such-ws") is None
+
+    def test_rename(self, storage):
+        ws = Workspace(name="Old Name", owner_user_id="u1")
+        storage.put_workspace(ws)
+        assert storage.rename_workspace(ws.workspace_id, "New Name") is True
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched.name == "New Name"
+
+    def test_rename_nonexistent_returns_false(self, storage):
+        assert storage.rename_workspace("no-such-ws", "Any") is False
+
+    def test_rename_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        ws = Workspace(name="X", owner_user_id="u1")
+        storage.put_workspace(ws)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.rename_workspace(ws.workspace_id, "Y")
+
+    def test_delete_removes_meta_and_members(self, storage):
+        ws = Workspace(name="Doomed", owner_user_id="u1")
+        storage.put_workspace(ws)
+        storage.add_workspace_member(ws.workspace_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(ws.workspace_id, "u2", WorkspaceRole.member)
+        assert storage.delete_workspace(ws.workspace_id) is True
+        assert storage.get_workspace(ws.workspace_id) is None
+        assert storage.list_workspace_members(ws.workspace_id) == []
+
+    def test_delete_nonexistent_returns_false(self, storage):
+        assert storage.delete_workspace("no-such-ws") is False
+
+    def test_personal_flag_roundtrips(self, storage):
+        ws = Workspace(name="Me Personal", owner_user_id="u1", is_personal=True)
+        storage.put_workspace(ws)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched.is_personal is True
+
+    def test_description_roundtrips(self, storage):
+        ws = Workspace(name="Docs", owner_user_id="u1", description="Company-wide documentation")
+        storage.put_workspace(ws)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched.description == "Company-wide documentation"
+
+
+class TestWorkspaceMemberStorage:
+    def test_add_and_get_member(self, storage):
+        ws_id = "ws-1"
+        member = storage.add_workspace_member(ws_id, "u1", WorkspaceRole.owner)
+        assert member.role is WorkspaceRole.owner
+        fetched = storage.get_workspace_member(ws_id, "u1")
+        assert fetched is not None
+        assert fetched.role is WorkspaceRole.owner
+
+    def test_get_nonexistent_member_returns_none(self, storage):
+        assert storage.get_workspace_member("ws-1", "u-missing") is None
+
+    def test_default_role_is_member(self, storage):
+        member = storage.add_workspace_member("ws-1", "u1")
+        assert member.role is WorkspaceRole.member
+
+    def test_list_members(self, storage):
+        ws_id = "ws-1"
+        storage.add_workspace_member(ws_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(ws_id, "u2", WorkspaceRole.admin)
+        storage.add_workspace_member(ws_id, "u3", WorkspaceRole.member)
+        members = storage.list_workspace_members(ws_id)
+        assert {m.user_id for m in members} == {"u1", "u2", "u3"}
+        assert {m.role for m in members} == {
+            WorkspaceRole.owner,
+            WorkspaceRole.admin,
+            WorkspaceRole.member,
+        }
+
+    def test_list_members_only_returns_target_workspace(self, storage):
+        storage.add_workspace_member("ws-a", "u1", WorkspaceRole.member)
+        storage.add_workspace_member("ws-b", "u2", WorkspaceRole.member)
+        members = storage.list_workspace_members("ws-a")
+        assert [m.user_id for m in members] == ["u1"]
+
+    def test_remove_member(self, storage):
+        storage.add_workspace_member("ws-1", "u1", WorkspaceRole.member)
+        assert storage.remove_workspace_member("ws-1", "u1") is True
+        assert storage.get_workspace_member("ws-1", "u1") is None
+
+    def test_remove_nonexistent_member_returns_false(self, storage):
+        assert storage.remove_workspace_member("ws-1", "u-missing") is False
+
+    def test_update_member_role(self, storage):
+        storage.add_workspace_member("ws-1", "u1", WorkspaceRole.member)
+        assert storage.update_workspace_member_role("ws-1", "u1", WorkspaceRole.admin) is True
+        fetched = storage.get_workspace_member("ws-1", "u1")
+        assert fetched.role is WorkspaceRole.admin
+
+    def test_update_member_role_nonexistent_returns_false(self, storage):
+        assert (
+            storage.update_workspace_member_role("ws-1", "u-missing", WorkspaceRole.admin) is False
+        )
+
+    def test_update_member_role_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        storage.add_workspace_member("ws-1", "u1", WorkspaceRole.member)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.update_workspace_member_role("ws-1", "u1", WorkspaceRole.admin)
+
+    def test_list_workspaces_for_user_via_gsi(self, storage):
+        a = Workspace(name="A", owner_user_id="u1", is_personal=True)
+        b = Workspace(name="B", owner_user_id="u2", is_personal=False)
+        storage.put_workspace(a)
+        storage.put_workspace(b)
+        storage.add_workspace_member(a.workspace_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(b.workspace_id, "u2", WorkspaceRole.owner)
+        storage.add_workspace_member(b.workspace_id, "u1", WorkspaceRole.member)
+
+        names = {ws.name for ws in storage.list_workspaces_for_user("u1")}
+        assert names == {"A", "B"}
+
+    def test_list_workspaces_for_user_skips_orphaned_members(self, storage):
+        """Orphaned member rows (workspace META deleted) don't crash the list."""
+        a = Workspace(name="Real", owner_user_id="u1")
+        storage.put_workspace(a)
+        storage.add_workspace_member(a.workspace_id, "u1", WorkspaceRole.owner)
+        # Add a member for a workspace whose META never existed.
+        storage.add_workspace_member("ghost-ws", "u1", WorkspaceRole.member)
+        workspaces = storage.list_workspaces_for_user("u1")
+        assert [w.workspace_id for w in workspaces] == [a.workspace_id]
+
+    def test_list_workspaces_for_unknown_user_returns_empty(self, storage):
+        assert storage.list_workspaces_for_user("u-nobody") == []
+
+
+class TestInviteStorage:
+    def _invite(self, email: str = "invitee@example.com", workspace_id: str = "ws-1"):
+        from datetime import datetime, timedelta, timezone
+
+        return Invite(
+            workspace_id=workspace_id,
+            email=email,
+            role=WorkspaceRole.member,
+            invited_by_user_id="inviter",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+        )
+
+    def test_put_and_get(self, storage):
+        inv = self._invite()
+        storage.put_invite(inv)
+        fetched = storage.get_invite(inv.invite_id)
+        assert fetched is not None
+        assert fetched.email == "invitee@example.com"
+        assert fetched.role is WorkspaceRole.member
+
+    def test_get_nonexistent_returns_none(self, storage):
+        assert storage.get_invite("no-such-invite") is None
+
+    def test_delete(self, storage):
+        inv = self._invite()
+        storage.put_invite(inv)
+        assert storage.delete_invite(inv.invite_id) is True
+        assert storage.get_invite(inv.invite_id) is None
+
+    def test_delete_nonexistent_returns_false(self, storage):
+        assert storage.delete_invite("no-such-invite") is False
+
+    def test_list_pending_invites_for_email_filters_by_email(self, storage):
+        a = self._invite(email="a@example.com")
+        b = self._invite(email="b@example.com")
+        storage.put_invite(a)
+        storage.put_invite(b)
+        invites = storage.list_pending_invites_for_email("a@example.com")
+        assert [i.invite_id for i in invites] == [a.invite_id]
+
+    def test_list_pending_invites_for_email_skips_expired(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        fresh = self._invite(email="a@example.com")
+        expired = Invite(
+            workspace_id="ws-1",
+            email="a@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="inviter",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        storage.put_invite(fresh)
+        storage.put_invite(expired)
+        invites = storage.list_pending_invites_for_email("a@example.com")
+        assert [i.invite_id for i in invites] == [fresh.invite_id]
+
+    def test_list_pending_invites_for_workspace(self, storage):
+        a = self._invite(email="a@example.com", workspace_id="ws-a")
+        b = self._invite(email="b@example.com", workspace_id="ws-b")
+        storage.put_invite(a)
+        storage.put_invite(b)
+        invites = storage.list_pending_invites_for_workspace("ws-a")
+        assert [i.invite_id for i in invites] == [a.invite_id]
+
+    def test_list_pending_invites_for_workspace_skips_expired(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        fresh = self._invite(email="a@example.com", workspace_id="ws-a")
+        expired = Invite(
+            workspace_id="ws-a",
+            email="b@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="inviter",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        storage.put_invite(fresh)
+        storage.put_invite(expired)
+        invites = storage.list_pending_invites_for_workspace("ws-a")
+        assert [i.invite_id for i in invites] == [fresh.invite_id]
+
+
+class TestWorkspaceIdFiltering:
+    """Covers the new workspace_id filter on existing list / count methods."""
+
+    def test_list_all_memories_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a")
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items, _ = storage.list_all_memories(workspace_id="ws-a")
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_list_memories_by_tag_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a", tags=["shared"])
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b", tags=["shared"])
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items, _ = storage.list_memories_by_tag("shared", workspace_id="ws-a")
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_iter_all_memories_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a")
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items = list(storage.iter_all_memories(workspace_id="ws-a"))
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_iter_all_memories_by_tag_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a", tags=["t"])
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b", tags=["t"])
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items = list(storage.iter_all_memories(workspace_id="ws-a", tag="t"))
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_delete_memories_by_tag_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a", tags=["gone"])
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b", tags=["gone"])
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        deleted = storage.delete_memories_by_tag("gone", workspace_id="ws-a")
+        assert deleted == 1
+        assert storage.get_memory_by_id(m1.memory_id) is None
+        assert storage.get_memory_by_id(m2.memory_id) is not None
+
+    def test_count_memories_filters_by_workspace_id(self, storage):
+        storage.put_memory(Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a"))
+        storage.put_memory(Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-a"))
+        storage.put_memory(Memory(key="m3", value="v", owner_client_id="c1", workspace_id="ws-b"))
+        assert storage.count_memories(workspace_id="ws-a") == 2
+
+    def test_count_clients_filters_by_workspace_id(self, storage):
+        storage.put_client(OAuthClient(client_name="A", workspace_id="ws-a"))
+        storage.put_client(OAuthClient(client_name="B", workspace_id="ws-b"))
+        assert storage.count_clients(workspace_id="ws-a") == 1
+
+    def test_sum_storage_bytes_filters_by_workspace_id(self, storage):
+        # size_bytes is derived from value during put_memory, not set by the
+        # caller; use distinguishable payload lengths per workspace so the
+        # filter assertion is meaningful regardless of actual encoded length.
+        m1 = Memory(key="m1", value="x" * 10, owner_client_id="c1", workspace_id="ws-a")
+        m2 = Memory(key="m2", value="x" * 500, owner_client_id="c1", workspace_id="ws-b")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        assert storage.sum_storage_bytes(workspace_id="ws-a") == 10
+        assert storage.sum_storage_bytes(workspace_id="ws-b") == 500
+
+    def test_list_clients_filters_by_workspace_id(self, storage):
+        storage.put_client(OAuthClient(client_name="A", workspace_id="ws-a"))
+        storage.put_client(OAuthClient(client_name="B", workspace_id="ws-b"))
+        clients, _ = storage.list_clients(workspace_id="ws-a")
+        assert [c.client_name for c in clients] == ["A"]
+
+
+class TestRevokeAllTokens:
+    """Bulk token revocation used by the workspaces migration (#490)."""
+
+    def _issue_token(self, storage, client_id: str = "c1"):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import Token
+
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client_id,
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        return token
+
+    def test_revoke_all_tokens_marks_every_token(self, storage):
+        a = self._issue_token(storage)
+        b = self._issue_token(storage)
+        count = storage.revoke_all_tokens()
+        assert count == 2
+        assert storage.get_token(a.jti).revoked is True
+        assert storage.get_token(b.jti).revoked is True
+
+    def test_revoke_all_tokens_is_idempotent(self, storage):
+        self._issue_token(storage)
+        assert storage.revoke_all_tokens() == 1
+        # Re-running still returns 1 (the already-revoked token is still counted)
+        # but the item stays revoked without raising.
+        assert storage.revoke_all_tokens() == 1
+
+    def test_revoke_all_tokens_handles_empty_table(self, storage):
+        assert storage.revoke_all_tokens() == 0
+
+    def test_revoke_all_tokens_paginates(self, storage):
+        from unittest.mock import patch
+
+        page1 = {"Items": [{"jti": "t1"}], "LastEvaluatedKey": {"PK": "TOKEN#t1", "SK": "META"}}
+        page2 = {"Items": [{"jti": "t2"}]}
+        with (
+            patch.object(storage.table, "scan", side_effect=[page1, page2]),
+            patch.object(storage.table, "update_item") as upd,
+        ):
+            assert storage.revoke_all_tokens() == 2
+        assert upd.call_count == 2
