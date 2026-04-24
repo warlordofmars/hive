@@ -1047,6 +1047,52 @@ class TestRememberUpdateError:
         ):
             await remember("upd-err-key", "updated-value", [], ctx=_make_ctx(jwt))
 
+    async def test_update_larger_value_triggers_storage_quota_check(self, server_env):
+        """Storage quota is checked when updating a memory with a larger value."""
+        from unittest.mock import patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        await remember("upd-quota-larger", "x", [], ctx=_make_ctx(jwt))
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember("upd-quota-larger", "x" * 100, [], ctx=_make_ctx(jwt))
+
+        mock_check.assert_called_once()
+
+    async def test_update_smaller_value_skips_storage_quota_check(self, server_env):
+        """Storage quota is not rechecked when update reduces memory size."""
+        from unittest.mock import patch
+
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        await remember("upd-quota-smaller", "x" * 100, [], ctx=_make_ctx(jwt))
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember("upd-quota-smaller", "x", [], ctx=_make_ctx(jwt))
+
+        mock_check.assert_not_called()
+
+    async def test_update_storage_quota_exceeded_raises_tool_error(self, server_env):
+        """QuotaExceeded on storage check during update is converted to ToolError."""
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember
+
+        _, _, jwt = server_env
+        await remember("upd-quota-exc", "x", [], ctx=_make_ctx(jwt))
+
+        with (
+            patch("hive.server.check_storage_quota", side_effect=QuotaExceeded("storage full")),
+            pytest.raises(ToolError, match="storage full"),
+        ):
+            await remember("upd-quota-exc", "xx", [], ctx=_make_ctx(jwt))
+
 
 # ---------------------------------------------------------------------------
 # list_memories with pagination cursor — covers server.py:288
@@ -2063,6 +2109,63 @@ class TestRememberBlob:
             pytest.raises(ToolError, match="ddb error"),
         ):
             await remember_blob("blob-upd-err", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+    async def test_blob_update_larger_triggers_storage_quota_check(self, server_env, monkeypatch):
+        """Storage quota is checked when blob update increases size."""
+        self._setup_blob_bucket(monkeypatch)
+        import base64
+        from unittest.mock import patch
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        await remember_blob("blob-upd-q-large", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        larger = base64.b64encode(b"\x00" * 200).decode()
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember_blob("blob-upd-q-large", larger, "image/png", ctx=_make_ctx(jwt))
+
+        mock_check.assert_called_once()
+
+    async def test_blob_update_smaller_skips_storage_quota_check(self, server_env, monkeypatch):
+        """Storage quota is not rechecked when blob update shrinks size."""
+        self._setup_blob_bucket(monkeypatch)
+        import base64
+        from unittest.mock import patch
+
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        larger = base64.b64encode(b"\x00" * 200).decode()
+        await remember_blob("blob-upd-q-small", larger, "image/png", ctx=_make_ctx(jwt))
+
+        with patch("hive.server.check_storage_quota") as mock_check:
+            await remember_blob("blob-upd-q-small", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+        mock_check.assert_not_called()
+
+    async def test_blob_update_storage_quota_exceeded_raises_tool_error(
+        self, server_env, monkeypatch
+    ):
+        """QuotaExceeded on storage check during blob update is converted to ToolError."""
+        self._setup_blob_bucket(monkeypatch)
+        import base64
+        from unittest.mock import patch
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.quota import QuotaExceeded
+        from hive.server import remember_blob
+
+        _, _, jwt = server_env
+        await remember_blob("blob-upd-q-exc", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+        larger = base64.b64encode(b"\x00" * 200).decode()
+
+        with (
+            patch("hive.server.check_storage_quota", side_effect=QuotaExceeded("blob over limit")),
+            pytest.raises(ToolError, match="blob over limit"),
+        ):
+            await remember_blob("blob-upd-q-exc", larger, "image/png", ctx=_make_ctx(jwt))
 
 
 class TestRecallBinary:

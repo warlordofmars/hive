@@ -452,10 +452,17 @@ async def remember(
                 },
             )
             return _tool_result(f"Memory '{key}' unchanged.", storage, client_id)
+        old_size = existing.size_bytes or 0
         existing.value = value
         existing.tags = tags
         existing.expires_at = expires_at
         existing.updated_at = datetime.now(timezone.utc)
+        delta = len(value.encode("utf-8")) - old_size
+        if delta > 0:
+            try:
+                check_storage_quota(existing.owner_user_id, delta, storage)
+            except QuotaExceeded as exc:
+                raise ToolError(exc.detail) from exc
         try:
             storage.put_memory(existing, expected_version=version)
         except VersionConflict as exc:
@@ -715,6 +722,13 @@ async def remember_blob(
 
     existing = storage.get_memory_by_key(key)
     if existing:
+        old_blob_size = existing.size_bytes or 0
+        delta = len(raw) - old_blob_size
+        if delta > 0:
+            try:
+                check_storage_quota(existing.owner_user_id, delta, storage)
+            except QuotaExceeded as exc:
+                raise ToolError(exc.detail) from exc
         owner = existing.owner_user_id or existing.owner_client_id
         s3_uri = storage.blob_store.put(
             owner=owner,

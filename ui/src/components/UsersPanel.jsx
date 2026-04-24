@@ -80,20 +80,24 @@ export default function UsersPanel() {
     setUserStats(null);
     setUserLimits(null);
     setStatsLoading(true);
+    const [statsResult, limitsResult] = await Promise.allSettled([
+      api.getUserStats(user.user_id),
+      api.getUserLimits(user.user_id),
+    ]);
     try {
-      const [stats, limits] = await Promise.all([
-        api.getUserStats(user.user_id),
-        api.getUserLimits(user.user_id),
-      ]);
-      setUserStats(stats);
-      setUserLimits(limits);
-      setEditMemoryLimit(limits?.memory_limit != null ? String(limits.memory_limit) : "");
-      setEditStorageBytesLimit(
-        limits?.storage_bytes_limit != null ? String(limits.storage_bytes_limit) : ""
-      );
-    } catch {
-      setUserStats(null);
-      setUserLimits(null);
+      setUserStats(statsResult.status === "fulfilled" ? statsResult.value : null);
+      if (limitsResult.status === "fulfilled") {
+        const limits = limitsResult.value;
+        setUserLimits(limits);
+        setEditMemoryLimit(limits?.memory_limit != null ? String(limits.memory_limit) : "");
+        setEditStorageBytesLimit(
+          limits?.storage_bytes_limit != null ? String(limits.storage_bytes_limit) : ""
+        );
+      } else {
+        setUserLimits(null);
+        setEditMemoryLimit("");
+        setEditStorageBytesLimit("");
+      }
     } finally {
       setStatsLoading(false);
     }

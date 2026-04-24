@@ -1104,6 +1104,19 @@ class TestListAllAndCounts:
         )
         assert storage.sum_storage_bytes() == 0
 
+    def test_sum_storage_bytes_paginates(self, storage):
+        from unittest.mock import patch
+
+        page1 = {
+            "Items": [{"size_bytes": 10}],
+            "LastEvaluatedKey": {"PK": "MEMORY#x", "SK": "META"},
+        }
+        page2 = {"Items": [{"size_bytes": 20}]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            total = storage.sum_storage_bytes()
+        assert total == 30
+        assert mock_scan.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Pagination

@@ -965,13 +965,21 @@ class HiveStorage:
         if owner_user_id:
             filter_expr += _UID_FILTER
             expr_vals[":uid"] = owner_user_id
-        resp = self.table.scan(
-            FilterExpression=filter_expr,
-            ExpressionAttributeValues=expr_vals,
-            ProjectionExpression="#sb",
-            ExpressionAttributeNames={"#sb": "size_bytes"},
-        )
-        return sum(int(item.get("size_bytes", 0)) for item in resp.get("Items", []))
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": filter_expr,
+            "ExpressionAttributeValues": expr_vals,
+            "ProjectionExpression": "#sb",
+            "ExpressionAttributeNames": {"#sb": "size_bytes"},
+        }
+        total = 0
+        resp = self.table.scan(**scan_kwargs)
+        while True:
+            total += sum(int(item.get("size_bytes", 0)) for item in resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if last_key is None:
+                break
+            resp = self.table.scan(**scan_kwargs, ExclusiveStartKey=last_key)
+        return total
 
     def update_user_limits(
         self,
