@@ -31,6 +31,7 @@ from hive.models import (
     ClientRegistrationRequest,
     EventType,
     TokenResponse,
+    User,
 )
 from hive.storage import AuthCodeAlreadyUsed, HiveStorage
 
@@ -132,8 +133,37 @@ async def register(
 # ---------------------------------------------------------------------------
 
 
+def _bypass_associate_user(storage: HiveStorage, client_id: str, email: str) -> None:
+    """Upsert a test user and associate the DCR client with them.
+
+    Only called in HIVE_BYPASS_GOOGLE_AUTH mode when test_email is supplied to
+    /oauth/authorize.  This mirrors the production Google-callback path so that
+    user-scoped MCP tools (list_memories, summarize_context) work in e2e tests.
+    """
+    from hive.auth.google import is_admin_email
+
+    now = datetime.now(timezone.utc)
+    display_name = email.split("@")[0]
+    role = "admin" if is_admin_email(email) else "user"
+
+    user = storage.get_user_by_email(email)
+    if user is None:
+        user = User(email=email, display_name=display_name, role=role, created_at=now)
+    else:
+        user.display_name = display_name
+        user.role = role
+    user.last_login_at = now
+    storage.put_user(user)
+
+    client = storage.get_client(client_id)
+    if client is not None and client.owner_user_id is None:
+        client.owner_user_id = user.user_id
+        storage.put_client(client)
+
+
 @router.get("/oauth/authorize", responses={400: {"description": "Invalid authorization request"}})
 async def authorize(
+    request: Request,
     storage: Annotated[HiveStorage, Depends(get_storage)],
     response_type: str,
     client_id: str,
@@ -168,6 +198,15 @@ async def authorize(
 
     # In bypass mode (non-prod / e2e testing), skip Google and issue code directly.
     if _BYPASS_GOOGLE_AUTH:
+        from hive.auth.google import is_email_allowed
+
+        # If test_email is provided, upsert the user and associate the client so
+        # that user-scoped tools (list_memories, summarize_context) work in e2e.
+        test_email = request.query_params.get("test_email", "").strip()
+        if test_email:
+            if not is_email_allowed(test_email):
+                raise HTTPException(status_code=403, detail="test_email is not allowed")
+            _bypass_associate_user(storage, client_id, test_email)
         auth_code = storage.create_auth_code(
             client_id=client_id,
             redirect_uri=redirect_uri,
