@@ -85,10 +85,46 @@ def _personal_workspace_name(email: str) -> str:
 
 
 def _find_personal_workspace(storage: HiveStorage, user_id: str) -> Workspace | None:
-    """Return the user's Personal workspace, or None if they have none yet."""
+    """Return the user's Personal workspace, or None if they have none yet.
+
+    Checks via WorkspaceMemberIndex first (fast path). Falls back to a
+    full-table scan of WORKSPACE META items owned by this user to recover
+    from a prior partial run where the META row was written but the MEMBER
+    row was not — which would cause ``list_workspaces_for_user`` (GSI-backed)
+    to return nothing, making a naïve re-run create a duplicate workspace.
+    When the slow-path scan finds an orphaned META, the MEMBER row is
+    repaired in place so subsequent lookups work correctly.
+    """
     for ws in storage.list_workspaces_for_user(user_id):
         if ws.is_personal and ws.owner_user_id == user_id:
             return ws
+    # Slow-path: scan for orphaned WORKSPACE META (partial prior run).
+    scan_kwargs: dict[str, Any] = {
+        "FilterExpression": (
+            "SK = :sk AND begins_with(PK, :prefix) AND owner_user_id = :uid"
+        ),
+        "ExpressionAttributeValues": {
+            ":sk": "META",
+            ":prefix": "WORKSPACE#",
+            ":uid": user_id,
+        },
+    }
+    while True:
+        resp = storage.table.scan(**scan_kwargs)
+        for item in resp.get("Items", []):
+            ws = Workspace.from_dynamo(item)
+            if ws.is_personal:
+                # Repair the missing MEMBER row so GSI lookups work going forward.
+                storage.add_workspace_member(
+                    workspace_id=ws.workspace_id,
+                    user_id=user_id,
+                    role=WorkspaceRole.owner,
+                )
+                return ws
+        lek = resp.get("LastEvaluatedKey")
+        if lek is None:
+            break
+        scan_kwargs["ExclusiveStartKey"] = lek
     return None
 
 

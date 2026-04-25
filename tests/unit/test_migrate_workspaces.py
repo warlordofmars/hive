@@ -16,7 +16,7 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 from moto import mock_aws
 
-from hive.models import Memory, OAuthClient, Token, User, WorkspaceRole
+from hive.models import Memory, OAuthClient, Token, User, Workspace, WorkspaceRole
 from hive.storage import HiveStorage
 from scripts.migrate_workspaces import (
     MigrationStats,
@@ -176,6 +176,33 @@ class TestUserMigration:
         stats2 = run(storage=storage)
         assert stats2.workspaces_skipped == 1
         assert stats2.workspaces_created == 0
+
+    def test_repairs_partial_run_where_meta_exists_but_member_missing(self, storage):
+        """A prior partial run may have written the Workspace META but not the MEMBER row.
+
+        The fallback scan in _find_personal_workspace must detect this and repair
+        it rather than creating a duplicate workspace.
+        """
+        alice = _seed_user(storage)
+        # Simulate a partial prior run: write the workspace META directly
+        # but intentionally skip add_workspace_member so the MEMBER row is absent.
+        partial_ws = Workspace(
+            name="alice@example.com's Personal",
+            owner_user_id=alice.user_id,
+            is_personal=True,
+        )
+        storage.put_workspace(partial_ws)
+        # No add_workspace_member call — MEMBER row is missing.
+        assert storage.list_workspaces_for_user(alice.user_id) == []
+
+        # Re-running the migration should detect the orphaned META, repair the
+        # MEMBER row, and NOT create a second workspace.
+        stats = run(storage=storage)
+        assert stats.workspaces_created == 0
+        assert stats.workspaces_skipped == 1
+        ws_list = storage.list_workspaces_for_user(alice.user_id)
+        assert len(ws_list) == 1
+        assert ws_list[0].workspace_id == partial_ws.workspace_id
 
 
 class TestMemoryMigration:

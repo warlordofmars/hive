@@ -782,7 +782,8 @@ class HiveStorage:
 
         Used by the workspaces migration (#490) — existing tokens don't carry
         the ``workspace_id`` claim, so forcing a re-auth is the cheapest
-        correct cutover. Returns the count of tokens revoked.
+        correct cutover. Returns the count of token rows processed (includes
+        tokens that were already revoked before this call).
         """
         revoked = 0
         start_key: dict[str, Any] | None = None

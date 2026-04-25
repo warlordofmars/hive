@@ -16,7 +16,7 @@ globalThis.HTMLElement.prototype.scrollIntoView = function () {};
 // Replace it with a complete in-memory implementation so tests that call any
 // Storage method don't throw on Node v22+.
 if (typeof globalThis.localStorage?.removeItem !== "function") {
-  const _store = {};
+  const _store = Object.create(null);
   globalThis.localStorage = {
     getItem: (k) => Object.prototype.hasOwnProperty.call(_store, k) ? _store[k] : null,
     setItem: (k, v) => { _store[String(k)] = String(v); },
