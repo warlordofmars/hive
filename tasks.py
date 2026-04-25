@@ -528,14 +528,15 @@ def migrate_workspaces(ctx, dry_run=False):
         **os.environ,
         "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
         "HIVE_TABLE_NAME": os.environ.get("HIVE_TABLE_NAME", "hive"),
-        "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "local"),
-        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "local"),
         "AWS_DEFAULT_REGION": "us-east-1",
     }
-    # Only override DYNAMODB_ENDPOINT when explicitly set in the environment so
-    # production runs (where it should be unset) default to the AWS endpoint.
+    # Only inject DYNAMODB_ENDPOINT + dummy creds when targeting DynamoDB Local.
+    # Leaving them unset lets boto3 resolve real AWS credentials normally (profile,
+    # SSO, instance role, etc.) for production runs.
     if "DYNAMODB_ENDPOINT" in os.environ:
         migrate_env["DYNAMODB_ENDPOINT"] = os.environ["DYNAMODB_ENDPOINT"]
+        migrate_env.setdefault("AWS_ACCESS_KEY_ID", "local")
+        migrate_env.setdefault("AWS_SECRET_ACCESS_KEY", "local")
     args = ["--dry-run"] if dry_run else []
     cmd = "uv run python scripts/migrate_workspaces.py " + " ".join(args)
     ctx.run(cmd, env=migrate_env, pty=True)

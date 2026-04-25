@@ -30,8 +30,9 @@ appropriate ``AWS_*`` environment variables before running):
     uv run python scripts/migrate_workspaces.py
     uv run python scripts/migrate_workspaces.py --dry-run    # report only
 
-Via invoke task (targets DynamoDB Local by default; pass
-``DYNAMODB_ENDPOINT`` to override):
+Via invoke task (targets AWS by default — set ``DYNAMODB_ENDPOINT`` for
+local development; dummy AWS keys are injected automatically when
+``DYNAMODB_ENDPOINT`` is set):
 
     DYNAMODB_ENDPOINT=http://localhost:8000 uv run inv migrate-workspaces
     DYNAMODB_ENDPOINT=http://localhost:8000 uv run inv migrate-workspaces --dry-run
