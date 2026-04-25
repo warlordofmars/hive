@@ -29,6 +29,7 @@ from hive.models import (
     User,
     UserResponse,
     Workspace,
+    WorkspaceMember,
     WorkspaceRole,
 )
 from hive.storage import HiveStorage
@@ -1835,6 +1836,20 @@ class TestWorkspaceStorage:
         fetched = storage.get_workspace(ws.workspace_id)
         assert fetched.description == "Company-wide documentation"
 
+    def test_put_workspace_overwrites_existing(self, storage):
+        ws = Workspace(name="Original", owner_user_id="u1")
+        storage.put_workspace(ws)
+        updated = Workspace(
+            workspace_id=ws.workspace_id,
+            name="Updated",
+            owner_user_id="u1",
+            created_at=ws.created_at,
+        )
+        storage.put_workspace(updated)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched is not None
+        assert fetched.name == "Updated"
+
 
 class TestWorkspaceMemberStorage:
     def test_add_and_get_member(self, storage):
@@ -1931,6 +1946,50 @@ class TestWorkspaceMemberStorage:
     def test_list_workspaces_for_unknown_user_returns_empty(self, storage):
         assert storage.list_workspaces_for_user("u-nobody") == []
 
+    def test_list_workspace_members_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_workspace_members."""
+        from unittest.mock import patch
+
+        m1 = WorkspaceMember(workspace_id="ws-1", user_id="u1", role=WorkspaceRole.owner)
+        m2 = WorkspaceMember(workspace_id="ws-1", user_id="u2", role=WorkspaceRole.member)
+        page1 = {
+            "Items": [m1.to_dynamo()],
+            "LastEvaluatedKey": {"PK": "WORKSPACE#ws-1", "SK": "MEMBER#u1"},
+        }
+        page2 = {"Items": [m2.to_dynamo()]}
+        with patch.object(storage.table, "query", side_effect=[page1, page2]) as mock_q:
+            members = storage.list_workspace_members("ws-1")
+        assert {m.user_id for m in members} == {"u1", "u2"}
+        assert mock_q.call_count == 2
+
+    def test_list_workspaces_for_user_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_workspaces_for_user."""
+        from unittest.mock import patch
+
+        ws_a = Workspace(name="A", owner_user_id="u1")
+        ws_b = Workspace(name="B", owner_user_id="u1")
+        storage.put_workspace(ws_a)
+        storage.put_workspace(ws_b)
+        gsi_a = {
+            "workspace_id": ws_a.workspace_id,
+            "GSI5PK": "USER#u1",
+            "GSI5SK": f"WORKSPACE#{ws_a.workspace_id}",
+        }
+        gsi_b = {
+            "workspace_id": ws_b.workspace_id,
+            "GSI5PK": "USER#u1",
+            "GSI5SK": f"WORKSPACE#{ws_b.workspace_id}",
+        }
+        page1 = {
+            "Items": [gsi_a],
+            "LastEvaluatedKey": {"PK": f"WORKSPACE#{ws_a.workspace_id}", "SK": "MEMBER#u1"},
+        }
+        page2 = {"Items": [gsi_b]}
+        with patch.object(storage.table, "query", side_effect=[page1, page2]) as mock_q:
+            workspaces = storage.list_workspaces_for_user("u1")
+        assert {ws.name for ws in workspaces} == {"A", "B"}
+        assert mock_q.call_count == 2
+
 
 class TestInviteStorage:
     def _invite(self, email: str = "invitee@example.com", workspace_id: str = "ws-1"):
@@ -2011,6 +2070,38 @@ class TestInviteStorage:
         storage.put_invite(expired)
         invites = storage.list_pending_invites_for_workspace("ws-a")
         assert [i.invite_id for i in invites] == [fresh.invite_id]
+
+    def test_list_pending_invites_for_email_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_pending_invites_for_email."""
+        from unittest.mock import patch
+
+        inv1 = self._invite(email="a@example.com")
+        inv2 = self._invite(email="a@example.com")
+        page1 = {
+            "Items": [inv1.to_dynamo()],
+            "LastEvaluatedKey": {"PK": f"INVITE#{inv1.invite_id}", "SK": "META"},
+        }
+        page2 = {"Items": [inv2.to_dynamo()]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            invites = storage.list_pending_invites_for_email("a@example.com")
+        assert {i.invite_id for i in invites} == {inv1.invite_id, inv2.invite_id}
+        assert mock_scan.call_count == 2
+
+    def test_list_pending_invites_for_workspace_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_pending_invites_for_workspace."""
+        from unittest.mock import patch
+
+        inv1 = self._invite(workspace_id="ws-1")
+        inv2 = self._invite(workspace_id="ws-1")
+        page1 = {
+            "Items": [inv1.to_dynamo()],
+            "LastEvaluatedKey": {"PK": f"INVITE#{inv1.invite_id}", "SK": "META"},
+        }
+        page2 = {"Items": [inv2.to_dynamo()]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            invites = storage.list_pending_invites_for_workspace("ws-1")
+        assert {i.invite_id for i in invites} == {inv1.invite_id, inv2.invite_id}
+        assert mock_scan.call_count == 2
 
 
 class TestWorkspaceIdFiltering:

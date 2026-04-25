@@ -984,12 +984,20 @@ class HiveStorage:
         return WorkspaceMember.from_dynamo(item) if item else None
 
     def list_workspace_members(self, workspace_id: str) -> list[WorkspaceMember]:
-        """List every member of a workspace (single partition query)."""
-        resp = self.table.query(
-            KeyConditionExpression=Key("PK").eq(f"WORKSPACE#{workspace_id}")
+        """List every member of a workspace (paginated partition query)."""
+        members: list[WorkspaceMember] = []
+        kwargs: dict[str, Any] = {
+            "KeyConditionExpression": Key("PK").eq(f"WORKSPACE#{workspace_id}")
             & Key("SK").begins_with("MEMBER#"),
-        )
-        return [WorkspaceMember.from_dynamo(item) for item in resp.get("Items", [])]
+        }
+        while True:
+            resp = self.table.query(**kwargs)
+            members.extend(WorkspaceMember.from_dynamo(item) for item in resp.get("Items", []))
+            lek = resp.get("LastEvaluatedKey")
+            if lek is None:
+                break
+            kwargs["ExclusiveStartKey"] = lek
+        return members
 
     def remove_workspace_member(self, workspace_id: str, user_id: str) -> bool:
         """Delete a (workspace, user) binding. Returns True if it existed."""
@@ -1030,16 +1038,22 @@ class HiveStorage:
         stable by workspace_id (GSI5SK) so callers can rely on it for
         deterministic UI rendering.
         """
-        resp = self.table.query(
-            IndexName="WorkspaceMemberIndex",
-            KeyConditionExpression=Key("GSI5PK").eq(f"USER#{user_id}")
+        kwargs: dict[str, Any] = {
+            "IndexName": "WorkspaceMemberIndex",
+            "KeyConditionExpression": Key("GSI5PK").eq(f"USER#{user_id}")
             & Key("GSI5SK").begins_with("WORKSPACE#"),
-        )
+        }
         workspaces: list[Workspace] = []
-        for item in resp.get("Items", []):
-            ws = self.get_workspace(item["workspace_id"])
-            if ws is not None:
-                workspaces.append(ws)
+        while True:
+            resp = self.table.query(**kwargs)
+            for item in resp.get("Items", []):
+                ws = self.get_workspace(item["workspace_id"])
+                if ws is not None:
+                    workspaces.append(ws)
+            lek = resp.get("LastEvaluatedKey")
+            if lek is None:
+                break
+            kwargs["ExclusiveStartKey"] = lek
         return workspaces
 
     # ------------------------------------------------------------------
@@ -1068,28 +1082,42 @@ class HiveStorage:
         the invite-accept flow (user logs in, we surface pending invites).
         If invite volume grows we'd back this with a GSI.
         """
-        resp = self.table.scan(
-            FilterExpression="SK = :sk AND begins_with(PK, :prefix) AND email = :email",
-            ExpressionAttributeValues={
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": "SK = :sk AND begins_with(PK, :prefix) AND email = :email",
+            "ExpressionAttributeValues": {
                 ":sk": "META",
                 _PK_PREFIX_KEY: "INVITE#",
                 ":email": email,
             },
-        )
-        invites = [Invite.from_dynamo(item) for item in resp.get("Items", [])]
+        }
+        invites: list[Invite] = []
+        while True:
+            resp = self.table.scan(**scan_kwargs)
+            invites.extend(Invite.from_dynamo(item) for item in resp.get("Items", []))
+            lek = resp.get("LastEvaluatedKey")
+            if lek is None:
+                break
+            scan_kwargs["ExclusiveStartKey"] = lek
         return [i for i in invites if not i.is_expired]
 
     def list_pending_invites_for_workspace(self, workspace_id: str) -> list[Invite]:
         """Return every non-expired invite for the given workspace."""
-        resp = self.table.scan(
-            FilterExpression=("SK = :sk AND begins_with(PK, :prefix) AND workspace_id = :wsid"),
-            ExpressionAttributeValues={
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": "SK = :sk AND begins_with(PK, :prefix) AND workspace_id = :wsid",
+            "ExpressionAttributeValues": {
                 ":sk": "META",
                 _PK_PREFIX_KEY: "INVITE#",
                 ":wsid": workspace_id,
             },
-        )
-        invites = [Invite.from_dynamo(item) for item in resp.get("Items", [])]
+        }
+        invites: list[Invite] = []
+        while True:
+            resp = self.table.scan(**scan_kwargs)
+            invites.extend(Invite.from_dynamo(item) for item in resp.get("Items", []))
+            lek = resp.get("LastEvaluatedKey")
+            if lek is None:
+                break
+            scan_kwargs["ExclusiveStartKey"] = lek
         return [i for i in invites if not i.is_expired]
 
     # ------------------------------------------------------------------
