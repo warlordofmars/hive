@@ -18,6 +18,7 @@ jobs:
   backup-restore-test:
     name: DynamoDB PITR Restore Test
     runs-on: ubuntu-latest
+    environment: production
     env:
       RESTORE_TABLE: hive-backup-test-${{ github.run_id }}
       SOURCE_TABLE: hive
