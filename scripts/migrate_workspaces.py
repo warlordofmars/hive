@@ -182,13 +182,16 @@ def migrate_memories(
                 Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"},
                 UpdateExpression="SET workspace_id = :wsid",
                 ExpressionAttributeValues={":wsid": workspace_id},
-                ConditionExpression="attribute_exists(PK) AND attribute_exists(SK)",
+                ConditionExpression=(
+                    "attribute_exists(PK) AND attribute_exists(SK)"
+                    " AND attribute_not_exists(workspace_id)"
+                ),
             )
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 stats.memories_skipped += 1
                 logger.warning(
-                    "Memory disappeared during migration; skipping workspace stamp",
+                    "Memory missing or already stamped during migration; skipping",
                     extra={"memory_id": memory.memory_id},
                 )
                 continue
@@ -238,13 +241,16 @@ def migrate_clients(
                     Key={"PK": f"CLIENT#{client.client_id}", "SK": "META"},
                     UpdateExpression="SET workspace_id = :wsid",
                     ExpressionAttributeValues={":wsid": workspace_id},
-                    ConditionExpression="attribute_exists(PK) AND attribute_exists(SK)",
+                    ConditionExpression=(
+                        "attribute_exists(PK) AND attribute_exists(SK)"
+                        " AND attribute_not_exists(workspace_id)"
+                    ),
                 )
             except ClientError as exc:
                 if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
                     stats.clients_skipped += 1
                     logger.warning(
-                        "Client disappeared during migration; skipping workspace stamp",
+                        "Client missing or already stamped during migration; skipping",
                         extra={"client_id": client.client_id},
                     )
                     continue
