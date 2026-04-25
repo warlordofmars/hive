@@ -126,12 +126,12 @@ class TestUIE2E:
         # Wait for the list to reload after save.
         page.wait_for_load_state("networkidle")
 
-        # Apply tag filter and retry to handle DynamoDB GSI eventual consistency.
-        # The TagIndex GSI may not immediately reflect a new write; if the filtered
-        # list comes back empty, clear the chip and reapply the filter until the
-        # memory appears (or we exhaust retries). 24 × 5s = 120s total — GSI has
-        # been observed taking north of 60s under load in the dev pipeline.
-        _RETRIES = 24
+        # Apply tag filter and retry to handle transient delays (network, Lambda
+        # cold start, etc.).  The USERTAG strongly-consistent path (#568) removed
+        # the GSI propagation lag, so the memory should appear immediately after
+        # the POST returns.  Keep a short retry budget for cold-start jitter.
+        # 6 × 5s = 30s total.
+        _RETRIES = 6
         for attempt in range(_RETRIES):
             # If a chip is already showing, clear it first so we can re-type.
             if page.locator("[aria-label='Clear tag filter']").count() > 0:

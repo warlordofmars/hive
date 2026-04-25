@@ -1293,6 +1293,124 @@ class TestPagination:
         mems, _ = storage.list_memories_by_tag("open")
         assert {m.key for m in mems} == {"xa", "ya"}
 
+    def test_list_memories_by_tag_consistent_path_returns_own_memories(self, storage):
+        """owner_user_id uses the USERTAG consistent path and filters cross-user (#568)."""
+        storage.put_memory(
+            Memory(key="mine", value="v", tags=["greet"], owner_client_id="c1", owner_user_id="u1")
+        )
+        storage.put_memory(
+            Memory(key="other", value="v", tags=["greet"], owner_client_id="c2", owner_user_id="u2")
+        )
+        mems, cursor = storage.list_memories_by_tag("greet", owner_user_id="u1")
+        assert [m.key for m in mems] == ["mine"]
+        assert cursor is None  # only one item, no next page
+
+    def test_list_memories_by_tag_consistent_path_write_then_read(self, storage):
+        """USERTAG items written by put_memory are immediately visible via consistent read."""
+        m = Memory(key="instant", value="v", tags=["now"], owner_client_id="c1", owner_user_id="u1")
+        storage.put_memory(m)
+        # Should find the memory immediately — no GSI propagation lag
+        mems, _ = storage.list_memories_by_tag("now", owner_user_id="u1")
+        assert len(mems) == 1
+        assert mems[0].key == "instant"
+
+    def test_list_memories_by_tag_consistent_path_deleted_memory_not_returned(self, storage):
+        """USERTAG items are cleaned up on delete; deleted memories are not returned."""
+        m = Memory(key="gone", value="v", tags=["fade"], owner_client_id="c1", owner_user_id="u1")
+        storage.put_memory(m)
+        storage.delete_memory(m.memory_id)
+        mems, _ = storage.list_memories_by_tag("fade", owner_user_id="u1")
+        assert mems == []
+
+    def test_list_memories_by_tag_consistent_path_update_replaces_old_tags(self, storage):
+        """After a tag update, only the new tags appear via the consistent path."""
+        m = Memory(
+            key="shift",
+            value="v",
+            tags=["old-tag"],
+            owner_client_id="c1",
+            owner_user_id="u1",
+        )
+        storage.put_memory(m)
+        updated = Memory(
+            memory_id=m.memory_id,
+            key="shift",
+            value="v2",
+            tags=["new-tag"],
+            owner_client_id="c1",
+            owner_user_id="u1",
+        )
+        storage.put_memory(updated)
+        # old tag must be gone
+        old_mems, _ = storage.list_memories_by_tag("old-tag", owner_user_id="u1")
+        assert old_mems == []
+        # new tag must be present
+        new_mems, _ = storage.list_memories_by_tag("new-tag", owner_user_id="u1")
+        assert len(new_mems) == 1 and new_mems[0].key == "shift"
+
+    def test_list_memories_by_tag_no_owner_user_id_still_uses_gsi(self, storage):
+        """When owner_user_id is absent, the GSI path is used (no ConsistentRead)."""
+        storage.put_memory(Memory(key="gsi-mem", value="v", tags=["probe"], owner_client_id="c1"))
+        # Must still return the memory via the GSI path
+        mems, _ = storage.list_memories_by_tag("probe")
+        assert [m.key for m in mems] == ["gsi-mem"]
+
+    def test_list_memories_by_tag_cursor_routing(self, storage):
+        """USERTAG cursor continues on consistent path; GSI cursor falls back to GSI."""
+        import base64
+        import json
+        from unittest.mock import patch
+
+        storage.put_memory(
+            Memory(key="paged", value="v", tags=["page"], owner_client_id="c1", owner_user_id="u1")
+        )
+
+        # Build a valid USERTAG cursor (PK=USERTAG#...) — should stay on consistent path
+        usertag_lek = {"PK": "USERTAG#u1", "SK": "TAG#page#MEMORY#no-such-id"}
+        usertag_cursor = base64.urlsafe_b64encode(json.dumps(usertag_lek).encode()).decode()
+
+        # Build a valid GSI cursor (GSI2PK=TAG#...) — should fall to GSI path
+        gsi_lek = {
+            "PK": "MEMORY#no-such-id",
+            "SK": "TAG#page",
+            "GSI2PK": "TAG#page",
+            "GSI2SK": "no-such-id",
+        }
+        gsi_cursor = base64.urlsafe_b64encode(json.dumps(gsi_lek).encode()).decode()
+
+        with patch.object(
+            storage,
+            "_list_memories_by_tag_consistent",
+            wraps=storage._list_memories_by_tag_consistent,
+        ) as mock_consistent:
+            # no cursor + owner_user_id → consistent path (call #1)
+            storage.list_memories_by_tag("page", owner_user_id="u1")
+            assert mock_consistent.call_count == 1
+
+            # USERTAG cursor + owner_user_id → consistent path continues (call #2)
+            storage.list_memories_by_tag("page", owner_user_id="u1", cursor=usertag_cursor)
+            assert mock_consistent.call_count == 2
+
+            # GSI cursor + owner_user_id → GSI path, consistent NOT called again
+            storage.list_memories_by_tag("page", owner_user_id="u1", cursor=gsi_cursor)
+            assert mock_consistent.call_count == 2
+
+    def test_put_memory_without_owner_user_id_writes_no_usertag_items(self, storage):
+        """Memories without owner_user_id must not write any USERTAG items."""
+        import boto3
+        from boto3.dynamodb.conditions import Key as DKey
+
+        m = Memory(key="anon", value="v", tags=["t"], owner_client_id="c1")
+        storage.put_memory(m)
+
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.Table("hive-test")
+        # There should be no USERTAG# items at all — owner_user_id was absent
+        resp = table.query(
+            KeyConditionExpression=DKey("PK").eq("USERTAG#None"),
+        )
+        assert resp["Count"] == 0
+
     def test_invalid_cursor_raises(self, storage):
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
             storage.list_all_memories(cursor="not-valid-base64!!!")
