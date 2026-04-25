@@ -122,6 +122,15 @@ def _decode_cursor(cursor: str) -> dict[str, Any]:
         raise ValueError(f"Invalid pagination cursor: {cursor!r}") from exc
 
 
+def _is_usertag_cursor(decoded: dict[str, Any]) -> bool:
+    """Return True when the decoded cursor belongs to the USERTAG consistent path.
+
+    USERTAG LastEvaluatedKeys have PK=USERTAG#{user_id}, making them naturally
+    distinguishable from TagIndex GSI cursors which carry GSI2PK/GSI2SK fields.
+    """
+    return str(decoded.get("PK", "")).startswith("USERTAG#")
+
+
 class HiveStorage:
     """All DynamoDB read/write operations for Hive."""
 
@@ -202,6 +211,10 @@ class HiveStorage:
             self.save_memory_version(old)
 
         meta_item = memory.to_dynamo_meta()
+        tag_items = memory.to_dynamo_tag_items()
+        user_tag_items = (
+            memory.to_dynamo_user_tag_items(memory.owner_user_id) if memory.owner_user_id else []
+        )
         try:
             if expected_version is not None:
                 # Conditional put on the META item to close the TOCTOU window
@@ -213,13 +226,17 @@ class HiveStorage:
                     ConditionExpression=Attr("updated_at").eq(expected_version),
                 )
                 with self.table.batch_writer() as batch:
-                    for tag_item in memory.to_dynamo_tag_items():
+                    for tag_item in tag_items:
                         batch.put_item(Item=tag_item)
+                    for user_tag_item in user_tag_items:
+                        batch.put_item(Item=user_tag_item)
             else:
                 with self.table.batch_writer() as batch:
                     batch.put_item(Item=meta_item)
-                    for tag_item in memory.to_dynamo_tag_items():
+                    for tag_item in tag_items:
                         batch.put_item(Item=tag_item)
+                    for user_tag_item in user_tag_items:
+                        batch.put_item(Item=user_tag_item)
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
             msg = exc.response["Error"]["Message"]
@@ -444,16 +461,32 @@ class HiveStorage:
         owner_user_id: str | None = None,
         workspace_id: str | None = None,
     ) -> tuple[list[Memory], str | None]:
-        """Query TagIndex GSI to find memories with a given tag.
+        """Query for memories with a given tag.
 
-        ``owner_user_id`` and ``workspace_id`` are both optional scoping
-        filters — both are applied in-memory on the hydrated items. The
-        workspace_id path exists ahead of the migration (#490) so that
-        post-migration callers can scope by workspace while the
-        owner_user_id path keeps working for pre-cutover callers.
+        When ``owner_user_id`` is provided, the strongly-consistent USERTAG
+        path is used: items live on the base table
+        (PK=USERTAG#{user_id}, SK=TAG#{tag}#MEMORY#{id}) and support
+        ConsistentRead=True, giving read-your-writes guarantees (#568).
+        USERTAG cursors are detected by a ``PK`` starting with ``USERTAG#``
+        in the decoded key; subsequent pages continue on the consistent path.
+
+        When owner_user_id is absent (or the cursor belongs to the GSI path),
+        the TagIndex GSI is used (eventually consistent). The ``workspace_id``
+        filter is always applied in-memory on the hydrated results.
 
         Returns (memories, next_cursor). next_cursor is None when exhausted.
         """
+        if owner_user_id is not None:
+            decoded_cursor = _decode_cursor(cursor) if cursor else None
+            if decoded_cursor is None or _is_usertag_cursor(decoded_cursor):
+                return self._list_memories_by_tag_consistent(
+                    tag=tag,
+                    owner_user_id=owner_user_id,
+                    limit=limit,
+                    workspace_id=workspace_id,
+                    start_key=decoded_cursor,
+                )
+
         kwargs: dict[str, Any] = {
             "IndexName": "TagIndex",
             "KeyConditionExpression": Key("GSI2PK").eq(f"TAG#{tag}"),
@@ -469,6 +502,44 @@ class HiveStorage:
             if m is None:
                 continue
             if owner_user_id is not None and m.owner_user_id != owner_user_id:
+                continue
+            if workspace_id is not None and m.workspace_id != workspace_id:
+                continue
+            memories.append(m)
+
+        lek = resp.get("LastEvaluatedKey")
+        next_cursor = _encode_cursor(lek) if lek else None
+        return memories, next_cursor
+
+    def _list_memories_by_tag_consistent(
+        self,
+        tag: str,
+        owner_user_id: str,
+        limit: int = 100,
+        workspace_id: str | None = None,
+        start_key: dict[str, Any] | None = None,
+    ) -> tuple[list[Memory], str | None]:
+        """Strongly-consistent tag query via USERTAG base-table items.
+
+        Queries PK=USERTAG#{owner_user_id} with SK beginning with
+        TAG#{tag}#MEMORY# using ConsistentRead=True. Returns immediately
+        after the first write without waiting for GSI propagation (#568).
+        Supports full cursor-based pagination via DynamoDB LastEvaluatedKey.
+        """
+        kwargs: dict[str, Any] = {
+            "KeyConditionExpression": Key("PK").eq(f"USERTAG#{owner_user_id}")
+            & Key("SK").begins_with(f"TAG#{tag}#MEMORY#"),
+            "ConsistentRead": True,
+            "Limit": limit,
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+
+        resp = self.table.query(**kwargs)
+        memories: list[Memory] = []
+        for item in resp.get("Items", []):
+            m = self.get_memory_by_id(item["memory_id"])
+            if m is None:
                 continue
             if workspace_id is not None and m.workspace_id != workspace_id:
                 continue
@@ -1542,3 +1613,10 @@ class HiveStorage:
         with self.table.batch_writer() as batch:
             for tag in memory.tags:
                 batch.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": f"TAG#{tag}"})
+                if memory.owner_user_id:
+                    batch.delete_item(
+                        Key={
+                            "PK": f"USERTAG#{memory.owner_user_id}",
+                            "SK": f"TAG#{tag}#MEMORY#{memory.memory_id}",
+                        }
+                    )
