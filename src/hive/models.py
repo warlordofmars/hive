@@ -3,19 +3,25 @@
 Data models for Hive — shared persistent memory MCP server.
 
 DynamoDB single-table design:
-  Memory items:  PK=MEMORY#{memory_id}   SK=TAG#{tag}
-                 PK=MEMORY#{memory_id}   SK=META          (canonical item)
-  OAuth clients: PK=CLIENT#{client_id}   SK=META
-  Token items:   PK=TOKEN#{jti}          SK=META          (TTL enabled)
-  Activity log:  PK=LOG#{date}#{hour}     SK={timestamp}#{event_id}  (hour sharding)
-  User items:    PK=USER#{user_id}        SK=META
-  Mgmt state:    PK=MGMT_STATE#{state}    SK=META          (TTL enabled)
-  API key items: PK=APIKEY#{key_id}       SK=META
+  Memory items:     PK=MEMORY#{memory_id}   SK=TAG#{tag}
+                    PK=MEMORY#{memory_id}   SK=META          (canonical item)
+  OAuth clients:    PK=CLIENT#{client_id}   SK=META
+  Token items:      PK=TOKEN#{jti}          SK=META          (TTL enabled)
+  Activity log:     PK=LOG#{date}#{hour}    SK={timestamp}#{event_id}  (hour sharding)
+  User items:       PK=USER#{user_id}       SK=META
+  Workspace items:  PK=WORKSPACE#{ws_id}    SK=META
+                    PK=WORKSPACE#{ws_id}    SK=MEMBER#{user_id}
+  Invite items:     PK=INVITE#{invite_id}   SK=META          (TTL enabled)
+  Mgmt state:       PK=MGMT_STATE#{state}   SK=META          (TTL enabled)
+  API key items:    PK=APIKEY#{key_id}      SK=META
 
 GSIs:
-  TagIndex:       PK=tag, SK=memory_id    — for list_memories(tag)
-  ClientIdIndex:  PK=client_id            — for client lookups by client_id
-  UserEmailIndex: PK=EMAIL#{email}        — for user lookups by email
+  TagIndex:              PK=TAG#{tag}, SK=memory_id   — list_memories(tag)
+  ClientIndex:           PK=CLIENT#{client_id}        — client lookups
+  UserEmailIndex:        PK=EMAIL#{email}             — user lookups by email
+  WorkspaceMemberIndex:  PK=USER#{user_id},
+                         SK=WORKSPACE#{ws_id}         — list workspaces a user
+                                                        belongs to
 """
 
 from __future__ import annotations
@@ -58,6 +64,11 @@ class Memory(BaseModel):
     updated_at: datetime = Field(default_factory=_now_utc)
     owner_client_id: str  # which OAuth client owns this memory
     owner_user_id: str | None = None  # which user owns this memory (None for pre-migration items)
+    # Workspaces (#490): scoping unit that eventually replaces owner_user_id.
+    # None until the one-shot migration (scripts/migrate_workspaces.py) runs;
+    # keep owner_user_id populated in parallel through the transition so tool
+    # handlers (#493) and API (#492) can cut over without churn here.
+    workspace_id: str | None = None
     expires_at: datetime | None = None  # optional TTL; None means never expires
     recall_count: int = 0  # incremented on every successful recall
     last_accessed_at: datetime | None = None  # set on every successful recall
@@ -100,6 +111,8 @@ class Memory(BaseModel):
         }
         if self.owner_user_id is not None:
             item["owner_user_id"] = self.owner_user_id
+        if self.workspace_id is not None:
+            item["workspace_id"] = self.workspace_id
         if self.expires_at is not None:
             item["expires_at"] = self.expires_at.isoformat()
             item["ttl"] = int(self.expires_at.timestamp())
@@ -159,6 +172,7 @@ class Memory(BaseModel):
             updated_at=datetime.fromisoformat(item["updated_at"]),
             owner_client_id=item["owner_client_id"],
             owner_user_id=item.get("owner_user_id"),
+            workspace_id=item.get("workspace_id"),
             expires_at=expires_at,
             recall_count=int(item.get("recall_count", 0) or 0),
             last_accessed_at=last_accessed_at,
@@ -217,6 +231,10 @@ class OAuthClient(BaseModel):
     owner_user_id: str | None = (
         None  # which user registered this client (None for pre-migration items)
     )
+    # Workspaces (#490): each DCR registration binds to exactly one
+    # workspace. None until the migration runs — #491 tightens DCR so
+    # new registrations always carry a workspace_id.
+    workspace_id: str | None = None
 
     # ------------------------------------------------------------------
     # DynamoDB serialisation
@@ -242,6 +260,8 @@ class OAuthClient(BaseModel):
         }
         if self.owner_user_id is not None:
             item["owner_user_id"] = self.owner_user_id
+        if self.workspace_id is not None:
+            item["workspace_id"] = self.workspace_id
         return item
 
     @classmethod
@@ -258,6 +278,7 @@ class OAuthClient(BaseModel):
             token_endpoint_auth_method=item.get("token_endpoint_auth_method", "none"),
             created_at=datetime.fromisoformat(item["created_at"]),
             owner_user_id=item.get("owner_user_id"),
+            workspace_id=item.get("workspace_id"),
         )
 
 
@@ -356,6 +377,144 @@ class User(BaseModel):
             memory_limit=item.get("memory_limit"),
             storage_bytes_limit=item.get("storage_bytes_limit"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Workspaces (#482, #490) — tenancy root for memory sharing
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceRole(str, Enum):
+    """Membership roles inside a workspace.
+
+    `guest` (read-only) was cut from v1 per the #482 design review —
+    ship `owner` / `admin` / `member` and revisit once there is demand.
+    """
+
+    owner = "owner"
+    admin = "admin"
+    member = "member"
+
+
+class Workspace(BaseModel):
+    """A tenancy root that owns memories, OAuth clients, and members."""
+
+    workspace_id: str = Field(default_factory=_new_id)
+    name: str  # per-user unique display name; routing still uses workspace_id
+    owner_user_id: str
+    created_at: datetime = Field(default_factory=_now_utc)
+    # Personal workspaces are auto-created on signup and cannot be deleted
+    # without deleting the account. Shared workspaces require an explicit
+    # create action and have N >= 1 members.
+    is_personal: bool = False
+    description: str | None = None
+
+    def to_dynamo(self) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "PK": f"WORKSPACE#{self.workspace_id}",
+            "SK": "META",
+            "workspace_id": self.workspace_id,
+            "name": self.name,
+            "owner_user_id": self.owner_user_id,
+            "created_at": self.created_at.isoformat(),
+            "is_personal": self.is_personal,
+        }
+        if self.description is not None:
+            item["description"] = self.description
+        return item
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> Workspace:
+        return cls(
+            workspace_id=item["workspace_id"],
+            name=item["name"],
+            owner_user_id=item["owner_user_id"],
+            created_at=datetime.fromisoformat(item["created_at"]),
+            is_personal=bool(item.get("is_personal", False)),
+            description=item.get("description"),
+        )
+
+
+class WorkspaceMember(BaseModel):
+    """A (user, workspace, role) binding.
+
+    Stored under the workspace partition (``PK=WORKSPACE#{ws}, SK=MEMBER#{user}``)
+    so members of a workspace can be queried with a single partition query.
+    A GSI on ``USER#{user_id}`` → ``WORKSPACE#{ws_id}`` (``WorkspaceMemberIndex``)
+    inverts that for "list all workspaces a user belongs to".
+    """
+
+    workspace_id: str
+    user_id: str
+    role: WorkspaceRole = WorkspaceRole.member
+    joined_at: datetime = Field(default_factory=_now_utc)
+
+    def to_dynamo(self) -> dict[str, Any]:
+        return {
+            "PK": f"WORKSPACE#{self.workspace_id}",
+            "SK": f"MEMBER#{self.user_id}",
+            "workspace_id": self.workspace_id,
+            "user_id": self.user_id,
+            "role": self.role.value,
+            "joined_at": self.joined_at.isoformat(),
+            # GSI: list workspaces a user belongs to
+            "GSI5PK": f"USER#{self.user_id}",
+            "GSI5SK": f"WORKSPACE#{self.workspace_id}",
+        }
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> WorkspaceMember:
+        return cls(
+            workspace_id=item["workspace_id"],
+            user_id=item["user_id"],
+            role=WorkspaceRole(item["role"]),
+            joined_at=datetime.fromisoformat(item["joined_at"]),
+        )
+
+
+class Invite(BaseModel):
+    """A pending invitation for a user to join a workspace.
+
+    Expires via DynamoDB TTL — unaccepted invites disappear on their own.
+    """
+
+    invite_id: str = Field(default_factory=_new_id)
+    workspace_id: str
+    email: str
+    role: WorkspaceRole = WorkspaceRole.member
+    invited_by_user_id: str
+    created_at: datetime = Field(default_factory=_now_utc)
+    expires_at: datetime
+
+    def to_dynamo(self) -> dict[str, Any]:
+        return {
+            "PK": f"INVITE#{self.invite_id}",
+            "SK": "META",
+            "invite_id": self.invite_id,
+            "workspace_id": self.workspace_id,
+            "email": self.email,
+            "role": self.role.value,
+            "invited_by_user_id": self.invited_by_user_id,
+            "created_at": self.created_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+            "ttl": int(self.expires_at.timestamp()),
+        }
+
+    @classmethod
+    def from_dynamo(cls, item: dict[str, Any]) -> Invite:
+        return cls(
+            invite_id=item["invite_id"],
+            workspace_id=item["workspace_id"],
+            email=item["email"],
+            role=WorkspaceRole(item["role"]),
+            invited_by_user_id=item["invited_by_user_id"],
+            created_at=datetime.fromisoformat(item["created_at"]),
+            expires_at=datetime.fromisoformat(item["expires_at"]),
+        )
+
+    @property
+    def is_expired(self) -> bool:
+        return _now_utc() >= self.expires_at
 
 
 # ---------------------------------------------------------------------------

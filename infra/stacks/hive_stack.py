@@ -128,6 +128,18 @@ class HiveStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
+        # GSI 5 — WorkspaceMemberIndex: list workspaces a user belongs to.
+        # Key layout on workspace-member items:
+        #   GSI5PK = USER#{user_id}
+        #   GSI5SK = WORKSPACE#{workspace_id}
+        # Added in #490 as part of the workspaces tenancy model (#482).
+        table.add_global_secondary_index(
+            index_name="WorkspaceMemberIndex",
+            partition_key=dynamodb.Attribute(name="GSI5PK", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="GSI5SK", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
         # ----------------------------------------------------------------
         # SSM Parameters
         # ----------------------------------------------------------------

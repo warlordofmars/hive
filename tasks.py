@@ -505,6 +505,43 @@ def seed(ctx, env=None, token=None, reset=False):
     ctx.run(cmd, env=seed_env, pty=True)
 
 
+@task
+def migrate_workspaces(ctx, dry_run=False):
+    """Run the one-shot workspaces migration (#490).
+
+    Creates a `{email}'s Personal` workspace for every user, stamps every
+    memory and OAuth client with the workspace_id of its owner, and revokes
+    all outstanding tokens so callers re-auth with workspace-scoped tokens.
+
+    Idempotent — re-running skips users / rows that are already migrated.
+    Pass ``--dry-run`` to report counts without writing.
+
+        inv migrate-workspaces              # execute against AWS (uses env vars)
+        inv migrate-workspaces --dry-run    # report only, no writes
+
+    For local development against DynamoDB Local, set DYNAMODB_ENDPOINT
+    before running::
+
+        DYNAMODB_ENDPOINT=http://localhost:8000 inv migrate-workspaces
+    """
+    migrate_env = {
+        **os.environ,
+        "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
+        "HIVE_TABLE_NAME": os.environ.get("HIVE_TABLE_NAME", "hive"),
+        "AWS_DEFAULT_REGION": "us-east-1",
+    }
+    # Only inject DYNAMODB_ENDPOINT + dummy creds when targeting DynamoDB Local.
+    # Leaving them unset lets boto3 resolve real AWS credentials normally (profile,
+    # SSO, instance role, etc.) for production runs.
+    if "DYNAMODB_ENDPOINT" in os.environ:
+        migrate_env["DYNAMODB_ENDPOINT"] = os.environ["DYNAMODB_ENDPOINT"]
+        migrate_env.setdefault("AWS_ACCESS_KEY_ID", "local")
+        migrate_env.setdefault("AWS_SECRET_ACCESS_KEY", "local")
+    args = ["--dry-run"] if dry_run else []
+    cmd = "uv run python scripts/migrate_workspaces.py " + " ".join(args)
+    ctx.run(cmd, env=migrate_env, pty=True)
+
+
 # ── Bulk memory operations ────────────────────────────────────────────────────
 
 

@@ -569,6 +569,12 @@ jobs:
           VITE_GA_MEASUREMENT_ID: ${{ secrets.VITE_GA_MEASUREMENT_ID }}
         run: uv run inv deploy --env dev
 
+      - name: Run workspace migration (dev)
+        run: |
+          TABLE=$(aws cloudformation describe-stacks --stack-name HiveStack-dev --region us-east-1 \
+            --query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue" --output text)
+          HIVE_TABLE_NAME="$TABLE" uv run python scripts/migrate_workspaces.py
+
       - name: Export stack URLs
         id: urls
         run: |
@@ -813,6 +819,12 @@ jobs:
           APP_VERSION: ${{ needs.release.outputs.version }}
           VITE_GA_MEASUREMENT_ID: ${{ secrets.VITE_GA_MEASUREMENT_ID }}
         run: uv run inv deploy --env prod
+
+      - name: Run workspace migration (prod)
+        run: |
+          TABLE=$(aws cloudformation describe-stacks --stack-name HiveStack --region us-east-1 \
+            --query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue" --output text)
+          HIVE_TABLE_NAME="$TABLE" uv run python scripts/migrate_workspaces.py
 
       - name: Export stack URLs
         id: urls
