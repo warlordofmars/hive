@@ -4,9 +4,10 @@
 name: Synthetic Traffic
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
+  # Schedule disabled until prod release — re-enable once tokens are valid on prod.
+  # schedule:
+  #   - cron: "*/15 * * * *"
 
 permissions:
   contents: read
