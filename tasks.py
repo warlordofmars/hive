@@ -516,18 +516,26 @@ def migrate_workspaces(ctx, dry_run=False):
     Idempotent — re-running skips users / rows that are already migrated.
     Pass ``--dry-run`` to report counts without writing.
 
-        inv migrate-workspaces              # execute locally
-        inv migrate-workspaces --dry-run    # report only
+        inv migrate-workspaces              # execute against AWS (uses env vars)
+        inv migrate-workspaces --dry-run    # report only, no writes
+
+    For local development against DynamoDB Local, set DYNAMODB_ENDPOINT
+    before running::
+
+        DYNAMODB_ENDPOINT=http://localhost:8000 inv migrate-workspaces
     """
     migrate_env = {
         **os.environ,
         "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
         "HIVE_TABLE_NAME": os.environ.get("HIVE_TABLE_NAME", "hive"),
-        "DYNAMODB_ENDPOINT": os.environ.get("DYNAMODB_ENDPOINT", f"http://localhost:{DYNAMO_PORT}"),
         "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "local"),
         "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "local"),
         "AWS_DEFAULT_REGION": "us-east-1",
     }
+    # Only override DYNAMODB_ENDPOINT when explicitly set in the environment so
+    # production runs (where it should be unset) default to the AWS endpoint.
+    if "DYNAMODB_ENDPOINT" in os.environ:
+        migrate_env["DYNAMODB_ENDPOINT"] = os.environ["DYNAMODB_ENDPOINT"]
     args = ["--dry-run"] if dry_run else []
     cmd = "uv run python scripts/migrate_workspaces.py " + " ".join(args)
     ctx.run(cmd, env=migrate_env, pty=True)

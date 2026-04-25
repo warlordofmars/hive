@@ -24,12 +24,17 @@ table is safe:
 
 Usage:
 
-    uv run inv migrate-workspaces              # execute against HIVE_TABLE_NAME
-    uv run inv migrate-workspaces --dry-run    # report only, no writes
+Direct CLI (preferred for production — set ``HIVE_TABLE_NAME`` and the
+appropriate ``AWS_*`` environment variables before running):
 
-Direct CLI:
+    uv run python scripts/migrate_workspaces.py
+    uv run python scripts/migrate_workspaces.py --dry-run    # report only
 
-    uv run python scripts/migrate_workspaces.py [--dry-run]
+Via invoke task (targets DynamoDB Local by default; pass
+``DYNAMODB_ENDPOINT`` to override):
+
+    DYNAMODB_ENDPOINT=http://localhost:8000 uv run inv migrate-workspaces
+    DYNAMODB_ENDPOINT=http://localhost:8000 uv run inv migrate-workspaces --dry-run
 """
 
 from __future__ import annotations

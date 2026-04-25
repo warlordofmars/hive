@@ -24,7 +24,7 @@ if (typeof globalThis.localStorage?.removeItem !== "function") {
     configurable: true,
     writable: true,
     value: {
-      getItem: (k) => Object.prototype.hasOwnProperty.call(_store, k) ? _store[k] : null,
+      getItem: (k) => { const key = String(k); return Object.prototype.hasOwnProperty.call(_store, key) ? _store[key] : null; },
       setItem: (k, v) => { _store[String(k)] = String(v); },
       removeItem: (k) => { delete _store[String(k)]; },
       clear: () => { Object.keys(_store).forEach((k) => delete _store[k]); },
