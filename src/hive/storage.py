@@ -765,11 +765,17 @@ class HiveStorage:
         return Token.from_dynamo(item) if item else None
 
     def revoke_token(self, jti: str) -> None:
-        self.table.update_item(
-            Key={"PK": f"TOKEN#{jti}", "SK": "META"},
-            UpdateExpression="SET revoked = :t",
-            ExpressionAttributeValues={":t": True},
-        )
+        try:
+            self.table.update_item(
+                Key={"PK": f"TOKEN#{jti}", "SK": "META"},
+                UpdateExpression="SET revoked = :t",
+                ExpressionAttributeValues={":t": True},
+                ConditionExpression="attribute_exists(PK)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return  # token already expired/deleted — nothing to revoke
+            raise
 
     def revoke_all_tokens(self) -> int:
         """Mark every outstanding token as revoked.
@@ -1078,8 +1084,9 @@ class HiveStorage:
     def list_pending_invites_for_email(self, email: str) -> list[Invite]:
         """Return every non-expired invite targeting the given email.
 
-        Scans the INVITE# partition with a filter — acceptable volume for
-        the invite-accept flow (user logs in, we surface pending invites).
+        Scans the full table and filters to invite META items for the given
+        email — acceptable volume for the invite-accept flow (user logs in,
+        we surface pending invites).
         If invite volume grows we'd back this with a GSI.
         """
         scan_kwargs: dict[str, Any] = {

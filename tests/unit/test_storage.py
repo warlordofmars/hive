@@ -799,6 +799,20 @@ class TestTokenStorage:
         assert fetched is not None
         assert fetched.revoked
 
+    def test_revoke_token_silently_ignores_missing_token(self, storage):
+        """revoke_token must not upsert a phantom row when the token is gone."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        with patch.object(storage.table, "update_item", side_effect=error):
+            # Should not raise.
+            storage.revoke_token("nonexistent-jti")
+
 
 class TestAuthCodeAtomicRedemption:
     """#584 — OAuth authorization codes are single-use (RFC 6749 §10.5).
