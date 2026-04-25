@@ -1152,6 +1152,19 @@ class TestPagination:
         all_keys = {m.key for m in page1 + page2}
         assert all_keys == {f"pg-{i}" for i in range(5)}
 
+    def test_list_memories_by_tag_skips_when_meta_deleted(self, storage):
+        """A tag GSI entry whose META was removed mid-flight is skipped, not raised.
+
+        The tag index is updated in a best-effort batch alongside the META, so
+        a torn delete (META gone, TAG still present) can surface to the query.
+        """
+        m = Memory(key="k1", value="v", owner_client_id="c1", tags=["torn"])
+        storage.put_memory(m)
+        # Delete just the META, leaving the TAG item behind.
+        storage.table.delete_item(Key={"PK": f"MEMORY#{m.memory_id}", "SK": "META"})
+        result, _ = storage.list_memories_by_tag("torn")
+        assert result == []
+
     def test_list_memories_by_tag_cursor(self, storage):
         for i in range(4):
             storage.put_memory(
