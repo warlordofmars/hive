@@ -213,6 +213,23 @@ class TestMemoryMigration:
         assert stats.memories_skipped == 1
         assert storage.get_memory_by_id(mem.memory_id).workspace_id is None
 
+    def test_skips_memory_that_disappears_mid_migration(self, storage):
+        """ConditionalCheckFailedException during update_item is treated as a skip."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        alice = _seed_user(storage)
+        _seed_memory(storage, owner_user_id=alice.user_id, key="vanishing")
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        with patch.object(storage.table, "update_item", side_effect=error):
+            stats = run(storage=storage)
+        assert stats.memories_skipped == 1
+        assert stats.memories_migrated == 0
+
 
 class TestClientMigration:
     def test_stamps_workspace_id_on_each_client(self, storage):
@@ -244,6 +261,23 @@ class TestClientMigration:
         stats = run(storage=storage)
         assert stats.clients_skipped == 1
         assert storage.get_client(client.client_id).workspace_id is None
+
+    def test_skips_client_that_disappears_mid_migration(self, storage):
+        """ConditionalCheckFailedException during update_item is treated as a skip."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        alice = _seed_user(storage)
+        _seed_client(storage, owner_user_id=alice.user_id)
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        with patch.object(storage.table, "update_item", side_effect=error):
+            stats = run(storage=storage)
+        assert stats.clients_skipped == 1
+        assert stats.clients_migrated == 0
 
 
 class TestTokenRevocation:

@@ -1824,6 +1824,17 @@ class TestWorkspaceStorage:
     def test_delete_nonexistent_returns_false(self, storage):
         assert storage.delete_workspace("no-such-ws") is False
 
+    def test_delete_cleans_up_orphaned_members_when_meta_absent(self, storage):
+        """MEMBER rows are deleted even when META is already gone (prevents orphaned GSI entries)."""
+        ws_id = "ghost-ws"
+        # Add member rows directly without a META item.
+        storage.add_workspace_member(ws_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(ws_id, "u2", WorkspaceRole.member)
+        # META is absent → should return False but still clean up members.
+        result = storage.delete_workspace(ws_id)
+        assert result is False
+        assert storage.list_workspace_members(ws_id) == []
+
     def test_personal_flag_roundtrips(self, storage):
         ws = Workspace(name="Me Personal", owner_user_id="u1", is_personal=True)
         storage.put_workspace(ws)

@@ -932,22 +932,22 @@ class HiveStorage:
         """Delete the workspace META item and every MEMBER item under it.
 
         Returns True when the META item existed, False when it was already
-        absent. Member items are deleted unconditionally — orphan members
-        under a deleted workspace would still surface through the
-        ``WorkspaceMemberIndex`` lookup and confuse the per-user list.
+        absent. Member items are deleted unconditionally even when META is
+        absent — orphan members under a deleted workspace would still surface
+        through the ``WorkspaceMemberIndex`` GSI and confuse per-user lists.
         """
-        resp = self.table.get_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"})
-        if not resp.get("Item"):
-            return False
-        # Delete every MEMBER#{user_id} item in the partition, then the META.
+        meta_resp = self.table.get_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"})
+        meta_existed = bool(meta_resp.get("Item"))
+        # Always clean up MEMBER rows to prevent orphaned WorkspaceMemberIndex entries.
         members = self.list_workspace_members(workspace_id)
         with self.table.batch_writer() as batch:
             for m in members:
                 batch.delete_item(
                     Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{m.user_id}"}
                 )
-            batch.delete_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"})
-        return True
+            if meta_existed:
+                batch.delete_item(Key={"PK": f"WORKSPACE#{workspace_id}", "SK": "META"})
+        return meta_existed
 
     def rename_workspace(self, workspace_id: str, name: str) -> bool:
         """Update a workspace's display name. Returns False if missing."""

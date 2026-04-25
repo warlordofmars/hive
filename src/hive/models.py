@@ -17,7 +17,7 @@ DynamoDB single-table design:
 
 GSIs:
   TagIndex:              PK=TAG#{tag}, SK=memory_id   — list_memories(tag)
-  ClientIdIndex:         PK=CLIENT#{client_id}        — client lookups
+  ClientIndex:           PK=CLIENT#{client_id}        — client lookups
   UserEmailIndex:        PK=EMAIL#{email}             — user lookups by email
   WorkspaceMemberIndex:  PK=USER#{user_id},
                          SK=WORKSPACE#{ws_id}         — list workspaces a user

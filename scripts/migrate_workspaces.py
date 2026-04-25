@@ -26,7 +26,6 @@ Usage:
 
     uv run inv migrate-workspaces              # execute against HIVE_TABLE_NAME
     uv run inv migrate-workspaces --dry-run    # report only, no writes
-    uv run inv migrate-workspaces --env jc     # migrate a specific env stack
 
 Direct CLI:
 
@@ -40,6 +39,8 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+
+from botocore.exceptions import ClientError
 
 from hive.logging_config import get_logger
 from hive.models import Workspace, WorkspaceRole
@@ -176,11 +177,22 @@ def migrate_memories(
         if dry_run:
             stats.memories_migrated += 1
             continue
-        storage.table.update_item(
-            Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"},
-            UpdateExpression="SET workspace_id = :wsid",
-            ExpressionAttributeValues={":wsid": workspace_id},
-        )
+        try:
+            storage.table.update_item(
+                Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"},
+                UpdateExpression="SET workspace_id = :wsid",
+                ExpressionAttributeValues={":wsid": workspace_id},
+                ConditionExpression="attribute_exists(PK) AND attribute_exists(SK)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                stats.memories_skipped += 1
+                logger.warning(
+                    "Memory disappeared during migration; skipping workspace stamp",
+                    extra={"memory_id": memory.memory_id},
+                )
+                continue
+            raise
         stats.memories_migrated += 1
 
 
@@ -221,11 +233,22 @@ def migrate_clients(
             if dry_run:
                 stats.clients_migrated += 1
                 continue
-            storage.table.update_item(
-                Key={"PK": f"CLIENT#{client.client_id}", "SK": "META"},
-                UpdateExpression="SET workspace_id = :wsid",
-                ExpressionAttributeValues={":wsid": workspace_id},
-            )
+            try:
+                storage.table.update_item(
+                    Key={"PK": f"CLIENT#{client.client_id}", "SK": "META"},
+                    UpdateExpression="SET workspace_id = :wsid",
+                    ExpressionAttributeValues={":wsid": workspace_id},
+                    ConditionExpression="attribute_exists(PK) AND attribute_exists(SK)",
+                )
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    stats.clients_skipped += 1
+                    logger.warning(
+                        "Client disappeared during migration; skipping workspace stamp",
+                        extra={"client_id": client.client_id},
+                    )
+                    continue
+                raise
             stats.clients_migrated += 1
         if cursor is None:
             break
