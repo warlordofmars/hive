@@ -813,6 +813,22 @@ class TestTokenStorage:
             # Should not raise.
             storage.revoke_token("nonexistent-jti")
 
+    def test_revoke_token_reraises_unexpected_client_error(self, storage):
+        """Non-ConditionalCheck ClientErrors must propagate."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.revoke_token("some-jti")
+
 
 class TestAuthCodeAtomicRedemption:
     """#584 — OAuth authorization codes are single-use (RFC 6749 §10.5).
