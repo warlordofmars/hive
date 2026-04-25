@@ -84,7 +84,9 @@ def _personal_workspace_name(email: str) -> str:
     return f"{email}'s Personal"
 
 
-def _find_personal_workspace(storage: HiveStorage, user_id: str) -> Workspace | None:
+def _find_personal_workspace(
+    storage: HiveStorage, user_id: str, *, dry_run: bool = False
+) -> Workspace | None:
     """Return the user's Personal workspace, or None if they have none yet.
 
     Checks via WorkspaceMemberIndex first (fast path). Falls back to a
@@ -92,8 +94,9 @@ def _find_personal_workspace(storage: HiveStorage, user_id: str) -> Workspace | 
     from a prior partial run where the META row was written but the MEMBER
     row was not — which would cause ``list_workspaces_for_user`` (GSI-backed)
     to return nothing, making a naïve re-run create a duplicate workspace.
-    When the slow-path scan finds an orphaned META, the MEMBER row is
-    repaired in place so subsequent lookups work correctly.
+    When the slow-path scan finds an orphaned META and ``dry_run`` is False,
+    the MEMBER row is repaired in place so subsequent lookups work correctly.
+    In dry-run mode the repair is skipped so no writes occur.
     """
     for ws in storage.list_workspaces_for_user(user_id):
         if ws.is_personal and ws.owner_user_id == user_id:
@@ -114,12 +117,13 @@ def _find_personal_workspace(storage: HiveStorage, user_id: str) -> Workspace | 
         for item in resp.get("Items", []):
             ws = Workspace.from_dynamo(item)
             if ws.is_personal:
-                # Repair the missing MEMBER row so GSI lookups work going forward.
-                storage.add_workspace_member(
-                    workspace_id=ws.workspace_id,
-                    user_id=user_id,
-                    role=WorkspaceRole.owner,
-                )
+                if not dry_run:
+                    # Repair the missing MEMBER row so GSI lookups work going forward.
+                    storage.add_workspace_member(
+                        workspace_id=ws.workspace_id,
+                        user_id=user_id,
+                        role=WorkspaceRole.owner,
+                    )
                 return ws
         lek = resp.get("LastEvaluatedKey")
         if lek is None:
@@ -152,7 +156,7 @@ def migrate_users(
     user_to_workspace: dict[str, str] = {}
     for user in _iter_all_users(storage):
         stats.users_seen += 1
-        existing = _find_personal_workspace(storage, user.user_id)
+        existing = _find_personal_workspace(storage, user.user_id, dry_run=dry_run)
         if existing is not None:
             stats.workspaces_skipped += 1
             user_to_workspace[user.user_id] = existing.workspace_id

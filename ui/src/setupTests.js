@@ -17,14 +17,21 @@ globalThis.HTMLElement.prototype.scrollIntoView = function () {};
 // Storage method don't throw on Node v22+.
 if (typeof globalThis.localStorage?.removeItem !== "function") {
   const _store = Object.create(null);
-  globalThis.localStorage = {
-    getItem: (k) => Object.prototype.hasOwnProperty.call(_store, k) ? _store[k] : null,
-    setItem: (k, v) => { _store[String(k)] = String(v); },
-    removeItem: (k) => { delete _store[String(k)]; },
-    clear: () => { Object.keys(_store).forEach((k) => delete _store[k]); },
-    get length() { return Object.keys(_store).length; },
-    key: (i) => Object.keys(_store)[i] ?? null,
-  };
+  // Use Object.defineProperty so the override works even if the Node.js
+  // built-in exposes localStorage as a read-only accessor, and so the
+  // replacement persists across tests (vi.stubGlobal restores between tests).
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: {
+      getItem: (k) => Object.prototype.hasOwnProperty.call(_store, k) ? _store[k] : null,
+      setItem: (k, v) => { _store[String(k)] = String(v); },
+      removeItem: (k) => { delete _store[String(k)]; },
+      clear: () => { Object.keys(_store).forEach((k) => delete _store[k]); },
+      get length() { return Object.keys(_store).length; },
+      key: (i) => Object.keys(_store)[i] ?? null,
+    },
+  });
 }
 
 // useTheme reads `matchMedia("(prefers-color-scheme: dark)")` on first render.

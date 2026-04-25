@@ -335,6 +335,24 @@ class TestDryRun:
         assert stats.tokens_revoked == 0
         assert storage.get_token(token.jti).revoked is False
 
+    def test_dry_run_does_not_repair_orphaned_member_row(self, storage):
+        """dry_run must not write the MEMBER row even when repairing a partial prior run."""
+        alice = _seed_user(storage)
+        partial_ws = Workspace(
+            name="alice@example.com's Personal",
+            owner_user_id=alice.user_id,
+            is_personal=True,
+        )
+        storage.put_workspace(partial_ws)
+        # MEMBER row intentionally absent.
+        assert storage.list_workspaces_for_user(alice.user_id) == []
+
+        stats = run(storage=storage, dry_run=True)
+        assert stats.workspaces_skipped == 1
+        assert stats.workspaces_created == 0
+        # Dry-run must leave the MEMBER row absent.
+        assert storage.list_workspaces_for_user(alice.user_id) == []
+
 
 class TestCli:
     def test_main_runs_without_args(self, storage, capsys, monkeypatch):
