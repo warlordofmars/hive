@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from hive.models import (
     AuthorizationCode,
     Invite,
@@ -56,6 +58,38 @@ class TestMemory:
     def test_no_tags_produces_no_tag_items(self):
         m = Memory(key="k", value="v", owner_client_id="c1")
         assert m.to_dynamo_tag_items() == []
+
+    def test_to_dynamo_user_tag_items(self):
+        m = Memory(
+            key="foo",
+            value="bar",
+            tags=["alpha", "beta"],
+            owner_client_id="c1",
+            owner_user_id="user-1",
+        )
+        items = m.to_dynamo_user_tag_items()
+        assert len(items) == 2
+        pks = {item["PK"] for item in items}
+        assert pks == {"USERTAG#user-1"}
+        sks = {item["SK"] for item in items}
+        assert sks == {
+            f"TAG#alpha#MEMORY#{m.memory_id}",
+            f"TAG#beta#MEMORY#{m.memory_id}",
+        }
+        for item in items:
+            assert item["memory_id"] == m.memory_id
+            assert item["key"] == "foo"
+            assert item["owner_client_id"] == "c1"
+            assert item["owner_user_id"] == "user-1"
+
+    def test_to_dynamo_user_tag_items_no_tags(self):
+        m = Memory(key="k", value="v", owner_client_id="c1", owner_user_id="user-1")
+        assert m.to_dynamo_user_tag_items() == []
+
+    def test_to_dynamo_user_tag_items_raises_without_owner_user_id(self):
+        m = Memory(key="k", value="v", tags=["t"], owner_client_id="c1")
+        with pytest.raises(ValueError, match="owner_user_id required"):
+            m.to_dynamo_user_tag_items()
 
     def test_default_value_type_is_text(self):
         # #497: existing memories stay "text" with no pointer

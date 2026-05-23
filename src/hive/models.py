@@ -150,6 +150,30 @@ class Memory(BaseModel):
             )
         return items
 
+    def to_dynamo_user_tag_items(self) -> list[dict[str, Any]]:
+        """One USERTAG item per tag for strongly-consistent owner-scoped tag queries.
+
+        These items live on the base table (PK=USERTAG#{user_id},
+        SK=TAG#{tag}#MEMORY#{memory_id}) and can be queried with
+        ConsistentRead=True, eliminating the TagIndex GSI propagation lag
+        that causes read-your-writes failures (#568).
+        """
+        if self.owner_user_id is None:
+            raise ValueError("owner_user_id required to build USERTAG items")
+        items = []
+        for tag in self.tags:
+            items.append(
+                {
+                    "PK": f"USERTAG#{self.owner_user_id}",
+                    "SK": f"TAG#{tag}#MEMORY#{self.memory_id}",
+                    "memory_id": self.memory_id,
+                    "key": self.key,
+                    "owner_client_id": self.owner_client_id,
+                    "owner_user_id": self.owner_user_id,
+                }
+            )
+        return items
+
     @classmethod
     def from_dynamo(cls, item: dict[str, Any]) -> Memory:
         expires_at = None

@@ -385,6 +385,17 @@ class TestMemories:
         assert "tagged" in keys
         assert "untagged" not in keys
 
+    def test_list_with_invalid_cursor_returns_400(self, client):
+        """Bad pagination cursors must surface as 400, not 500."""
+        tc, *_ = client
+        # Non-base64 garbage triggers _decode_cursor's ValueError
+        resp = tc.get("/api/memories", params={"cursor": "not-valid-base64!!!"})
+        assert resp.status_code == 400
+        assert "cursor" in resp.json()["detail"].lower()
+        # Same path on the tag-filter branch
+        resp = tc.get("/api/memories", params={"tag": "t", "cursor": "not-valid-base64!!!"})
+        assert resp.status_code == 400
+
     def test_get_by_id(self, client):
         tc, *_ = client
         mid = tc.post("/api/memories", json={"key": "gid", "value": "v"}).json()["memory_id"]
