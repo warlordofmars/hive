@@ -93,14 +93,17 @@ async def list_memories(
             next_cursor=None,
         )
 
-    if tag:
-        items, next_cursor = storage.list_memories_by_tag(
-            tag, limit=limit, cursor=cursor, owner_user_id=owner_user_id
-        )
-    else:
-        items, next_cursor = storage.list_all_memories(
-            owner_user_id=owner_user_id, limit=limit, cursor=cursor
-        )
+    try:
+        if tag:
+            items, next_cursor = storage.list_memories_by_tag(
+                tag, limit=limit, cursor=cursor, owner_user_id=owner_user_id
+            )
+        else:
+            items, next_cursor = storage.list_all_memories(
+                owner_user_id=owner_user_id, limit=limit, cursor=cursor
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return PagedResponse(
         items=[MemoryResponse.from_memory(m).model_dump() for m in items],
         count=len(items),

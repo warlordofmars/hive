@@ -117,9 +117,12 @@ def _encode_cursor(last_evaluated_key: dict[str, Any]) -> str:
 def _decode_cursor(cursor: str) -> dict[str, Any]:
     """Decode a base64 cursor back to a DynamoDB ExclusiveStartKey."""
     try:
-        return json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        decoded = json.loads(base64.urlsafe_b64decode(cursor.encode()))
     except Exception as exc:
-        raise ValueError(f"Invalid pagination cursor: {cursor!r}") from exc
+        raise ValueError("Invalid pagination cursor") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("Invalid pagination cursor")
+    return decoded
 
 
 def _is_usertag_cursor(decoded: dict[str, Any]) -> bool:
@@ -531,7 +534,7 @@ class HiveStorage:
             if start_key.get("PK") != expected_pk or not (
                 isinstance(sk, str) and sk.startswith(expected_sk_prefix)
             ):
-                raise ValueError("Invalid pagination cursor for this query")
+                raise ValueError("Invalid pagination cursor")
 
         kwargs: dict[str, Any] = {
             "KeyConditionExpression": Key("PK").eq(expected_pk)

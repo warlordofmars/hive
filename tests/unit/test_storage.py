@@ -1598,6 +1598,19 @@ class TestPagination:
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
             storage.list_all_memories(cursor="not-valid-base64!!!")
 
+    def test_non_dict_cursor_raises(self, storage):
+        """A base64 cursor that decodes to a non-dict JSON value (e.g. a list) must raise."""
+        import base64
+        import json
+
+        non_dict_cursor = base64.urlsafe_b64encode(json.dumps(["not", "a", "dict"]).encode()).decode()
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_all_memories(cursor=non_dict_cursor)
+
+        string_cursor = base64.urlsafe_b64encode(json.dumps("just-a-string").encode()).decode()
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_memories_by_tag("t", owner_user_id="u1", cursor=string_cursor)
+
     def test_list_all_memories_follows_scan_pages(self, storage):
         """Covers the scan-loop continuation path when DynamoDB returns LastEvaluatedKey."""
         from unittest.mock import patch
