@@ -1603,7 +1603,9 @@ class TestPagination:
         import base64
         import json
 
-        non_dict_cursor = base64.urlsafe_b64encode(json.dumps(["not", "a", "dict"]).encode()).decode()
+        non_dict_cursor = base64.urlsafe_b64encode(
+            json.dumps(["not", "a", "dict"]).encode()
+        ).decode()
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
             storage.list_all_memories(cursor=non_dict_cursor)
 
