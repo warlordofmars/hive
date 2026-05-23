@@ -212,9 +212,7 @@ class HiveStorage:
 
         meta_item = memory.to_dynamo_meta()
         tag_items = memory.to_dynamo_tag_items()
-        user_tag_items = (
-            memory.to_dynamo_user_tag_items(memory.owner_user_id) if memory.owner_user_id else []
-        )
+        user_tag_items = memory.to_dynamo_user_tag_items() if memory.owner_user_id else []
         try:
             if expected_version is not None:
                 # Conditional put on the META item to close the TOCTOU window
@@ -526,9 +524,18 @@ class HiveStorage:
         after the first write without waiting for GSI propagation (#568).
         Supports full cursor-based pagination via DynamoDB LastEvaluatedKey.
         """
+        expected_pk = f"USERTAG#{owner_user_id}"
+        expected_sk_prefix = f"TAG#{tag}#MEMORY#"
+        if start_key is not None:
+            sk = start_key.get("SK", "")
+            if start_key.get("PK") != expected_pk or not (
+                isinstance(sk, str) and sk.startswith(expected_sk_prefix)
+            ):
+                raise ValueError("Invalid pagination cursor for this query")
+
         kwargs: dict[str, Any] = {
-            "KeyConditionExpression": Key("PK").eq(f"USERTAG#{owner_user_id}")
-            & Key("SK").begins_with(f"TAG#{tag}#MEMORY#"),
+            "KeyConditionExpression": Key("PK").eq(expected_pk)
+            & Key("SK").begins_with(expected_sk_prefix),
             "ConsistentRead": True,
             "Limit": limit,
         }
@@ -540,6 +547,10 @@ class HiveStorage:
         for item in resp.get("Items", []):
             m = self.get_memory_by_id(item["memory_id"])
             if m is None:
+                continue
+            # Defence-in-depth: META owner must still match — guards against
+            # stale/corrupt USERTAG items pointing at a re-owned memory.
+            if m.owner_user_id != owner_user_id:
                 continue
             if workspace_id is not None and m.workspace_id != workspace_id:
                 continue

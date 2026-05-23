@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from hive.models import (
     AuthorizationCode,
     Invite,
@@ -65,7 +67,7 @@ class TestMemory:
             owner_client_id="c1",
             owner_user_id="user-1",
         )
-        items = m.to_dynamo_user_tag_items("user-1")
+        items = m.to_dynamo_user_tag_items()
         assert len(items) == 2
         pks = {item["PK"] for item in items}
         assert pks == {"USERTAG#user-1"}
@@ -82,7 +84,12 @@ class TestMemory:
 
     def test_to_dynamo_user_tag_items_no_tags(self):
         m = Memory(key="k", value="v", owner_client_id="c1", owner_user_id="user-1")
-        assert m.to_dynamo_user_tag_items("user-1") == []
+        assert m.to_dynamo_user_tag_items() == []
+
+    def test_to_dynamo_user_tag_items_raises_without_owner_user_id(self):
+        m = Memory(key="k", value="v", tags=["t"], owner_client_id="c1")
+        with pytest.raises(ValueError, match="owner_user_id required"):
+            m.to_dynamo_user_tag_items()
 
     def test_default_value_type_is_text(self):
         # #497: existing memories stay "text" with no pointer

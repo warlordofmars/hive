@@ -1395,19 +1395,72 @@ class TestPagination:
             storage.list_memories_by_tag("page", owner_user_id="u1", cursor=gsi_cursor)
             assert mock_consistent.call_count == 2
 
+    def test_consistent_path_rejects_cursor_for_different_owner(self, storage):
+        """A USERTAG cursor whose PK belongs to a different owner must be rejected."""
+        import base64
+        import json
+
+        storage.put_memory(
+            Memory(key="m", value="v", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        )
+        forged_lek = {"PK": "USERTAG#u2", "SK": "TAG#t#MEMORY#anything"}
+        forged_cursor = base64.urlsafe_b64encode(json.dumps(forged_lek).encode()).decode()
+
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_memories_by_tag("t", owner_user_id="u1", cursor=forged_cursor)
+
+    def test_consistent_path_rejects_cursor_for_different_tag(self, storage):
+        """A USERTAG cursor whose SK targets a different tag must be rejected."""
+        import base64
+        import json
+
+        storage.put_memory(
+            Memory(key="m", value="v", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        )
+        forged_lek = {"PK": "USERTAG#u1", "SK": "TAG#other#MEMORY#anything"}
+        forged_cursor = base64.urlsafe_b64encode(json.dumps(forged_lek).encode()).decode()
+
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_memories_by_tag("t", owner_user_id="u1", cursor=forged_cursor)
+
+    def test_consistent_path_skips_memory_when_meta_owner_differs(self, storage):
+        """Defence-in-depth: stale USERTAG pointing at a re-owned memory is skipped."""
+        # Create a memory owned by u1 with tag "shared"
+        m = Memory(key="orig", value="v", tags=["shared"], owner_client_id="c1", owner_user_id="u1")
+        storage.put_memory(m)
+
+        # Forge a stale USERTAG row under u2's partition still pointing at u1's memory
+        storage.table.put_item(
+            Item={
+                "PK": "USERTAG#u2",
+                "SK": f"TAG#shared#MEMORY#{m.memory_id}",
+                "memory_id": m.memory_id,
+                "key": "orig",
+                "owner_client_id": "c1",
+                "owner_user_id": "u2",
+            }
+        )
+
+        mems, _ = storage.list_memories_by_tag("shared", owner_user_id="u2")
+        assert mems == [], "stale USERTAG must be filtered by META owner check"
+
     def test_put_memory_without_owner_user_id_writes_no_usertag_items(self, storage):
         """Memories without owner_user_id must not write any USERTAG items."""
         import boto3
-        from boto3.dynamodb.conditions import Key as DKey
+        from boto3.dynamodb.conditions import Attr as DAttr
 
         m = Memory(key="anon", value="v", tags=["t"], owner_client_id="c1")
         storage.put_memory(m)
 
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
         table = ddb.Table("hive-test")
-        # There should be no USERTAG# items at all — owner_user_id was absent
-        resp = table.query(
-            KeyConditionExpression=DKey("PK").eq("USERTAG#None"),
+        # Scan for any USERTAG# items referencing this memory_id — there
+        # should be none, since the memory had no owner_user_id. A naive
+        # query on PK="USERTAG#None" would vacuously pass even if the
+        # code wrote items under a real user PK.
+        resp = table.scan(
+            FilterExpression=DAttr("PK").begins_with("USERTAG#")
+            & DAttr("memory_id").eq(m.memory_id),
         )
         assert resp["Count"] == 0
 

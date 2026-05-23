@@ -94,9 +94,9 @@ async def list_memories(
         )
 
     if tag:
-        items, next_cursor = storage.list_memories_by_tag(tag, limit=limit, cursor=cursor)
-        if owner_user_id:
-            items = [m for m in items if m.owner_user_id == owner_user_id]
+        items, next_cursor = storage.list_memories_by_tag(
+            tag, limit=limit, cursor=cursor, owner_user_id=owner_user_id
+        )
     else:
         items, next_cursor = storage.list_all_memories(
             owner_user_id=owner_user_id, limit=limit, cursor=cursor
