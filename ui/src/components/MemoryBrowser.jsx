@@ -479,7 +479,7 @@ export default function MemoryBrowser() {
       // Use the ref so we always call the latest `load` closure,
       // which sees the current tagFilter rather than the value
       // captured when handleCreate started (#645).
-      (loadRef.current ?? load)();
+      loadRef.current();
     } catch (err) {
       handleMutationError(err);
     }
@@ -498,7 +498,7 @@ export default function MemoryBrowser() {
       body.ttl_seconds = form.ttl === "" ? 0 : parseInt(form.ttl, 10);
       await api.updateMemory(editing.memory_id, body);
       setEditing(null);
-      (loadRef.current ?? load)();
+      loadRef.current();
     } catch (err) {
       setError(err.message);
     }
@@ -507,7 +507,7 @@ export default function MemoryBrowser() {
   async function handleDelete(id) {
     try {
       await api.deleteMemory(id);
-      (loadRef.current ?? load)();
+      loadRef.current();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -597,7 +597,7 @@ export default function MemoryBrowser() {
     try {
       await api.restoreMemoryVersion(viewingHistory.memory_id, versionTimestamp);
       closeHistory();
-      (loadRef.current ?? load)();
+      loadRef.current();
     } catch (err) {
       setError(err.message);
     }
