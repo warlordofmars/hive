@@ -38,13 +38,12 @@ def browser_page():
         #
         # `hive_first_memory_skipped=1` pre-disables the post-create
         # "first memory probe" in MemoryBrowser.handleCreate (#645).
-        # The probe fires an unfiltered listMemories() whose response
-        # arrives AFTER the test has applied a tag filter, and its
-        # setMemories() with a closure-stale tagFilter clobbers the
-        # filtered list — making the new memory invisible. Real users
-        # only hit this on their first-ever create (when there's
-        # almost nothing to clobber); e2e fixtures start fresh every
-        # run so they hit it every time.
+        # The probe itself no longer clobbers the filtered list — the
+        # underlying race was fixed in the same PR (loadRef +
+        # dropping the optimistic setMemories shortcut) — but skipping
+        # it puts the e2e fixture in the same steady state real users
+        # experience after their first save: one POST + one filtered
+        # GET, no spare unfiltered round trip racing the assertion.
         context.add_init_script(
             "localStorage.setItem('hive_tour_dismissed', '1');"
             "localStorage.setItem('hive_first_memory_skipped', '1');"
