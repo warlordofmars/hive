@@ -266,14 +266,6 @@ export default function MemoryBrowser() {
   }, []);
   const searchDebounceRef = useRef(null);
   const listRef = useRef(null);
-  // Always points at the latest `load` so that async handlers like
-  // handleCreate, which capture `load` in their closure when they
-  // start, refresh against the *current* tagFilter rather than the
-  // filter that was active when the handler began (#645). Without
-  // this, a user who changes the tag filter while a create POST is
-  // in flight can see the post-create refresh clobber their freshly
-  // filtered list with the unfiltered fetch.
-  const loadRef = useRef(null);
 
   // Quota / rate-limit hits get a richer banner that points back to
   // the Setup tab's Usage section, instead of the bare server detail
@@ -319,6 +311,19 @@ export default function MemoryBrowser() {
       setLoading(false);
     }
   }, [tagFilter]);
+
+  // Always points at the latest `load` so that async handlers like
+  // handleCreate, which capture `load` in their closure when they
+  // start, refresh against the *current* tagFilter rather than the
+  // filter that was active when the handler began (#645). Without
+  // this, a user who changes the tag filter while a create POST is
+  // in flight can see the post-create refresh clobber their freshly
+  // filtered list with the unfiltered fetch.
+  //
+  // Seeded with the first-render `load` (useRef only honours the arg
+  // on the initial render) so the ref is non-null by construction.
+  // The useEffect below keeps it in sync with subsequent renders.
+  const loadRef = useRef(load);
 
   const runSearch = useCallback(async (query, topK) => {
     setLoading(true);
