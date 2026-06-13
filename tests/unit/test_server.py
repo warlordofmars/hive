@@ -546,6 +546,24 @@ class TestRecall:
         result = await recall("rec-key", ctx=_make_ctx(jwt))
         assert _text(result) == "the-value"
 
+    async def test_recall_surfaces_version_for_read_modify_write(self, server_env):
+        """#650 — recall exposes the optimistic-lock version in
+        structured_content (where clients can see it), so a single-key
+        read-modify-write works without a tag-scoped list_memories."""
+        _, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        from hive.server import recall, remember
+
+        await remember("rmw", "v1", ctx=ctx)
+        result = await recall("rmw", ctx=ctx)
+        assert result.structured_content["result"] == "v1"
+        version = result.structured_content["version"]
+        assert version  # non-empty optimistic-lock token
+
+        # The token threads straight into a conditional write.
+        updated = await remember("rmw", "v2", version=version, ctx=ctx)
+        assert "Updated" in _text(updated)
+
     async def test_recall_nonexistent_raises(self, server_env):
         from fastmcp.exceptions import ToolError
 
@@ -1668,6 +1686,32 @@ class TestRelateMemories:
         assert keys == ["a", "b"]
         assert body["count"] == 2
         assert body["key"] == "source"
+
+    async def test_populates_semantic_score_from_blended_score(self, server_env):
+        """#652 — relate_memories is a pure-semantic search, so each item's
+        semantic_score equals its blended score (not zeroed); keyword and
+        recency sub-scores stay 0.0 because they are not computed here."""
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        storage, _, jwt = server_env
+        ctx = _make_ctx(jwt)
+        await remember("source", "about cats", ["t"], ctx=ctx)
+        await remember("a", "cats are great", ["t"], ctx=ctx)
+        src = storage.get_memory_by_key("source")
+        a = storage.get_memory_by_key("a")
+        mock_vs = _make_mock_vector_store([(src.memory_id, 0.99), (a.memory_id, 0.42)])
+
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories("source", top_k=1, ctx=ctx)
+
+        item = _body(result)["items"][0]
+        assert item["key"] == "a"
+        assert item["score"] == 0.42
+        assert item["semantic_score"] == 0.42
+        assert item["keyword_score"] == 0.0
+        assert item["recency_score"] == 0.0
 
     async def test_uses_source_value_as_query(self, server_env):
         from unittest.mock import patch

@@ -298,15 +298,21 @@ def _tool_result(
     text is kept as human-readable content.
 
     When the tool operated on a specific memory, pass it via ``memory=`` so
-    its optimistic-lock version is surfaced as ``_meta.hive.memory.version``
-    — the agent can thread that back into a subsequent ``remember`` call.
+    its optimistic-lock ``version`` is surfaced both in ``_meta.hive.memory``
+    and (for non-dict returns) in ``structured_content`` — the latter is what
+    clients actually expose to the agent, so a single-key read-modify-write
+    (``recall`` → ``remember(version=…)``) works without a tag-scoped list
+    (#650). The agent threads that token back into a subsequent ``remember``.
     """
     meta = _quota_meta(storage, client_id)
     if memory is not None:
         meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
     if isinstance(payload, dict):
         return ToolResult(structured_content=payload, meta=meta)
-    return ToolResult(content=payload, structured_content={"result": payload}, meta=meta)
+    structured: dict[str, Any] = {"result": payload}
+    if memory is not None:
+        structured["version"] = memory.version
+    return ToolResult(content=payload, structured_content=structured, meta=meta)
 
 
 _SUMMARY_MAX_TOKENS = 512
@@ -1341,10 +1347,14 @@ async def summarize_context(
     ctx: Context | None = None,
 ) -> str:
     """
-    Retrieve all memories related to a topic and return a synthesised summary.
+    Retrieve all memories related to a topic and summarise them.
 
-    Memories are retrieved by tag matching the topic.  The summary lists each
-    memory and then provides a combined overview paragraph.
+    Memories are retrieved by tag matching the topic. When the calling client
+    supports MCP Sampling (``sampling/createMessage``), the retrieved set is
+    synthesised into a prose overview via the client's model (#448). Clients
+    that do not support sampling (e.g. Claude Desktop) instead receive the
+    listed memories with a count footer — there is no server-side LLM, so the
+    prose synthesis only happens when the client can provide the model (#662).
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
@@ -1445,7 +1455,12 @@ async def search_memories(
     ] = DEFAULT_W_RECENCY,
     include_redacted: Annotated[
         bool,
-        "Include tombstoned (redacted) memories in the result. False by default.",
+        "Normally has no effect on search: redaction removes the vector-index "
+        "entry, so redacted memories don't appear in semantic results and there "
+        "is nothing to un-filter. It only matters in the edge case where that "
+        "vector delete failed (or hasn't propagated), where True keeps such a "
+        "stray tombstone in the results. Use list_memories(include_redacted=True) "
+        "to view tombstones by tag. Defaults to False.",
     ] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -1578,6 +1593,11 @@ async def relate_memories(
     The source memory's value is used as the vector search query and the
     source memory itself is excluded from the results.  ``score`` ranges
     from 0.0 to 1.0 where higher means more semantically similar.
+
+    This is a pure-semantic search, so each item's ``semantic_score`` equals
+    its ``score``; ``keyword_score`` and ``recency_score`` are not computed for
+    this endpoint and are always 0.0 (use ``search_memories`` for the hybrid
+    breakdown).
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
@@ -1639,7 +1659,9 @@ async def relate_memories(
     return _tool_result(
         {
             "items": [
-                MemorySearchResult.from_memory_and_score(m, score).model_dump()
+                MemorySearchResult.from_memory_and_score(
+                    m, score, semantic_score=score
+                ).model_dump()
                 for m, score in results
             ],
             "count": len(results),
