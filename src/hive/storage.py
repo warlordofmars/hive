@@ -495,6 +495,14 @@ class HiveStorage:
             "KeyConditionExpression": Key("GSI2PK").eq(f"TAG#{tag}"),
             "Limit": limit,
         }
+        # TAG items carry owner_client_id, so when scoping by client filter them
+        # server-side: other tenants' items are never hydrated via
+        # get_memory_by_id (cheaper on the bulk-delete path) and never leave
+        # DynamoDB — defense-in-depth for the cross-tenant guard
+        # (GHSA-h9vh-rpcv-xqrr). The post-hydration owner check below stays as a
+        # second line of defence against stale tag items.
+        if owner_client_id is not None:
+            kwargs["FilterExpression"] = Attr("owner_client_id").eq(owner_client_id)
         if cursor:
             kwargs["ExclusiveStartKey"] = _decode_cursor(cursor)
 
