@@ -289,6 +289,14 @@ def _tool_result(
     rate-limit metadata in ``_meta.hive``. Strings become text content;
     dicts become structured content so clients can still use them directly.
 
+    Both branches set ``structured_content`` because FastMCP auto-generates an
+    ``outputSchema`` from every tool's return annotation. A ``-> str`` tool
+    advertises ``{"result": str, "x-fastmcp-wrap-result": true}``; a response
+    with no ``structuredContent`` violates that schema, and spec-strict MCP
+    clients (e.g. AWS Strands) reject the call (#654). Strings are wrapped as
+    ``{"result": <value>}`` to match the auto-generated schema while the plain
+    text is kept as human-readable content.
+
     When the tool operated on a specific memory, pass it via ``memory=`` so
     its optimistic-lock version is surfaced as ``_meta.hive.memory.version``
     — the agent can thread that back into a subsequent ``remember`` call.
@@ -298,7 +306,7 @@ def _tool_result(
         meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
     if isinstance(payload, dict):
         return ToolResult(structured_content=payload, meta=meta)
-    return ToolResult(content=payload, meta=meta)
+    return ToolResult(content=payload, structured_content={"result": payload}, meta=meta)
 
 
 _SUMMARY_MAX_TOKENS = 512
@@ -902,8 +910,14 @@ async def recall(
             mime = memory.content_type or "application/octet-stream"
             meta = _quota_meta(storage, client_id)
             meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
+            # recall is `-> str`, so FastMCP advertises the wrap-result
+            # outputSchema; the binary block must still carry conforming
+            # structured_content or spec-strict clients reject it (#654). The
+            # bytes stay in the ImageContent block; structured_content is a
+            # human-readable descriptor.
             return ToolResult(
                 content=[ImageContent(type="image", data=b64, mimeType=mime)],
+                structured_content={"result": f"[binary content: {mime}]"},
                 meta=meta,
             )
         except Exception:
