@@ -2395,6 +2395,46 @@ class TestForgetAll:
         with pytest.raises(ToolError, match="Insufficient scope"):
             await forget_all("t", ctx=_make_ctx(read_only_jwt))
 
+    async def test_forget_all_does_not_delete_other_clients_memories(self, server_env):
+        """Cross-tenant data destruction guard (GHSA-h9vh-rpcv-xqrr).
+
+        forget_all must scope deletion to the calling client. A second,
+        distinct client's same-tagged memory must survive — even when neither
+        client is bound to a user account (the production DCR case where
+        owner_user_id is None), so scoping cannot rely on owner_user_id alone.
+        """
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import forget_all, remember
+
+        storage, _client_a_id, jwt_a = server_env
+
+        # Client A stores a memory under a tag both clients happen to use.
+        await remember("victim", "owned by A", ["shared"], ctx=_make_ctx(jwt_a))
+
+        # A distinct client B, unbound to any user (mirrors production DCR).
+        client_b = OAuthClient(client_name="Other Client")
+        assert client_b.owner_user_id is None
+        storage.put_client(client_b)
+        now = datetime.now(timezone.utc)
+        token_b = Token(
+            client_id=client_b.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token_b)
+        jwt_b = issue_jwt(token_b)
+        await remember("b-note", "owned by B", ["shared"], ctx=_make_ctx(jwt_b))
+
+        # Client B bulk-deletes by the shared tag.
+        result = await forget_all("shared", ctx=_make_ctx(jwt_b))
+
+        # B may only delete its own memory; A's must survive.
+        assert storage.get_memory_by_key("victim") is not None
+        assert storage.get_memory_by_key("b-note") is None
+        assert "1" in _text(result)
+
 
 # ---------------------------------------------------------------------------
 # memory_history
