@@ -133,12 +133,19 @@ async def register(
 # ---------------------------------------------------------------------------
 
 
-def _bypass_associate_user(storage: HiveStorage, client_id: str, email: str) -> None:
-    """Upsert a test user and associate the DCR client with them.
+def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str) -> None:
+    """Upsert the authenticated user and bind the DCR client to them.
 
-    Only called in HIVE_BYPASS_GOOGLE_AUTH mode when test_email is supplied to
-    /oauth/authorize.  This mirrors the production Google-callback path so that
-    user-scoped MCP tools (list_memories, summarize_context) work in e2e tests.
+    Called from both the production Google callback and the
+    HIVE_BYPASS_GOOGLE_AUTH test shortcut so the two paths bind users
+    identically.  The divergence where *only* the bypass path bound a user was
+    the cause of #648: real Google-authenticated clients ended up with
+    owner_user_id=None, permanently breaking user-scoped MCP tools
+    (list_memories, summarize_context).
+
+    Binding is first-bind-wins — owner_user_id is set only when it is currently
+    None, so a client already owned by one user is never re-pointed at a
+    different account that later authenticates through it.
     """
     from hive.auth.google import is_admin_email
 
@@ -206,7 +213,7 @@ async def authorize(
         if test_email:
             if not is_email_allowed(test_email):
                 raise HTTPException(status_code=403, detail="test_email is not allowed")
-            _bypass_associate_user(storage, client_id, test_email)
+            _associate_user_with_client(storage, client_id, test_email)
         auth_code = storage.create_auth_code(
             client_id=client_id,
             redirect_uri=redirect_uri,
@@ -289,6 +296,13 @@ async def google_callback(
         raise HTTPException(status_code=400, detail="Google account email not verified")
     if not is_email_allowed(email):
         raise HTTPException(status_code=403, detail=f"Email {email!r} is not authorised")
+
+    # Bind the DCR client to the now-verified user (first-bind-wins) so that
+    # user-scoped MCP tools work for real Google-authenticated clients. Without
+    # this, production clients kept owner_user_id=None and list_memories /
+    # summarize_context always failed — the bug behind #648. Mirrors the
+    # HIVE_BYPASS_GOOGLE_AUTH path via the same shared helper.
+    _associate_user_with_client(storage, pending.client_id, email)
 
     auth_code = storage.create_auth_code(
         client_id=pending.client_id,

@@ -633,6 +633,70 @@ class TestGoogleCallback:
             )
         assert resp.status_code == 400
 
+    def test_success_binds_authenticated_user_to_client(self, oauth_client):
+        """The production Google callback must associate the verified user with
+        the DCR client (set owner_user_id) so user-scoped MCP tools work.
+
+        Regression test for #648: previously only the HIVE_BYPASS_GOOGLE_AUTH
+        path bound the user, so real Google-authenticated clients in prod were
+        left with owner_user_id=None and list_memories / summarize_context
+        always failed with "Client is not associated with a user account".
+        """
+        tc, storage, client = oauth_client
+        # Precondition: a freshly DCR-registered client has no owner, exactly as
+        # in production before the callback runs.
+        assert storage.get_client(client.client_id).owner_user_id is None
+        pending = self._setup_pending(storage, client)
+        fake_claims = {"email": "prod-user@example.com", "email_verified": True, "sub": "uid9"}
+        with (
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=fake_claims),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "goog-code", "state": pending.state},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 302
+        updated = storage.get_client(client.client_id)
+        assert updated is not None
+        assert updated.owner_user_id is not None
+        user = storage.get_user_by_id(updated.owner_user_id)
+        assert user is not None
+        assert user.email == "prod-user@example.com"
+
+    def test_success_binds_user_only_once(self, oauth_client):
+        """First-bind-wins: a second Google login through the same client must
+        not re-point owner_user_id at a different user (matches the bypass
+        path's `owner_user_id is None` guard)."""
+        tc, storage, client = oauth_client
+
+        def _callback_as(email: str):
+            pending = self._setup_pending(storage, client)
+            claims = {"email": email, "email_verified": True, "sub": email}
+            with (
+                patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+                patch("hive.auth.google.verify_google_id_token", return_value=claims),
+                patch("hive.auth.google.is_email_allowed", return_value=True),
+                patch("hive.auth.google.is_admin_email", return_value=False),
+            ):
+                return tc.get(
+                    "/oauth/google/callback",
+                    params={"code": "goog-code", "state": pending.state},
+                    follow_redirects=False,
+                )
+
+        assert _callback_as("first@example.com").status_code == 302
+        first_owner = storage.get_client(client.client_id).owner_user_id
+        assert first_owner is not None
+
+        assert _callback_as("second@example.com").status_code == 302
+        # Binding stays with the first user even though a different account
+        # later authenticated through the same client.
+        assert storage.get_client(client.client_id).owner_user_id == first_owner
+
 
 class TestOAuthToken:
     def _get_auth_code(self, tc, storage, client) -> tuple[str, str]:
