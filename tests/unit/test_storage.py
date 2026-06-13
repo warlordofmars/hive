@@ -1505,6 +1505,29 @@ class TestPagination:
         mems, _ = storage.list_memories_by_tag("shared", owner_user_id="u2")
         assert mems == [], "stale USERTAG must be filtered by META owner check"
 
+    def test_gsi_path_skips_memory_when_meta_owner_client_differs(self, storage):
+        """Defence-in-depth on the GSI path: a stale TagIndex item whose
+        owner_client_id passes the server-side FilterExpression but whose
+        hydrated META owner_client_id differs is still skipped by the
+        post-hydration owner check (#654/GHSA-h9vh-rpcv-xqrr)."""
+        m = Memory(key="orig", value="v", tags=["shared"], owner_client_id="c-real")
+        storage.put_memory(m)
+        # Forge the TAG item to claim owner_client_id "c-filter" (so it passes
+        # the FilterExpression) while the memory's META keeps "c-real".
+        storage.table.put_item(
+            Item={
+                "PK": f"MEMORY#{m.memory_id}",
+                "SK": "TAG#shared",
+                "memory_id": m.memory_id,
+                "key": "orig",
+                "owner_client_id": "c-filter",
+                "GSI2PK": "TAG#shared",
+                "GSI2SK": m.memory_id,
+            }
+        )
+        mems, _ = storage.list_memories_by_tag("shared", owner_client_id="c-filter")
+        assert mems == [], "stale TAG item must be rejected by the META owner check"
+
     def test_put_memory_without_owner_user_id_writes_no_usertag_items(self, storage):
         """Memories without owner_user_id must not write any USERTAG items."""
         import boto3
