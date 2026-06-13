@@ -998,7 +998,11 @@ async def forget_all(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope="memories:write")
 
-    deleted = storage.delete_memories_by_tag(tag)
+    # Scope bulk deletion to the calling client so it can never delete another
+    # tenant's same-tagged memories (GHSA-h9vh-rpcv-xqrr). owner_client_id is
+    # the axis reliably set on every memory today; user-level scoping follows
+    # once DCR clients are bound to user accounts (#648).
+    deleted = storage.delete_memories_by_tag(tag, owner_client_id=client_id)
     _log(
         storage,
         ActivityEvent(

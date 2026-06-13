@@ -460,6 +460,7 @@ class HiveStorage:
         limit: int = 100,
         cursor: str | None = None,
         owner_user_id: str | None = None,
+        owner_client_id: str | None = None,
         workspace_id: str | None = None,
     ) -> tuple[list[Memory], str | None]:
         """Query for memories with a given tag.
@@ -483,6 +484,7 @@ class HiveStorage:
                 return self._list_memories_by_tag_consistent(
                     tag=tag,
                     owner_user_id=owner_user_id,
+                    owner_client_id=owner_client_id,
                     limit=limit,
                     workspace_id=workspace_id,
                     start_key=decoded_cursor,
@@ -504,6 +506,8 @@ class HiveStorage:
                 continue
             if owner_user_id is not None and m.owner_user_id != owner_user_id:
                 continue
+            if owner_client_id is not None and m.owner_client_id != owner_client_id:
+                continue
             if workspace_id is not None and m.workspace_id != workspace_id:
                 continue
             memories.append(m)
@@ -516,6 +520,7 @@ class HiveStorage:
         self,
         tag: str,
         owner_user_id: str,
+        owner_client_id: str | None = None,
         limit: int = 100,
         workspace_id: str | None = None,
         start_key: dict[str, Any] | None = None,
@@ -554,6 +559,8 @@ class HiveStorage:
             # Defence-in-depth: META owner must still match — guards against
             # stale/corrupt USERTAG items pointing at a re-owned memory.
             if m.owner_user_id != owner_user_id:
+                continue
+            if owner_client_id is not None and m.owner_client_id != owner_client_id:
                 continue
             if workspace_id is not None and m.workspace_id != workspace_id:
                 continue
@@ -622,12 +629,17 @@ class HiveStorage:
         self,
         tag: str,
         owner_user_id: str | None = None,
+        owner_client_id: str | None = None,
         workspace_id: str | None = None,
     ) -> int:
         """Delete all memories with the given tag.
 
-        If owner_user_id or workspace_id is provided, only memories matching
-        the filter are deleted. Returns the count of memories deleted.
+        Deletion is scoped to whichever owner filter is supplied
+        (``owner_user_id``, ``owner_client_id``, and/or ``workspace_id``); only
+        matching memories are deleted. Passing **no** filter deletes every
+        memory with the tag across all owners, so a caller acting on behalf of
+        a single tenant MUST pass its scope (``owner_client_id`` at minimum) to
+        avoid cross-tenant deletion. Returns the count of memories deleted.
         """
         deleted = 0
         cursor: str | None = None
@@ -637,6 +649,7 @@ class HiveStorage:
                 limit=100,
                 cursor=cursor,
                 owner_user_id=owner_user_id,
+                owner_client_id=owner_client_id,
                 workspace_id=workspace_id,
             )
             for memory in items:

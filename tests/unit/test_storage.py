@@ -1370,6 +1370,19 @@ class TestPagination:
         mems, _ = storage.list_memories_by_tag("fade", owner_user_id="u1")
         assert mems == []
 
+    def test_list_memories_by_tag_consistent_path_owner_client_id_filter(self, storage):
+        """The strongly-consistent USERTAG path also honours owner_client_id:
+        a same-user memory created by a different client is filtered out when
+        owner_client_id is supplied (defence-in-depth for #654/GHSA scoping)."""
+        storage.put_memory(
+            Memory(key="ca", value="v", tags=["dual"], owner_client_id="cA", owner_user_id="u1")
+        )
+        storage.put_memory(
+            Memory(key="cb", value="v", tags=["dual"], owner_client_id="cB", owner_user_id="u1")
+        )
+        mems, _ = storage.list_memories_by_tag("dual", owner_user_id="u1", owner_client_id="cB")
+        assert [m.key for m in mems] == ["cb"]
+
     def test_list_memories_by_tag_consistent_path_update_replaces_old_tags(self, storage):
         """After a tag update, only the new tags appear via the consistent path."""
         m = Memory(
@@ -2089,6 +2102,21 @@ class TestBulkMemoryOperations:
         assert deleted == 1
         assert storage.get_memory_by_key("x") is None
         assert storage.get_memory_by_key("y") is not None
+
+    def test_delete_memories_by_tag_with_owner_client_id_filter(self, storage):
+        """Bulk delete scoped by owner_client_id removes only the calling
+        client's memories — cross-tenant deletion guard (GHSA-h9vh-rpcv-xqrr).
+        Both memories are unbound to a user (owner_user_id=None), the
+        production DCR case, so scoping relies on owner_client_id via the GSI
+        path."""
+        m1 = Memory(key="mine", value="1", tags=["t"], owner_client_id="cA")
+        m2 = Memory(key="theirs", value="2", tags=["t"], owner_client_id="cB")
+        for m in [m1, m2]:
+            storage.put_memory(m)
+        deleted = storage.delete_memories_by_tag("t", owner_client_id="cA")
+        assert deleted == 1
+        assert storage.get_memory_by_key("mine") is None
+        assert storage.get_memory_by_key("theirs") is not None
 
     def test_delete_memories_by_tag_empty(self, storage):
         assert storage.delete_memories_by_tag("no-such-tag") == 0
