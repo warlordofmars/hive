@@ -147,4 +147,24 @@ describe("AuthCallback", () => {
       expect(screen.getByText("Token exchange failed.")).toBeTruthy();
     });
   });
+
+  it("falls back to generic error when error-response JSON parsing rejects", async () => {
+    stubLocation("?code=bad-code&state=s");
+    _session["oauth_state"] = "s";
+    _session["pkce_verifier"] = "verifier";
+    _storage["hive_client_id"] = "client-1";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        // Rejecting json() exercises the `.catch(() => ({}))` fallback arrow.
+        json: () => Promise.reject(new Error("invalid json")),
+      }),
+    );
+
+    await act(async () => render(<AuthCallback />));
+    await waitFor(() => {
+      expect(screen.getByText("Token exchange failed.")).toBeTruthy();
+    });
+  });
 });

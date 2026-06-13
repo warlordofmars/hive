@@ -141,6 +141,10 @@ export default function OnboardingTour({ isAdmin = false }) {
   }
 
   function back() {
+    // The Back button only renders when stepIndex > 0, so the guard's
+    // false path is unreachable through the UI — it's a defensive
+    // bound check against a future caller invoking back() at step 0.
+    /* v8 ignore next */
     if (stepIndex > 0) setStepIndex((i) => i - 1);
   }
 

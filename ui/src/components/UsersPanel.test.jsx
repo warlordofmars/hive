@@ -417,6 +417,58 @@ describe("UsersPanel", () => {
     expect(screen.getByTestId("storage-limit-input").value).toBe("52428800");
   });
 
+  it("shows 'Loading…' on the Load more button while fetching more users", async () => {
+    let resolveMore;
+    api.listUsers
+      .mockResolvedValueOnce({ items: SAMPLE_USERS, has_more: true, next_cursor: "tok1" })
+      .mockReturnValueOnce(new Promise((resolve) => { resolveMore = resolve; }));
+    await act(async () => render(<UsersPanel />));
+    // Fire the click without awaiting full settlement so loadingMore stays true
+    await act(async () => { fireEvent.click(screen.getByText("Load more")); });
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    // Settle the pending request to avoid act warnings
+    await act(async () => { resolveMore({ items: [], has_more: false, next_cursor: null }); });
+  });
+
+  it("shows 'Loading stats…' while detail stats are loading", async () => {
+    let resolveStats;
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockReturnValue(new Promise((resolve) => { resolveStats = resolve; }));
+    api.getUserLimits.mockReturnValue(new Promise(() => {}));
+    await act(async () => render(<UsersPanel />));
+    await act(async () => { fireEvent.click(screen.getByText("alice@example.com")); });
+    expect(screen.getByText("Loading stats…")).toBeTruthy();
+    await act(async () => { resolveStats({ user_id: "u1", memory_count: 0, client_count: 0 }); });
+  });
+
+  it("shows 'Saving…' on the Save limits button while saving", async () => {
+    let resolveSave;
+    api.listUsers.mockResolvedValue({ items: SAMPLE_USERS });
+    api.getUserStats.mockResolvedValue({ user_id: "u1", memory_count: 0, client_count: 0 });
+    api.getUserLimits.mockResolvedValue({
+      user_id: "u1",
+      memory_limit: null,
+      storage_bytes_limit: null,
+      effective_memory_limit: 500,
+      effective_storage_bytes_limit: 104857600,
+    });
+    api.updateUserLimits.mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    await act(async () => render(<UsersPanel />));
+    await act(async () => { fireEvent.click(screen.getByText("alice@example.com")); });
+    await waitFor(() => expect(screen.getByTestId("limits-section")).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByTestId("save-limits-btn")); });
+    expect(screen.getByText("Saving…")).toBeTruthy();
+    await act(async () => {
+      resolveSave({
+        user_id: "u1",
+        memory_limit: null,
+        storage_bytes_limit: null,
+        effective_memory_limit: 500,
+        effective_storage_bytes_limit: 104857600,
+      });
+    });
+  });
+
   it("saves limits with non-empty storage bytes value", async () => {
     const updatedLimits = {
       user_id: "u1",

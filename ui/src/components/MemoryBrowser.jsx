@@ -405,7 +405,9 @@ export default function MemoryBrowser() {
   }
 
   async function loadMore() {
-    if (!nextCursor) return; /* c8 ignore next */
+    /* v8 ignore next -- defensive: loadMore is only reachable via the
+       "Load more" button, which renders only when nextCursor is truthy */
+    if (!nextCursor) return;
     setLoadingMore(true);
     try {
       const data = await api.listMemories(tagFilter || undefined, { cursor: nextCursor });
