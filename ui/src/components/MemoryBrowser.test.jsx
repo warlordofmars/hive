@@ -399,6 +399,32 @@ describe("MemoryBrowser", () => {
     expect(screen.getByText("key1")).toBeTruthy();
   });
 
+  it("shows 'Loading…' on the Load more button while a page is in flight", async () => {
+    // Covers the truthy branch of `{loadingMore ? "Loading…" : "Load more"}`.
+    // Keep the second page fetch pending so loadingMore stays true and
+    // the button label flips to the loading text.
+    let resolvePage;
+    const pending = new Promise((res) => {
+      resolvePage = res;
+    });
+    api.listMemories
+      .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: "cursor1" })
+      .mockReturnValueOnce(pending);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("Load more"));
+    act(() => {
+      fireEvent.click(screen.getByText("Load more"));
+    });
+
+    await waitFor(() => expect(screen.getByText("Loading…")).toBeTruthy());
+
+    // Settle the pending fetch so no act() warning leaks into later tests.
+    await act(async () => {
+      resolvePage({ items: [makeMemory({ memory_id: "m2" })], next_cursor: null });
+    });
+  });
+
   it("shows error when loadMore fails", async () => {
     api.listMemories
       .mockResolvedValueOnce({ items: [makeMemory()], next_cursor: "c1" })
@@ -1274,6 +1300,43 @@ describe("MemoryBrowser", () => {
     expect(searchInput.value).toBe("");
   });
 
+  it("clearing the tag chip resets the filter without touching search state", async () => {
+    // Covers the falsy branch of `if (tag)` in handleTagSelect — when
+    // the TagPicker chip's clear button fires onSelect(""), the handler
+    // sets the (empty) tag filter but must NOT touch the search-mode
+    // state slots that only the truthy branch clears.
+    api.listMemories.mockResolvedValue({
+      items: [makeMemory({ tags: ["mytag"] })],
+      next_cursor: null,
+    });
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+
+    // Select tag via TagPicker → chip is shown, input is gone.
+    const filterInput = screen.getByPlaceholderText("Filter by tag");
+    await act(async () => fireEvent.focus(filterInput));
+    await act(async () =>
+      fireEvent.change(filterInput, { target: { value: "my" } }),
+    );
+    await waitFor(() => screen.getByRole("option", { name: "mytag" }));
+    await act(async () =>
+      fireEvent.mouseDown(screen.getByRole("option", { name: "mytag" })),
+    );
+    expect(screen.queryByPlaceholderText("Filter by tag")).toBeNull();
+
+    // Clear the chip → handleTagSelect("") runs the falsy branch.
+    await act(async () =>
+      fireEvent.click(screen.getByLabelText("Clear tag filter")),
+    );
+
+    // Filter input reappears (tagFilter back to ""), and a fresh
+    // unfiltered list was fetched.
+    expect(screen.getByPlaceholderText("Filter by tag")).toBeTruthy();
+    await waitFor(() =>
+      expect(api.listMemories).toHaveBeenLastCalledWith(undefined),
+    );
+  });
+
   it("does not call searchMemories when search is cleared", async () => {
     await act(async () => render(<MemoryBrowser />));
     const searchInput = screen.getByPlaceholderText("Search by meaning…");
@@ -1412,6 +1475,33 @@ describe("MemoryBrowser", () => {
 
     await waitFor(() => expect(screen.getByText("History: test-key")).toBeTruthy());
     expect(screen.getByText("No previous versions.")).toBeTruthy();
+  });
+
+  it("shows a loading indicator while versions are being fetched", async () => {
+    // Covers the truthy branch of `{versionsLoading && <p>Loading…</p>}`
+    // in the history panel. Keep listMemoryVersions pending so the
+    // loading paragraph renders inside the open panel.
+    let resolveVersions;
+    const pending = new Promise((res) => {
+      resolveVersions = res;
+    });
+    api.listMemories.mockResolvedValue({ items: [makeMemory()], next_cursor: null });
+    api.listMemoryVersions.mockReturnValue(pending);
+
+    await act(async () => render(<MemoryBrowser />));
+    await waitFor(() => screen.getByText("test-key"));
+    act(() => {
+      fireEvent.click(screen.getByText("History"));
+    });
+
+    await waitFor(() => screen.getByText("History: test-key"));
+    // The history panel shows its own "Loading…" while versions resolve.
+    expect(screen.getByText("Loading…")).toBeTruthy();
+
+    // Settle the pending fetch to avoid leaking act() warnings.
+    await act(async () => {
+      resolveVersions([]);
+    });
   });
 
   it("shows versions in history panel and truncates long values", async () => {

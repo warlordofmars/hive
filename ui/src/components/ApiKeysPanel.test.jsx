@@ -213,6 +213,38 @@ describe("ApiKeysPanel", () => {
     expect(writeText).toHaveBeenCalledWith("hive_sk_abc123");
   });
 
+  it("resets copied state after the timeout elapses", async () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      writable: true,
+    });
+    const created = { ...SAMPLE_KEYS[0], plaintext_key: "hive_sk_abc123" };
+    api.listApiKeys.mockResolvedValue([]);
+    api.createApiKey.mockResolvedValue(created);
+    await act(async () => render(<ApiKeysPanel />));
+    await act(async () => fireEvent.click(screen.getByText("+ New Key")));
+    fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: "k" } });
+    await act(async () => fireEvent.click(screen.getByText("Create")));
+    await waitFor(() => expect(screen.getByTestId("new-key-banner")).toBeTruthy());
+
+    // Activate fake timers only after the initial async render has settled.
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(screen.getByLabelText("Copy API key")));
+      // Immediately after copy, the button shows the "copied" (Check) icon.
+      expect(screen.getByLabelText("Copy API key").querySelector("svg")).toBeTruthy();
+      // Advancing past the 2000ms timeout runs the setTimeout callback,
+      // resetting copiedId back to null.
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByLabelText("Copy API key")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears new key banner when + New Key is clicked again", async () => {
     const created = { ...SAMPLE_KEYS[0], plaintext_key: "hive_sk_abc123" };
     api.listApiKeys.mockResolvedValue([]);

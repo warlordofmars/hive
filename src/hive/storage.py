@@ -709,6 +709,29 @@ class HiveStorage:
         item = resp.get("Item")
         return OAuthClient.from_dynamo(item) if item else None
 
+    def bind_client_owner(self, client_id: str, user_id: str) -> bool:
+        """Atomically set a client's ``owner_user_id`` iff it is currently unset.
+
+        Returns ``True`` when this call performed the binding, ``False`` when the
+        client was already owned (a concurrent first-bind won, or it was
+        pre-owned, or the client no longer exists). Enforces first-bind-wins at
+        the DynamoDB layer via a conditional write, closing the
+        read-modify-write race in the OAuth callback — mirrors the single-use
+        enforcement in :meth:`mark_auth_code_used`.
+        """
+        try:
+            self.table.update_item(
+                Key={"PK": f"CLIENT#{client_id}", "SK": "META"},
+                UpdateExpression="SET owner_user_id = :uid",
+                ConditionExpression="attribute_exists(PK) AND attribute_not_exists(owner_user_id)",
+                ExpressionAttributeValues={":uid": user_id},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
     def delete_client(self, client_id: str) -> bool:
         resp = self.table.get_item(Key={"PK": f"CLIENT#{client_id}", "SK": "META"})
         if not resp.get("Item"):

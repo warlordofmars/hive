@@ -91,4 +91,25 @@ describe("ErrorBoundary", () => {
     );
     expect(screen.getByTestId("error-boundary")).toBeTruthy();
   });
+
+  it("does nothing on reload when globalThis.location is unavailable", async () => {
+    // Covers the false branch of `if (globalThis.location)` in
+    // handleReload — clicking Reload must be a no-op (not a crash) when
+    // there is no location object to reload.
+    vi.stubGlobal("location", undefined);
+
+    await act(async () =>
+      render(
+        <ErrorBoundary>
+          <Boom />
+        </ErrorBoundary>,
+      ),
+    );
+    // Should not throw despite location being undefined.
+    expect(() =>
+      fireEvent.click(screen.getByRole("button", { name: "Reload page" })),
+    ).not.toThrow();
+
+    vi.unstubAllGlobals();
+  });
 });

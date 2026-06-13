@@ -565,4 +565,36 @@ describe("Dashboard", () => {
     await act(async () => render(<Dashboard />));
     await waitFor(() => expect(screen.queryByText("MCP error rate > 5%")).toBeNull());
   });
+
+  it("merges invocation/latency points sharing a minute-bucket label", async () => {
+    // Two timestamps in the same minute collapse to one label (slice(0,16)),
+    // so the second iteration hits the existing-bucket branch in both
+    // buildInvocationSeries (line 47) and buildLatencySeries (line 61).
+    api.getMetrics.mockResolvedValue({
+      period: "24h",
+      environment: "test",
+      metrics: {
+        inv_remember: {
+          timestamps: ["2026-04-01T12:00:00Z", "2026-04-01T12:00:30Z"],
+          values: [5, 3],
+        },
+        p99_remember: {
+          timestamps: ["2026-04-01T12:00:00Z", "2026-04-01T12:00:45Z"],
+          values: [120, 80],
+        },
+      },
+    });
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("Tool Invocations")).toBeTruthy());
+    expect(screen.getByText("Tool Latency p99 (ms)")).toBeTruthy();
+  });
+
+  it("does not set stats when getStats rejects", async () => {
+    // Exercises the false branch of `if (statsRes.status === "fulfilled")`
+    // (line 449) — stats stays null so the summary stat cards never render.
+    api.getStats.mockRejectedValue(new Error("stats unavailable"));
+    await act(async () => render(<Dashboard />));
+    await waitFor(() => expect(screen.getByText("just now")).toBeTruthy());
+    expect(screen.queryByText("Total Memories")).toBeNull();
+  });
 });
