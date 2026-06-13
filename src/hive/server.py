@@ -299,7 +299,7 @@ def _tool_result(
 
     When the tool operated on a specific memory, pass it via ``memory=`` so
     its optimistic-lock ``version`` is surfaced both in ``_meta.hive.memory``
-    and (for string returns) in ``structured_content`` — the latter is what
+    and (for non-dict returns) in ``structured_content`` — the latter is what
     clients actually expose to the agent, so a single-key read-modify-write
     (``recall`` → ``remember(version=…)``) works without a tag-scoped list
     (#650). The agent threads that token back into a subsequent ``remember``.
@@ -1455,10 +1455,12 @@ async def search_memories(
     ] = DEFAULT_W_RECENCY,
     include_redacted: Annotated[
         bool,
-        "No effect on search. Redacted memories are never returned by semantic "
-        "search — redaction removes the vector-index entry, so there is nothing "
-        "to surface. Use list_memories(include_redacted=True) to view tombstones "
-        "by tag. Retained for signature stability; defaults to False.",
+        "Normally has no effect on search: redaction removes the vector-index "
+        "entry, so redacted memories don't appear in semantic results and there "
+        "is nothing to un-filter. It only matters in the edge case where that "
+        "vector delete failed (or hasn't propagated), where True keeps such a "
+        "stray tombstone in the results. Use list_memories(include_redacted=True) "
+        "to view tombstones by tag. Defaults to False.",
     ] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
