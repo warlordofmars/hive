@@ -164,14 +164,16 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
     user = storage.get_user_by_email(email)
     client = storage.get_client(client_id)
 
+    # Fail fast (before any write) if the client no longer exists — e.g. it was
+    # deleted between /oauth/authorize and this callback. Avoids upserting an
+    # orphan user and binding to nothing.
+    if client is None:
+        raise HTTPException(status_code=400, detail="Unknown or deleted client")
+
     # Single-user boundary: refuse to proceed when the client is already bound
     # to someone other than the authenticating user. Checked before any write so
     # a rejected login leaves no trace.
-    if (
-        client is not None
-        and client.owner_user_id is not None
-        and (user is None or user.user_id != client.owner_user_id)
-    ):
+    if client.owner_user_id is not None and (user is None or user.user_id != client.owner_user_id):
         raise HTTPException(
             status_code=403,
             detail="This client is already associated with a different user account.",
@@ -185,7 +187,7 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
     user.last_login_at = now
     storage.put_user(user)
 
-    if client is not None and client.owner_user_id is None:
+    if client.owner_user_id is None:
         client.owner_user_id = user.user_id
         storage.put_client(client)
 

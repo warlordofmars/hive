@@ -716,6 +716,18 @@ class TestGoogleCallback:
         assert self._login_via_google(tc, storage, client, "owner@example.com").status_code == 302
         assert storage.get_client(client.client_id).owner_user_id == owner_id
 
+    def test_callback_with_deleted_client_fails_without_side_effects(self, oauth_client):
+        """If the client is deleted between /authorize and the callback, the
+        callback fails fast — no orphan user upsert and no auth code issued for
+        a client that no longer exists."""
+        tc, storage, client = oauth_client
+        storage.delete_client(client.client_id)
+
+        resp = self._login_via_google(tc, storage, client, "ghost@example.com")
+        assert resp.status_code == 400
+        # No side effects: the authenticating user was never persisted.
+        assert storage.get_user_by_email("ghost@example.com") is None
+
 
 class TestOAuthToken:
     def _get_auth_code(self, tc, storage, client) -> tuple[str, str]:
