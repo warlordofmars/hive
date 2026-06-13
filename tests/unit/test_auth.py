@@ -728,6 +728,47 @@ class TestGoogleCallback:
         # No side effects: the authenticating user was never persisted.
         assert storage.get_user_by_email("ghost@example.com") is None
 
+    def test_concurrent_bind_race_loser_rejected(self, oauth_client):
+        """When a concurrent callback wins the atomic bind on an unowned client,
+        the loser is rejected with 403 (never silently overwriting the winner)
+        and is not persisted — the conditional bind enforces first-bind-wins
+        even under a read-modify-write race."""
+        from hive.models import User as UserModel
+
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+
+        # The "winner" — another user that claims the client mid-callback.
+        winner = UserModel(email="winner@example.com", display_name="winner", role="user")
+        storage.put_user(winner)
+
+        def _lose_race(client_id, user_id):
+            # Stand in for a concurrent callback that bound the client first, so
+            # our conditional write reports it didn't win.
+            owned = storage.get_client(client_id)
+            owned.owner_user_id = winner.user_id
+            storage.put_client(owned)
+            return False
+
+        claims = {"email": "loser@example.com", "email_verified": True, "sub": "loser"}
+        with (
+            patch.object(storage, "bind_client_owner", side_effect=_lose_race),
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=claims),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "goog-code", "state": pending.state},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+        # The winner's binding stands; the loser never overwrote it.
+        assert storage.get_client(client.client_id).owner_user_id == winner.user_id
+        # The loser was rejected before any user upsert.
+        assert storage.get_user_by_email("loser@example.com") is None
+
 
 class TestOAuthToken:
     def _get_auth_code(self, tc, storage, client) -> tuple[str, str]:

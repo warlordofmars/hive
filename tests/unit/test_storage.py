@@ -926,6 +926,54 @@ class TestAuthCodeAtomicRedemption:
             storage.mark_auth_code_used("any-code")
 
 
+class TestClientOwnerAtomicBind:
+    """#648 — binding a DCR client to its owner is first-bind-wins and atomic.
+
+    `bind_client_owner` uses a conditional UpdateItem so two concurrent OAuth
+    callbacks for the same unowned client can't both win the bind (the
+    read-modify-write race that would otherwise defeat first-bind-wins and the
+    403 single-user guard).
+    """
+
+    def test_first_bind_sets_owner(self, storage):
+        client = OAuthClient(client_name="Bind Me")
+        storage.put_client(client)
+        assert storage.bind_client_owner(client.client_id, "user-1") is True
+        assert storage.get_client(client.client_id).owner_user_id == "user-1"
+
+    def test_second_bind_returns_false_and_keeps_owner(self, storage):
+        client = OAuthClient(client_name="Bind Once")
+        storage.put_client(client)
+        assert storage.bind_client_owner(client.client_id, "user-1") is True
+        # A racing/later bind for a different user is rejected by the
+        # conditional write; the first owner stands.
+        assert storage.bind_client_owner(client.client_id, "user-2") is False
+        assert storage.get_client(client.client_id).owner_user_id == "user-1"
+
+    def test_bind_missing_client_returns_false(self, storage):
+        # attribute_exists(PK) guards against binding a client that was never
+        # registered (or was deleted) — no row is created.
+        assert storage.bind_client_owner("never-registered", "user-1") is False
+        assert storage.get_client("never-registered") is None
+
+    def test_unexpected_client_error_reraises(self, storage):
+        """Only ConditionalCheckFailedException maps to False; every other
+        ClientError bubbles up so genuine AWS failures aren't swallowed."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=throttled),
+            pytest.raises(ClientError),
+        ):
+            storage.bind_client_owner("any-client", "user-1")
+
+
 # ---------------------------------------------------------------------------
 # Activity log tests
 # ---------------------------------------------------------------------------

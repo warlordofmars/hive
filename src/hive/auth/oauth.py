@@ -145,7 +145,9 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
 
     Binding is **first-bind-wins and single-user**:
 
-    * owner_user_id is set only when it is currently None (first bind);
+    * owner_user_id is set only when it is currently None, via an atomic
+      conditional write (``bind_client_owner``) so first-bind-wins holds even
+      under concurrent callbacks for the same unowned client;
     * once a client is owned, only that same user may re-authenticate through
       it — a *different* account is rejected with HTTP 403 and the binding is
       left untouched.
@@ -185,11 +187,21 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
         user.display_name = display_name
         user.role = role
     user.last_login_at = now
-    storage.put_user(user)
 
-    if client.owner_user_id is None:
-        client.owner_user_id = user.user_id
-        storage.put_client(client)
+    # Claim ownership atomically. The conditional write closes the
+    # read-modify-write race: if two callbacks for the same unowned client run
+    # concurrently, exactly one bind wins. The loser re-reads and is refused
+    # unless the winner happens to be this same user. put_user runs only after
+    # the bind is settled, so a rejected login persists nothing.
+    if client.owner_user_id is None and not storage.bind_client_owner(client_id, user.user_id):
+        winner = storage.get_client(client_id)
+        if winner is None or winner.owner_user_id != user.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="This client is already associated with a different user account.",
+            )
+
+    storage.put_user(user)
 
 
 @router.get("/oauth/authorize", responses={400: {"description": "Invalid authorization request"}})

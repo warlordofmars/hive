@@ -39,9 +39,14 @@ def _make_context(token_str: str):
     return ctx
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def google_oauth_setup():
-    """DynamoDB Local table (with UserEmailIndex) scoped to this test."""
+    """DynamoDB Local table (with UserEmailIndex), created once per module.
+
+    Module-scoped to match the other integration fixtures here and avoid
+    repeated delete/create churn on the same table name; the tests use distinct
+    clients/users/tags so they don't collide on the shared table.
+    """
     import boto3
 
     table_name = "hive-oauth-user-binding"
