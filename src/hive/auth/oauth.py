@@ -190,16 +190,25 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
 
     # Claim ownership atomically. The conditional write closes the
     # read-modify-write race: if two callbacks for the same unowned client run
-    # concurrently, exactly one bind wins. The loser re-reads and is refused
-    # unless the winner happens to be this same user. put_user runs only after
-    # the bind is settled, so a rejected login persists nothing.
+    # concurrently, exactly one bind wins. The loser re-reads and resolves the
+    # outcome by *identity* (email), not by the transient generated user_id, so
+    # two concurrent first-logins by the same account don't spuriously 403.
+    # put_user runs only after the bind is settled, so a rejected login (or a
+    # same-account race that defers to the canonical record) persists nothing.
     if client.owner_user_id is None and not storage.bind_client_owner(client_id, user.user_id):
         winner = storage.get_client(client_id)
-        if winner is None or winner.owner_user_id != user.user_id:
+        if winner is None:
+            # The client was deleted during the race.
+            raise HTTPException(status_code=400, detail="Unknown or deleted client")
+        owner_user = storage.get_user_by_id(winner.owner_user_id) if winner.owner_user_id else None
+        if owner_user is None or owner_user.email != email:
             raise HTTPException(
                 status_code=403,
                 detail="This client is already associated with a different user account.",
             )
+        # Same account won the race; its persisted record is canonical, so
+        # don't write a duplicate user.
+        return
 
     storage.put_user(user)
 

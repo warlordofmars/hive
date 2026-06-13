@@ -769,6 +769,70 @@ class TestGoogleCallback:
         # The loser was rejected before any user upsert.
         assert storage.get_user_by_email("loser@example.com") is None
 
+    def test_concurrent_bind_same_user_proceeds(self, oauth_client):
+        """Two concurrent *first* logins by the same Google account: the
+        bind-race loser is NOT rejected (the winner's record is the same email)
+        and no duplicate user is written — it just proceeds."""
+        from hive.models import User as UserModel
+
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+
+        def _same_account_wins(client_id, user_id):
+            # A concurrent callback for the SAME email created + bound a user
+            # first (with a different, freshly-generated user_id).
+            canonical = UserModel(email="dup@example.com", display_name="dup", role="user")
+            storage.put_user(canonical)
+            owned = storage.get_client(client_id)
+            owned.owner_user_id = canonical.user_id
+            storage.put_client(owned)
+            return False
+
+        claims = {"email": "dup@example.com", "email_verified": True, "sub": "dup"}
+        with (
+            patch.object(storage, "bind_client_owner", side_effect=_same_account_wins),
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=claims),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "goog-code", "state": pending.state},
+                follow_redirects=False,
+            )
+        # Same account — not rejected, and the owner is the canonical record.
+        assert resp.status_code == 302
+        bound = storage.get_client(client.client_id)
+        owner = storage.get_user_by_id(bound.owner_user_id)
+        assert owner.email == "dup@example.com"
+
+    def test_concurrent_bind_client_deleted_returns_400(self, oauth_client):
+        """If the client is deleted during the bind race (re-read is None), the
+        callback fails with 400, not a misleading 403."""
+        tc, storage, client = oauth_client
+        pending = self._setup_pending(storage, client)
+
+        def _delete_and_lose(client_id, user_id):
+            storage.delete_client(client_id)
+            return False
+
+        claims = {"email": "vanish@example.com", "email_verified": True, "sub": "vanish"}
+        with (
+            patch.object(storage, "bind_client_owner", side_effect=_delete_and_lose),
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=claims),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            resp = tc.get(
+                "/oauth/google/callback",
+                params={"code": "goog-code", "state": pending.state},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 400
+        assert storage.get_user_by_email("vanish@example.com") is None
+
 
 class TestOAuthToken:
     def _get_auth_code(self, tc, storage, client) -> tuple[str, str]:
