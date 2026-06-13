@@ -70,6 +70,62 @@ describe("RoadmapPage", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
   });
 
+  it("ignores a successful fetch that resolves after unmount (cancelled guard)", async () => {
+    // Covers the `if (!cancelled)` guard in the `.then` handler when
+    // the cleanup function has already flipped `cancelled` to true.
+    // Hold the json() promise so we can unmount before the success
+    // callback runs, exercising the cancelled === true branch.
+    let resolveJson;
+    const jsonPromise = new Promise((resolve) => {
+      resolveJson = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => jsonPromise,
+      }),
+    );
+    let unmount;
+    await act(async () => {
+      ({ unmount } = renderInRouter());
+    });
+    // Unmount first (sets cancelled = true), then resolve the fetch so
+    // the `.then` runs against an unmounted component.
+    unmount();
+    await act(async () => {
+      resolveJson([
+        issue({ id: 1, title: "Late item", labels: ["public-roadmap", "roadmap:now"] }),
+      ]);
+      await jsonPromise;
+    });
+    // No assertion on DOM needed — the test passes if setState on the
+    // unmounted component is skipped (no act warning / no throw).
+    expect(screen.queryByText("Late item")).toBeNull();
+  });
+
+  it("ignores a failing fetch that rejects after unmount (cancelled guard)", async () => {
+    // Covers the `if (!cancelled)` guard in the `.catch` handler when
+    // the cleanup function has already flipped `cancelled` to true.
+    let rejectFetch;
+    const fetchPromise = new Promise((_resolve, reject) => {
+      rejectFetch = reject;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(fetchPromise));
+    let unmount;
+    await act(async () => {
+      ({ unmount } = renderInRouter());
+    });
+    unmount();
+    await act(async () => {
+      rejectFetch(new Error("network"));
+      await fetchPromise.catch(() => {});
+    });
+    // The error branch must not have rendered against the unmounted tree.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("renders Now / Next / Later / Shipped columns with their issues", async () => {
     mockFetchOk([
       issue({ id: 1, title: "Alpha now", labels: ["public-roadmap", "roadmap:now"] }),

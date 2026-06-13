@@ -144,6 +144,37 @@ def server_env():
 
 
 # ---------------------------------------------------------------------------
+# _tool_result schema contract (#654)
+# ---------------------------------------------------------------------------
+
+
+class TestToolResultSchemaContract:
+    """Every tool routes its return value through ``_tool_result``. FastMCP
+    auto-generates an ``outputSchema`` from each tool's return annotation, and
+    the MCP spec requires a conforming ``structuredContent`` whenever an
+    ``outputSchema`` is declared. Guard the shared chokepoint so a new tool
+    can't reintroduce the spec violation that broke spec-strict clients (#654).
+    """
+
+    def test_string_payload_wraps_as_result(self, server_env):
+        storage, client_id, _ = server_env
+        from hive.server import _tool_result
+
+        r = _tool_result("hello", storage, client_id)
+        # Matches the FastMCP `x-fastmcp-wrap-result` schema for `-> str` tools.
+        assert r.structured_content == {"result": "hello"}
+        # Human-readable text is preserved for display.
+        assert r.content[0].text == "hello"
+
+    def test_dict_payload_passes_through_as_structured_content(self, server_env):
+        storage, client_id, _ = server_env
+        from hive.server import _tool_result
+
+        r = _tool_result({"count": 2}, storage, client_id)
+        assert r.structured_content == {"count": 2}
+
+
+# ---------------------------------------------------------------------------
 # ping
 # ---------------------------------------------------------------------------
 
@@ -159,6 +190,20 @@ class TestPing:
         meta = _hive_meta(result)
         assert "memory_quota" in meta
         assert "rate_limit" in meta
+
+    async def test_result_conforms_to_advertised_output_schema(self, server_env):
+        """#654 — FastMCP auto-generates an outputSchema for `-> str` tools
+        ({"result": str, "x-fastmcp-wrap-result": true}). A ToolResult that
+        carries no structured_content violates that schema, and spec-strict
+        MCP clients (e.g. AWS Strands) reject the call with "has an output
+        schema but did not return structured content". The wrapped result must
+        be present AND the human-readable text preserved."""
+        _, _, jwt = server_env
+        from hive.server import ping
+
+        result = await ping(ctx=_make_ctx(jwt))
+        assert result.structured_content == {"result": "ok"}
+        assert _text(result) == "ok"
 
     async def test_missing_auth_raises_tool_error(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -2198,6 +2243,24 @@ class TestRecallBinary:
         assert block.mimeType == "image/png"
         assert block.data == self._PNG_1PX
 
+    async def test_recall_image_includes_structured_content(self, server_env, monkeypatch):
+        """#654 — recall is `-> str`, so FastMCP advertises the wrap-result
+        outputSchema even for the binary branch. That branch returns an
+        ImageContent block, so it must ALSO carry schema-conforming
+        structured_content or spec-strict MCP clients reject the call. The
+        image bytes remain in the content block."""
+        from mcp.types import ImageContent
+
+        from hive.server import recall, remember_blob
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        await remember_blob("img-sc", self._PNG_1PX, "image/png", ctx=_make_ctx(jwt))
+
+        result = await recall("img-sc", ctx=_make_ctx(jwt))
+        assert result.structured_content == {"result": "[binary content: image/png]"}
+        assert isinstance(result.content[0], ImageContent)
+
     async def test_recall_non_image_blob_returns_image_content(self, server_env, monkeypatch):
         """recall() returns ImageContent for non-image binary blobs."""
         import base64
@@ -2331,6 +2394,46 @@ class TestForgetAll:
         read_only_jwt = _make_limited_scope_jwt(storage, "memories:read")
         with pytest.raises(ToolError, match="Insufficient scope"):
             await forget_all("t", ctx=_make_ctx(read_only_jwt))
+
+    async def test_forget_all_does_not_delete_other_clients_memories(self, server_env):
+        """Cross-tenant data destruction guard (GHSA-h9vh-rpcv-xqrr).
+
+        forget_all must scope deletion to the calling client. A second,
+        distinct client's same-tagged memory must survive — even when neither
+        client is bound to a user account (the production DCR case where
+        owner_user_id is None), so scoping cannot rely on owner_user_id alone.
+        """
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import forget_all, remember
+
+        storage, _client_a_id, jwt_a = server_env
+
+        # Client A stores a memory under a tag both clients happen to use.
+        await remember("victim", "owned by A", ["shared"], ctx=_make_ctx(jwt_a))
+
+        # A distinct client B, unbound to any user (mirrors production DCR).
+        client_b = OAuthClient(client_name="Other Client")
+        assert client_b.owner_user_id is None
+        storage.put_client(client_b)
+        now = datetime.now(timezone.utc)
+        token_b = Token(
+            client_id=client_b.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token_b)
+        jwt_b = issue_jwt(token_b)
+        await remember("b-note", "owned by B", ["shared"], ctx=_make_ctx(jwt_b))
+
+        # Client B bulk-deletes by the shared tag.
+        result = await forget_all("shared", ctx=_make_ctx(jwt_b))
+
+        # B may only delete its own memory; A's must survive.
+        assert storage.get_memory_by_key("victim") is not None
+        assert storage.get_memory_by_key("b-note") is None
+        assert "1" in _text(result)
 
 
 # ---------------------------------------------------------------------------

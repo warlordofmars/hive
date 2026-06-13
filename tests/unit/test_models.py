@@ -5,12 +5,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from hive.models import (
     AuthorizationCode,
+    Invite,
     Memory,
     OAuthClient,
     OAuthClientType,
     Token,
+    Workspace,
+    WorkspaceMember,
+    WorkspaceRole,
 )
 
 
@@ -52,6 +58,38 @@ class TestMemory:
     def test_no_tags_produces_no_tag_items(self):
         m = Memory(key="k", value="v", owner_client_id="c1")
         assert m.to_dynamo_tag_items() == []
+
+    def test_to_dynamo_user_tag_items(self):
+        m = Memory(
+            key="foo",
+            value="bar",
+            tags=["alpha", "beta"],
+            owner_client_id="c1",
+            owner_user_id="user-1",
+        )
+        items = m.to_dynamo_user_tag_items()
+        assert len(items) == 2
+        pks = {item["PK"] for item in items}
+        assert pks == {"USERTAG#user-1"}
+        sks = {item["SK"] for item in items}
+        assert sks == {
+            f"TAG#alpha#MEMORY#{m.memory_id}",
+            f"TAG#beta#MEMORY#{m.memory_id}",
+        }
+        for item in items:
+            assert item["memory_id"] == m.memory_id
+            assert item["key"] == "foo"
+            assert item["owner_client_id"] == "c1"
+            assert item["owner_user_id"] == "user-1"
+
+    def test_to_dynamo_user_tag_items_no_tags(self):
+        m = Memory(key="k", value="v", owner_client_id="c1", owner_user_id="user-1")
+        assert m.to_dynamo_user_tag_items() == []
+
+    def test_to_dynamo_user_tag_items_raises_without_owner_user_id(self):
+        m = Memory(key="k", value="v", tags=["t"], owner_client_id="c1")
+        with pytest.raises(ValueError, match="owner_user_id required"):
+            m.to_dynamo_user_tag_items()
 
     def test_default_value_type_is_text(self):
         # #497: existing memories stay "text" with no pointer
@@ -353,3 +391,158 @@ class TestApiKey:
         assert resp.key_id == k.key_id
         assert resp.name == "Test"
         assert "key_hash" not in resp.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Workspaces (#490)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceModel:
+    def test_defaults(self):
+        ws = Workspace(name="Acme", owner_user_id="u1")
+        assert ws.workspace_id
+        assert ws.is_personal is False
+        assert ws.description is None
+        assert ws.created_at.tzinfo == timezone.utc
+
+    def test_to_dynamo_skips_unset_description(self):
+        ws = Workspace(name="Acme", owner_user_id="u1")
+        item = ws.to_dynamo()
+        assert item["PK"] == f"WORKSPACE#{ws.workspace_id}"
+        assert item["SK"] == "META"
+        assert item["is_personal"] is False
+        assert "description" not in item
+
+    def test_to_dynamo_includes_description(self):
+        ws = Workspace(name="Acme", owner_user_id="u1", description="notes")
+        item = ws.to_dynamo()
+        assert item["description"] == "notes"
+
+    def test_from_dynamo_roundtrip(self):
+        ws = Workspace(
+            name="Acme",
+            owner_user_id="u1",
+            is_personal=True,
+            description="personal",
+        )
+        item = ws.to_dynamo()
+        ws2 = Workspace.from_dynamo(item)
+        assert ws2.workspace_id == ws.workspace_id
+        assert ws2.name == ws.name
+        assert ws2.owner_user_id == ws.owner_user_id
+        assert ws2.is_personal is True
+        assert ws2.description == "personal"
+
+    def test_from_dynamo_without_is_personal_defaults_to_false(self):
+        item = {
+            "workspace_id": "ws-1",
+            "name": "Any",
+            "owner_user_id": "u1",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        ws = Workspace.from_dynamo(item)
+        assert ws.is_personal is False
+
+
+class TestWorkspaceMemberModel:
+    def test_defaults(self):
+        m = WorkspaceMember(workspace_id="ws", user_id="u1")
+        assert m.role is WorkspaceRole.member
+        assert m.joined_at.tzinfo == timezone.utc
+
+    def test_to_dynamo_includes_gsi5_keys(self):
+        m = WorkspaceMember(workspace_id="ws-1", user_id="u1", role=WorkspaceRole.owner)
+        item = m.to_dynamo()
+        assert item["PK"] == "WORKSPACE#ws-1"
+        assert item["SK"] == "MEMBER#u1"
+        assert item["GSI5PK"] == "USER#u1"
+        assert item["GSI5SK"] == "WORKSPACE#ws-1"
+        assert item["role"] == "owner"
+
+    def test_from_dynamo_roundtrip(self):
+        m = WorkspaceMember(workspace_id="ws-1", user_id="u1", role=WorkspaceRole.admin)
+        item = m.to_dynamo()
+        m2 = WorkspaceMember.from_dynamo(item)
+        assert m2.workspace_id == "ws-1"
+        assert m2.user_id == "u1"
+        assert m2.role is WorkspaceRole.admin
+        assert m2.joined_at == m.joined_at
+
+
+class TestInviteModel:
+    def _invite(self, **overrides):
+        defaults = dict(
+            workspace_id="ws-1",
+            email="invitee@example.com",
+            invited_by_user_id="inviter",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+        )
+        defaults.update(overrides)
+        return Invite(**defaults)
+
+    def test_defaults(self):
+        inv = self._invite()
+        assert inv.invite_id
+        assert inv.role is WorkspaceRole.member
+        assert inv.created_at.tzinfo == timezone.utc
+
+    def test_to_dynamo_sets_ttl(self):
+        inv = self._invite()
+        item = inv.to_dynamo()
+        assert item["PK"] == f"INVITE#{inv.invite_id}"
+        assert item["SK"] == "META"
+        assert item["ttl"] == int(inv.expires_at.timestamp())
+
+    def test_from_dynamo_roundtrip(self):
+        inv = self._invite(role=WorkspaceRole.admin)
+        item = inv.to_dynamo()
+        inv2 = Invite.from_dynamo(item)
+        assert inv2.invite_id == inv.invite_id
+        assert inv2.workspace_id == inv.workspace_id
+        assert inv2.email == inv.email
+        assert inv2.role is WorkspaceRole.admin
+        assert inv2.invited_by_user_id == inv.invited_by_user_id
+
+    def test_is_expired_detects_past_timestamp(self):
+        inv = self._invite(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        assert inv.is_expired is True
+
+    def test_is_expired_false_for_future(self):
+        assert self._invite().is_expired is False
+
+
+class TestMemoryWorkspaceIdField:
+    def test_workspace_id_defaults_to_none(self):
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        assert m.workspace_id is None
+
+    def test_workspace_id_roundtrips_via_dynamo(self):
+        m = Memory(key="k", value="v", owner_client_id="c1", workspace_id="ws-1")
+        item = m.to_dynamo_meta()
+        assert item["workspace_id"] == "ws-1"
+        m2 = Memory.from_dynamo(item)
+        assert m2.workspace_id == "ws-1"
+
+    def test_workspace_id_absent_from_dynamo_when_none(self):
+        m = Memory(key="k", value="v", owner_client_id="c1")
+        item = m.to_dynamo_meta()
+        assert "workspace_id" not in item
+
+
+class TestOAuthClientWorkspaceIdField:
+    def test_workspace_id_defaults_to_none(self):
+        c = OAuthClient(client_name="Test")
+        assert c.workspace_id is None
+
+    def test_workspace_id_roundtrips_via_dynamo(self):
+        c = OAuthClient(client_name="Test", workspace_id="ws-1")
+        item = c.to_dynamo()
+        assert item["workspace_id"] == "ws-1"
+        c2 = OAuthClient.from_dynamo(item)
+        assert c2.workspace_id == "ws-1"
+
+    def test_workspace_id_absent_from_dynamo_when_none(self):
+        c = OAuthClient(client_name="Test")
+        item = c.to_dynamo()
+        assert "workspace_id" not in item

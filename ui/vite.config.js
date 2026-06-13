@@ -31,6 +31,12 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    fs: {
+      // vite 8 tightened filesystem serving to the project root; ChangelogPage
+      // imports the repo-root CHANGELOG.md via ?raw (handled by rawOutsideRoot),
+      // which lives one level above ui/, so allow the workspace root.
+      allow: [path.resolve(__dirname, "..")],
+    },
     proxy: {
       "/api": "http://localhost:8001",
       "/auth": "http://localhost:8001",

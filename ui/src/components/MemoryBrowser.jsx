@@ -312,6 +312,19 @@ export default function MemoryBrowser() {
     }
   }, [tagFilter]);
 
+  // Always points at the latest `load` so that async handlers like
+  // handleCreate, which capture `load` in their closure when they
+  // start, refresh against the *current* tagFilter rather than the
+  // filter that was active when the handler began (#645). Without
+  // this, a user who changes the tag filter while a create POST is
+  // in flight can see the post-create refresh clobber their freshly
+  // filtered list with the unfiltered fetch.
+  //
+  // Seeded with the first-render `load` (useRef only honours the arg
+  // on the initial render) so the ref is non-null by construction.
+  // The useEffect below keeps it in sync with subsequent renders.
+  const loadRef = useRef(load);
+
   const runSearch = useCallback(async (query, topK) => {
     setLoading(true);
     setError("");
@@ -326,8 +339,11 @@ export default function MemoryBrowser() {
     }
   }, []);
 
-  // When tag filter changes, run list (not search)
+  // When tag filter changes, run list (not search). Also stash the
+  // current `load` in a ref so async mutation handlers can call the
+  // latest version (avoiding the stale-closure race in #645).
   useEffect(() => {
+    loadRef.current = load;
     if (!isSearchMode) load();
   }, [load, isSearchMode]);
 
@@ -389,7 +405,9 @@ export default function MemoryBrowser() {
   }
 
   async function loadMore() {
-    if (!nextCursor) return; /* c8 ignore next */
+    /* v8 ignore next -- defensive: loadMore is only reachable via the
+       "Load more" button, which renders only when nextCursor is truthy */
+    if (!nextCursor) return;
     setLoadingMore(true);
     try {
       const data = await api.listMemories(tagFilter || undefined, { cursor: nextCursor });
@@ -455,25 +473,20 @@ export default function MemoryBrowser() {
             // every subsequent create.
             localStorage.setItem("hive_first_memory_skipped", "1");
           }
-          if (!tagFilter && !isSearchMode) {
-            setMemories(fresh.items ?? []);
-            setNextCursor(fresh.next_cursor ?? null);
-            // load() normally clears `error` via setError("") on
-            // its happy path. We're skipping load() here, so do the
-            // clear explicitly — otherwise a stale error from an
-            // earlier failed mutation can stay visible after a
-            // successful create.
-            setError("");
-            return;
-          }
-          // Filtered view — fall through to load() so we re-fetch
-          // the user's current slice instead of clobbering it.
+          // Skip the optimistic setMemories — if the user has switched
+          // to a filtered/search view *during* the create flow, this
+          // would clobber their current slice with the unfiltered
+          // probe result (#645). Always fall through to load() via the
+          // ref so the refresh uses the *current* tagFilter.
         } catch {
           // Transient list failure shouldn't surface as a create
           // error since the create itself succeeded.
         }
       }
-      load();
+      // Use the ref so we always call the latest `load` closure,
+      // which sees the current tagFilter rather than the value
+      // captured when handleCreate started (#645).
+      loadRef.current();
     } catch (err) {
       handleMutationError(err);
     }
@@ -492,7 +505,7 @@ export default function MemoryBrowser() {
       body.ttl_seconds = form.ttl === "" ? 0 : parseInt(form.ttl, 10);
       await api.updateMemory(editing.memory_id, body);
       setEditing(null);
-      load();
+      loadRef.current();
     } catch (err) {
       setError(err.message);
     }
@@ -501,7 +514,7 @@ export default function MemoryBrowser() {
   async function handleDelete(id) {
     try {
       await api.deleteMemory(id);
-      load();
+      loadRef.current();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -591,7 +604,7 @@ export default function MemoryBrowser() {
     try {
       await api.restoreMemoryVersion(viewingHistory.memory_id, versionTimestamp);
       closeHistory();
-      load();
+      loadRef.current();
     } catch (err) {
       setError(err.message);
     }

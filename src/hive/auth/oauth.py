@@ -133,12 +133,29 @@ async def register(
 # ---------------------------------------------------------------------------
 
 
-def _bypass_associate_user(storage: HiveStorage, client_id: str, email: str) -> None:
-    """Upsert a test user and associate the DCR client with them.
+def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str) -> None:
+    """Upsert the authenticated user and bind the DCR client to them.
 
-    Only called in HIVE_BYPASS_GOOGLE_AUTH mode when test_email is supplied to
-    /oauth/authorize.  This mirrors the production Google-callback path so that
-    user-scoped MCP tools (list_memories, summarize_context) work in e2e tests.
+    Called from both the production Google callback and the
+    HIVE_BYPASS_GOOGLE_AUTH test shortcut so the two paths bind users
+    identically.  The divergence where *only* the bypass path bound a user was
+    the cause of #648: real Google-authenticated clients ended up with
+    owner_user_id=None, permanently breaking user-scoped MCP tools
+    (list_memories, summarize_context).
+
+    Binding is **first-bind-wins and single-user**:
+
+    * owner_user_id is set only when it is currently None, via an atomic
+      conditional write (``bind_client_owner``) so first-bind-wins holds even
+      under concurrent callbacks for the same unowned client;
+    * once a client is owned, only that same user may re-authenticate through
+      it — a *different* account is rejected with HTTP 403 and the binding is
+      left untouched.
+
+    The single-user rule is a security boundary: MCP access tokens carry only
+    client_id (no user identity) and the tools scope by client.owner_user_id, so
+    if a second user were allowed to obtain a token for an already-owned client
+    they would gain access to the owner's memory scope.
     """
     from hive.auth.google import is_admin_email
 
@@ -147,18 +164,60 @@ def _bypass_associate_user(storage: HiveStorage, client_id: str, email: str) -> 
     role = "admin" if is_admin_email(email) else "user"
 
     user = storage.get_user_by_email(email)
+    client = storage.get_client(client_id)
+
+    # Fail fast (before any write) if the client no longer exists — e.g. it was
+    # deleted between /oauth/authorize and this callback. Avoids upserting an
+    # orphan user and binding to nothing.
+    if client is None:
+        raise HTTPException(status_code=400, detail="Unknown or deleted client")
+
+    # Single-user boundary: refuse to proceed when the client is already bound
+    # to someone other than the authenticating user. Checked before any write so
+    # a rejected login leaves no trace. Distinguish a dangling binding (the owner
+    # account was deleted) from a genuine different-user attempt so the error is
+    # diagnosable.
+    if client.owner_user_id is not None and (user is None or user.user_id != client.owner_user_id):
+        if storage.get_user_by_id(client.owner_user_id) is None:
+            raise HTTPException(
+                status_code=400,
+                detail="This client is bound to a user account that no longer exists.",
+            )
+        raise HTTPException(
+            status_code=403,
+            detail="This client is already associated with a different user account.",
+        )
+
     if user is None:
         user = User(email=email, display_name=display_name, role=role, created_at=now)
     else:
         user.display_name = display_name
         user.role = role
     user.last_login_at = now
-    storage.put_user(user)
 
-    client = storage.get_client(client_id)
-    if client is not None and client.owner_user_id is None:
-        client.owner_user_id = user.user_id
-        storage.put_client(client)
+    # Claim ownership atomically. The conditional write closes the
+    # read-modify-write race: if two callbacks for the same unowned client run
+    # concurrently, exactly one bind wins. The loser re-reads and resolves the
+    # outcome by *identity* (email), not by the transient generated user_id, so
+    # two concurrent first-logins by the same account don't spuriously 403.
+    # put_user runs only after the bind is settled, so a rejected login (or a
+    # same-account race that defers to the canonical record) persists nothing.
+    if client.owner_user_id is None and not storage.bind_client_owner(client_id, user.user_id):
+        winner = storage.get_client(client_id)
+        if winner is None:
+            # The client was deleted during the race.
+            raise HTTPException(status_code=400, detail="Unknown or deleted client")
+        owner_user = storage.get_user_by_id(winner.owner_user_id) if winner.owner_user_id else None
+        if owner_user is None or owner_user.email != email:
+            raise HTTPException(
+                status_code=403,
+                detail="This client is already associated with a different user account.",
+            )
+        # Same account won the race; its persisted record is canonical, so
+        # don't write a duplicate user.
+        return
+
+    storage.put_user(user)
 
 
 @router.get("/oauth/authorize", responses={400: {"description": "Invalid authorization request"}})
@@ -206,7 +265,7 @@ async def authorize(
         if test_email:
             if not is_email_allowed(test_email):
                 raise HTTPException(status_code=403, detail="test_email is not allowed")
-            _bypass_associate_user(storage, client_id, test_email)
+            _associate_user_with_client(storage, client_id, test_email)
         auth_code = storage.create_auth_code(
             client_id=client_id,
             redirect_uri=redirect_uri,
@@ -289,6 +348,13 @@ async def google_callback(
         raise HTTPException(status_code=400, detail="Google account email not verified")
     if not is_email_allowed(email):
         raise HTTPException(status_code=403, detail=f"Email {email!r} is not authorised")
+
+    # Bind the DCR client to the now-verified user (first-bind-wins) so that
+    # user-scoped MCP tools work for real Google-authenticated clients. Without
+    # this, production clients kept owner_user_id=None and list_memories /
+    # summarize_context always failed — the bug behind #648. Mirrors the
+    # HIVE_BYPASS_GOOGLE_AUTH path via the same shared helper.
+    _associate_user_with_client(storage, pending.client_id, email)
 
     auth_code = storage.create_auth_code(
         client_id=pending.client_id,

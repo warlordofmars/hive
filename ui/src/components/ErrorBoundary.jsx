@@ -22,6 +22,9 @@ export default class ErrorBoundary extends React.Component {
     // Best-effort: log to the browser console so a developer
     // inspecting the page can find the trace. A real backend
     // ingest endpoint can be wired here later.
+    /* v8 ignore next -- defensive: jsdom/React require a live console to
+       even reach componentDidCatch, so the falsy-console else branch is
+       unreachable under test */
     if (globalThis.console) {
       // eslint-disable-next-line no-console
       globalThis.console.error("ErrorBoundary caught:", error, info);

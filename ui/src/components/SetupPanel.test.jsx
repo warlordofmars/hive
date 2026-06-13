@@ -230,6 +230,25 @@ describe("SetupPanel", () => {
     await waitFor(() => expect(screen.getByText("Unauthorized")).toBeTruthy());
   });
 
+  it("shows 'Testing…' label while the connection test is in flight", async () => {
+    let resolveTest;
+    api.listMemories.mockReturnValue(
+      new Promise((resolve) => {
+        resolveTest = resolve;
+      }),
+    );
+    await act(async () => render(<SetupPanel />));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Test connection"));
+    });
+    // Mid-flight: the button shows the pending label and is disabled.
+    expect(screen.getByText("Testing…")).toBeTruthy();
+    await act(async () => {
+      resolveTest({ items: [] });
+    });
+    await waitFor(() => expect(screen.getByText("Connected")).toBeTruthy());
+  });
+
   it("shows error message when rejection has no message", async () => {
     api.listMemories.mockRejectedValue({});
     await act(async () => render(<SetupPanel />));
@@ -620,6 +639,26 @@ describe("SetupPanel", () => {
       expect(createObjectURL).toHaveBeenCalledWith(blob);
       expect(linkClick).toHaveBeenCalled();
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock");
+    });
+
+    it("shows 'Preparing…' label while the export is in flight", async () => {
+      let resolveExport;
+      api.exportAccount.mockReturnValue(
+        new Promise((resolve) => {
+          resolveExport = resolve;
+        }),
+      );
+      await act(async () => render(<SetupPanel />));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Export my data" }));
+      });
+      // Mid-flight: the button shows the pending label.
+      expect(screen.getByText("Preparing…")).toBeTruthy();
+      const blob = new Blob(["{}"], { type: "application/json" });
+      await act(async () => {
+        resolveExport({ blob, filename: "hive-export.json" });
+      });
+      await waitFor(() => expect(linkClick).toHaveBeenCalled());
     });
 
     it("displays error when export fails", async () => {

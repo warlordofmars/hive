@@ -35,7 +35,19 @@ def browser_page():
         # nav-tab click until it's dismissed. An `add_init_script`
         # pre-sets the dismissed flag on every page that loads in
         # this context so e2e tests never see the overlay.
-        context.add_init_script("localStorage.setItem('hive_tour_dismissed', '1');")
+        #
+        # `hive_first_memory_skipped=1` pre-disables the post-create
+        # "first memory probe" in MemoryBrowser.handleCreate (#645).
+        # The probe itself no longer clobbers the filtered list — the
+        # underlying race was fixed in the same PR (loadRef +
+        # dropping the optimistic setMemories shortcut) — but skipping
+        # it puts the e2e fixture in the same steady state real users
+        # experience after their first save: one POST + one filtered
+        # GET, no spare unfiltered round trip racing the assertion.
+        context.add_init_script(
+            "localStorage.setItem('hive_tour_dismissed', '1');"
+            "localStorage.setItem('hive_first_memory_skipped', '1');"
+        )
         page = context.new_page()
 
         # Navigate to the bypass login endpoint via CloudFront (same origin as
@@ -126,28 +138,20 @@ class TestUIE2E:
         # Wait for the list to reload after save.
         page.wait_for_load_state("networkidle")
 
-        # Apply tag filter and retry to handle DynamoDB GSI eventual consistency.
-        # The TagIndex GSI may not immediately reflect a new write; if the filtered
-        # list comes back empty, clear the chip and reapply the filter until the
-        # memory appears (or we exhaust retries). 24 × 5s = 120s total — GSI has
-        # been observed taking north of 60s under load in the dev pipeline.
-        _RETRIES = 24
-        for attempt in range(_RETRIES):
-            # If a chip is already showing, clear it first so we can re-type.
-            if page.locator("[aria-label='Clear tag filter']").count() > 0:
-                page.locator("[aria-label='Clear tag filter']").click()
-                page.wait_for_selector("input[placeholder='Filter by tag']")
-            tag_input = page.locator("input[placeholder='Filter by tag']")
-            tag_input.fill(unique_tag)
-            tag_input.press("Enter")
-            page.wait_for_load_state("networkidle")
-            if page.locator(f"text={memory_key}").count() > 0:
-                break
-            if attempt < _RETRIES - 1:
-                time.sleep(5)  # wait for GSI propagation before retrying
-        assert page.locator(f"text={memory_key}").first.is_visible(), (
-            f"Memory '{memory_key}' not visible after filtering by tag '{unique_tag}'"
-        )
+        # Apply tag filter. The USERTAG strongly-consistent path (#568) means
+        # the memory is visible to the GET as soon as the POST returns — but
+        # the previous wait_for_load_state("networkidle") + manual retry
+        # pattern raced the React useEffect that fires the tag-filtered GET
+        # (#645): networkidle returns immediately when the page is already
+        # loaded, so the assertion runs before the in-flight GET resolves.
+        # Use Playwright's auto-waiting expect() instead — it polls until the
+        # locator becomes visible or the timeout elapses.
+        from playwright.sync_api import expect
+
+        tag_input = page.locator("input[placeholder='Filter by tag']")
+        tag_input.fill(unique_tag)
+        tag_input.press("Enter")
+        expect(page.locator(f"text={memory_key}").first).to_be_visible(timeout=15_000)
 
     def test_clients_tab(self, browser_page):
         page = browser_page

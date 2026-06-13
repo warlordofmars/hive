@@ -62,4 +62,22 @@ describe("McpClientsPage", () => {
     await act(async () => renderInRouter(<McpClientsPage />));
     expect(screen.getByText("docs")).toBeTruthy();
   });
+
+  it("reverts to Copy after the 2s timeout fires", async () => {
+    await act(async () => renderInRouter(<McpClientsPage />));
+    // Activate fake timers only after the initial async render has settled.
+    vi.useFakeTimers();
+    try {
+      const copyBtn = screen.getAllByText("Copy")[0];
+      fireEvent.click(copyBtn);
+      expect(screen.getAllByText("Copied!").length).toBeGreaterThanOrEqual(1);
+      // Fire the setTimeout(() => setCopied(false), 2000) callback.
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getAllByText("Copy").length).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

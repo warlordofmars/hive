@@ -22,11 +22,15 @@ from hive.models import (
     ActivityEvent,
     ApiKey,
     EventType,
+    Invite,
     Memory,
     OAuthClient,
     TokenType,
     User,
     UserResponse,
+    Workspace,
+    WorkspaceMember,
+    WorkspaceRole,
 )
 from hive.storage import HiveStorage
 
@@ -55,6 +59,8 @@ def _create_table():
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
             {"AttributeName": "GSI4PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5SK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -77,6 +83,14 @@ def _create_table():
                 "IndexName": "UserEmailIndex",
                 "KeySchema": [
                     {"AttributeName": "GSI4PK", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "WorkspaceMemberIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -785,6 +799,36 @@ class TestTokenStorage:
         assert fetched is not None
         assert fetched.revoked
 
+    def test_revoke_token_silently_ignores_missing_token(self, storage):
+        """revoke_token must not upsert a phantom row when the token is gone."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": ""}},
+            "UpdateItem",
+        )
+        with patch.object(storage.table, "update_item", side_effect=error):
+            # Should not raise.
+            storage.revoke_token("nonexistent-jti")
+
+    def test_revoke_token_reraises_unexpected_client_error(self, storage):
+        """Non-ConditionalCheck ClientErrors must propagate."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.revoke_token("some-jti")
+
 
 class TestAuthCodeAtomicRedemption:
     """#584 — OAuth authorization codes are single-use (RFC 6749 §10.5).
@@ -880,6 +924,54 @@ class TestAuthCodeAtomicRedemption:
             pytest.raises(ClientError),
         ):
             storage.mark_auth_code_used("any-code")
+
+
+class TestClientOwnerAtomicBind:
+    """#648 — binding a DCR client to its owner is first-bind-wins and atomic.
+
+    `bind_client_owner` uses a conditional UpdateItem so two concurrent OAuth
+    callbacks for the same unowned client can't both win the bind (the
+    read-modify-write race that would otherwise defeat first-bind-wins and the
+    403 single-user guard).
+    """
+
+    def test_first_bind_sets_owner(self, storage):
+        client = OAuthClient(client_name="Bind Me")
+        storage.put_client(client)
+        assert storage.bind_client_owner(client.client_id, "user-1") is True
+        assert storage.get_client(client.client_id).owner_user_id == "user-1"
+
+    def test_second_bind_returns_false_and_keeps_owner(self, storage):
+        client = OAuthClient(client_name="Bind Once")
+        storage.put_client(client)
+        assert storage.bind_client_owner(client.client_id, "user-1") is True
+        # A racing/later bind for a different user is rejected by the
+        # conditional write; the first owner stands.
+        assert storage.bind_client_owner(client.client_id, "user-2") is False
+        assert storage.get_client(client.client_id).owner_user_id == "user-1"
+
+    def test_bind_missing_client_returns_false(self, storage):
+        # attribute_exists(PK) guards against binding a client that was never
+        # registered (or was deleted) — no row is created.
+        assert storage.bind_client_owner("never-registered", "user-1") is False
+        assert storage.get_client("never-registered") is None
+
+    def test_unexpected_client_error_reraises(self, storage):
+        """Only ConditionalCheckFailedException maps to False; every other
+        ClientError bubbles up so genuine AWS failures aren't swallowed."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=throttled),
+            pytest.raises(ClientError),
+        ):
+            storage.bind_client_owner("any-client", "user-1")
 
 
 # ---------------------------------------------------------------------------
@@ -1139,6 +1231,19 @@ class TestPagination:
         all_keys = {m.key for m in page1 + page2}
         assert all_keys == {f"pg-{i}" for i in range(5)}
 
+    def test_list_memories_by_tag_skips_when_meta_deleted(self, storage):
+        """A tag GSI entry whose META was removed mid-flight is skipped, not raised.
+
+        The tag index is updated in a best-effort batch alongside the META, so
+        a torn delete (META gone, TAG still present) can surface to the query.
+        """
+        m = Memory(key="k1", value="v", owner_client_id="c1", tags=["torn"])
+        storage.put_memory(m)
+        # Delete just the META, leaving the TAG item behind.
+        storage.table.delete_item(Key={"PK": f"MEMORY#{m.memory_id}", "SK": "META"})
+        result, _ = storage.list_memories_by_tag("torn")
+        assert result == []
+
     def test_list_memories_by_tag_cursor(self, storage):
         for i in range(4):
             storage.put_memory(
@@ -1236,9 +1341,361 @@ class TestPagination:
         mems, _ = storage.list_memories_by_tag("open")
         assert {m.key for m in mems} == {"xa", "ya"}
 
+    def test_list_memories_by_tag_consistent_path_returns_own_memories(self, storage):
+        """owner_user_id uses the USERTAG consistent path and filters cross-user (#568)."""
+        storage.put_memory(
+            Memory(key="mine", value="v", tags=["greet"], owner_client_id="c1", owner_user_id="u1")
+        )
+        storage.put_memory(
+            Memory(key="other", value="v", tags=["greet"], owner_client_id="c2", owner_user_id="u2")
+        )
+        mems, cursor = storage.list_memories_by_tag("greet", owner_user_id="u1")
+        assert [m.key for m in mems] == ["mine"]
+        assert cursor is None  # only one item, no next page
+
+    def test_list_memories_by_tag_consistent_path_write_then_read(self, storage):
+        """USERTAG items written by put_memory are immediately visible via consistent read."""
+        m = Memory(key="instant", value="v", tags=["now"], owner_client_id="c1", owner_user_id="u1")
+        storage.put_memory(m)
+        # Should find the memory immediately — no GSI propagation lag
+        mems, _ = storage.list_memories_by_tag("now", owner_user_id="u1")
+        assert len(mems) == 1
+        assert mems[0].key == "instant"
+
+    def test_list_memories_by_tag_consistent_path_deleted_memory_not_returned(self, storage):
+        """USERTAG items are cleaned up on delete; deleted memories are not returned."""
+        m = Memory(key="gone", value="v", tags=["fade"], owner_client_id="c1", owner_user_id="u1")
+        storage.put_memory(m)
+        storage.delete_memory(m.memory_id)
+        mems, _ = storage.list_memories_by_tag("fade", owner_user_id="u1")
+        assert mems == []
+
+    def test_list_memories_by_tag_consistent_path_owner_client_id_filter(self, storage):
+        """The strongly-consistent USERTAG path also honours owner_client_id:
+        a same-user memory created by a different client is filtered out when
+        owner_client_id is supplied (defence-in-depth for #654/GHSA scoping)."""
+        storage.put_memory(
+            Memory(key="ca", value="v", tags=["dual"], owner_client_id="cA", owner_user_id="u1")
+        )
+        storage.put_memory(
+            Memory(key="cb", value="v", tags=["dual"], owner_client_id="cB", owner_user_id="u1")
+        )
+        mems, _ = storage.list_memories_by_tag("dual", owner_user_id="u1", owner_client_id="cB")
+        assert [m.key for m in mems] == ["cb"]
+
+    def test_list_memories_by_tag_consistent_path_update_replaces_old_tags(self, storage):
+        """After a tag update, only the new tags appear via the consistent path."""
+        m = Memory(
+            key="shift",
+            value="v",
+            tags=["old-tag"],
+            owner_client_id="c1",
+            owner_user_id="u1",
+        )
+        storage.put_memory(m)
+        updated = Memory(
+            memory_id=m.memory_id,
+            key="shift",
+            value="v2",
+            tags=["new-tag"],
+            owner_client_id="c1",
+            owner_user_id="u1",
+        )
+        storage.put_memory(updated)
+        # old tag must be gone
+        old_mems, _ = storage.list_memories_by_tag("old-tag", owner_user_id="u1")
+        assert old_mems == []
+        # new tag must be present
+        new_mems, _ = storage.list_memories_by_tag("new-tag", owner_user_id="u1")
+        assert len(new_mems) == 1 and new_mems[0].key == "shift"
+
+    def test_list_memories_by_tag_no_owner_user_id_still_uses_gsi(self, storage):
+        """When owner_user_id is absent, the GSI path is used (no ConsistentRead)."""
+        storage.put_memory(Memory(key="gsi-mem", value="v", tags=["probe"], owner_client_id="c1"))
+        # Must still return the memory via the GSI path
+        mems, _ = storage.list_memories_by_tag("probe")
+        assert [m.key for m in mems] == ["gsi-mem"]
+
+    def test_list_memories_by_tag_cursor_routing(self, storage):
+        """USERTAG cursor continues on consistent path; GSI cursor falls back to GSI."""
+        import base64
+        import json
+        from unittest.mock import patch
+
+        storage.put_memory(
+            Memory(key="paged", value="v", tags=["page"], owner_client_id="c1", owner_user_id="u1")
+        )
+
+        # Build a valid USERTAG cursor (PK=USERTAG#...) — should stay on consistent path
+        usertag_lek = {"PK": "USERTAG#u1", "SK": "TAG#page#MEMORY#no-such-id"}
+        usertag_cursor = base64.urlsafe_b64encode(json.dumps(usertag_lek).encode()).decode()
+
+        # Build a valid GSI cursor (GSI2PK=TAG#...) — should fall to GSI path
+        gsi_lek = {
+            "PK": "MEMORY#no-such-id",
+            "SK": "TAG#page",
+            "GSI2PK": "TAG#page",
+            "GSI2SK": "no-such-id",
+        }
+        gsi_cursor = base64.urlsafe_b64encode(json.dumps(gsi_lek).encode()).decode()
+
+        with patch.object(
+            storage,
+            "_list_memories_by_tag_consistent",
+            wraps=storage._list_memories_by_tag_consistent,
+        ) as mock_consistent:
+            # no cursor + owner_user_id → consistent path (call #1)
+            storage.list_memories_by_tag("page", owner_user_id="u1")
+            assert mock_consistent.call_count == 1
+
+            # USERTAG cursor + owner_user_id → consistent path continues (call #2)
+            storage.list_memories_by_tag("page", owner_user_id="u1", cursor=usertag_cursor)
+            assert mock_consistent.call_count == 2
+
+            # GSI cursor + owner_user_id → GSI path, consistent NOT called again
+            storage.list_memories_by_tag("page", owner_user_id="u1", cursor=gsi_cursor)
+            assert mock_consistent.call_count == 2
+
+    def test_consistent_path_rejects_cursor_for_different_owner(self, storage):
+        """A USERTAG cursor whose PK belongs to a different owner must be rejected."""
+        import base64
+        import json
+
+        storage.put_memory(
+            Memory(key="m", value="v", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        )
+        forged_lek = {"PK": "USERTAG#u2", "SK": "TAG#t#MEMORY#anything"}
+        forged_cursor = base64.urlsafe_b64encode(json.dumps(forged_lek).encode()).decode()
+
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_memories_by_tag("t", owner_user_id="u1", cursor=forged_cursor)
+
+    def test_consistent_path_rejects_cursor_for_different_tag(self, storage):
+        """A USERTAG cursor whose SK targets a different tag must be rejected."""
+        import base64
+        import json
+
+        storage.put_memory(
+            Memory(key="m", value="v", tags=["t"], owner_client_id="c1", owner_user_id="u1")
+        )
+        forged_lek = {"PK": "USERTAG#u1", "SK": "TAG#other#MEMORY#anything"}
+        forged_cursor = base64.urlsafe_b64encode(json.dumps(forged_lek).encode()).decode()
+
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_memories_by_tag("t", owner_user_id="u1", cursor=forged_cursor)
+
+    def test_consistent_path_skips_memory_when_meta_owner_differs(self, storage):
+        """Defence-in-depth: stale USERTAG pointing at a re-owned memory is skipped."""
+        # Create a memory owned by u1 with tag "shared"
+        m = Memory(key="orig", value="v", tags=["shared"], owner_client_id="c1", owner_user_id="u1")
+        storage.put_memory(m)
+
+        # Forge a stale USERTAG row under u2's partition still pointing at u1's memory
+        storage.table.put_item(
+            Item={
+                "PK": "USERTAG#u2",
+                "SK": f"TAG#shared#MEMORY#{m.memory_id}",
+                "memory_id": m.memory_id,
+                "key": "orig",
+                "owner_client_id": "c1",
+                "owner_user_id": "u2",
+            }
+        )
+
+        mems, _ = storage.list_memories_by_tag("shared", owner_user_id="u2")
+        assert mems == [], "stale USERTAG must be filtered by META owner check"
+
+    def test_gsi_path_skips_memory_when_meta_owner_client_differs(self, storage):
+        """Defence-in-depth on the GSI path: a stale TagIndex item whose
+        owner_client_id passes the server-side FilterExpression but whose
+        hydrated META owner_client_id differs is still skipped by the
+        post-hydration owner check (#654/GHSA-h9vh-rpcv-xqrr)."""
+        m = Memory(key="orig", value="v", tags=["shared"], owner_client_id="c-real")
+        storage.put_memory(m)
+        # Forge the TAG item to claim owner_client_id "c-filter" (so it passes
+        # the FilterExpression) while the memory's META keeps "c-real".
+        storage.table.put_item(
+            Item={
+                "PK": f"MEMORY#{m.memory_id}",
+                "SK": "TAG#shared",
+                "memory_id": m.memory_id,
+                "key": "orig",
+                "owner_client_id": "c-filter",
+                "GSI2PK": "TAG#shared",
+                "GSI2SK": m.memory_id,
+            }
+        )
+        mems, _ = storage.list_memories_by_tag("shared", owner_client_id="c-filter")
+        assert mems == [], "stale TAG item must be rejected by the META owner check"
+
+    def test_put_memory_without_owner_user_id_writes_no_usertag_items(self, storage):
+        """Memories without owner_user_id must not write any USERTAG items."""
+        import boto3
+        from boto3.dynamodb.conditions import Attr as DAttr
+
+        m = Memory(key="anon", value="v", tags=["t"], owner_client_id="c1")
+        storage.put_memory(m)
+
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.Table("hive-test")
+        # Scan for any USERTAG# items referencing this memory_id — there
+        # should be none, since the memory had no owner_user_id. A naive
+        # query on PK="USERTAG#None" would vacuously pass even if the
+        # code wrote items under a real user PK.
+        resp = table.scan(
+            FilterExpression=DAttr("PK").begins_with("USERTAG#")
+            & DAttr("memory_id").eq(m.memory_id),
+        )
+        assert resp["Count"] == 0
+
+    def test_put_memory_conditional_write_writes_usertag_items(self, storage):
+        """expected_version path writes USERTAG items when owner_user_id is set (line 232)."""
+        from datetime import datetime, timezone
+
+        m = Memory(
+            key="cond-ver",
+            value="v1",
+            tags=["tag-x"],
+            owner_client_id="c1",
+            owner_user_id="u-cond",
+        )
+        storage.put_memory(m)
+        stored = storage.get_memory_by_id(m.memory_id)
+        assert stored is not None
+
+        stored.value = "v2"
+        stored.updated_at = datetime.now(timezone.utc)
+        storage.put_memory(stored, expected_version=m.version)
+
+        # USERTAG item must exist for the updated memory
+        mems, _ = storage.list_memories_by_tag("tag-x", owner_user_id="u-cond")
+        assert len(mems) == 1 and mems[0].value == "v2"
+
+    def test_list_memories_by_tag_gsi_path_filters_cross_user(self, storage):
+        """GSI path's in-memory owner_user_id filter drops cross-user memories (line 505).
+
+        We need a cursor to avoid the `decoded_cursor is None` short-circuit that always
+        routes to the consistent path.  Use a cursor whose PK sorts *before* any real UUID
+        so the GSI scan returns all items; then patch _is_usertag_cursor to return False
+        so the routing stays on the GSI path.
+        """
+        import base64
+        import json
+        from unittest.mock import patch
+
+        storage.put_memory(
+            Memory(
+                key="u1-cross2",
+                value="v",
+                tags=["cross2"],
+                owner_client_id="c1",
+                owner_user_id="u1",
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="u2-cross2",
+                value="v",
+                tags=["cross2"],
+                owner_client_id="c2",
+                owner_user_id="u2",
+            )
+        )
+
+        # Build a GSI cursor pointing before all real UUIDs (min UUID sorts first).
+        # The GSI scan from this position returns all items for the tag.
+        early_lek = {
+            "PK": "MEMORY#00000000-0000-0000-0000-000000000000",
+            "SK": "TAG#cross2",
+            "GSI2PK": "TAG#cross2",
+            "GSI2SK": "00000000-0000-0000-0000-000000000000",
+        }
+        early_cursor = base64.urlsafe_b64encode(json.dumps(early_lek).encode()).decode()
+
+        # Patch _is_usertag_cursor → False so the GSI path is taken.
+        # Without the patch: PK="MEMORY#..." → not a USERTAG cursor → GSI path already
+        # (the "USERTAG#" prefix check catches the right shape).  But we patch anyway
+        # to be explicit about what branch we're testing.
+        with patch("hive.storage._is_usertag_cursor", return_value=False):
+            mems, _ = storage.list_memories_by_tag(
+                "cross2", owner_user_id="u1", cursor=early_cursor
+            )
+
+        assert [m.key for m in mems] == ["u1-cross2"]
+
+    def test_list_memories_by_tag_consistent_skips_missing_meta(self, storage):
+        """Consistent path skips USERTAG items whose META was deleted externally (line 543)."""
+        import boto3
+
+        m = Memory(
+            key="orphan",
+            value="v",
+            tags=["phantom"],
+            owner_client_id="c1",
+            owner_user_id="u-orphan",
+        )
+        storage.put_memory(m)
+
+        # Manually delete the META item to simulate an external tombstone,
+        # leaving the USERTAG item intact.
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.Table("hive-test")
+        table.delete_item(Key={"PK": f"MEMORY#{m.memory_id}", "SK": "META"})
+
+        mems, _ = storage.list_memories_by_tag("phantom", owner_user_id="u-orphan")
+        assert mems == []
+
+    def test_list_memories_by_tag_consistent_filters_workspace(self, storage):
+        """Consistent path drops memories whose workspace_id doesn't match (line 545)."""
+        from hive.models import OAuthClient
+
+        client = OAuthClient(client_name="ws-client", owner_user_id="u-ws")
+        storage.put_client(client)
+
+        storage.put_memory(
+            Memory(
+                key="ws-a-mem",
+                value="v",
+                tags=["wsfilter"],
+                owner_client_id=client.client_id,
+                owner_user_id="u-ws",
+                workspace_id="ws-a",
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="ws-b-mem",
+                value="v",
+                tags=["wsfilter"],
+                owner_client_id=client.client_id,
+                owner_user_id="u-ws",
+                workspace_id="ws-b",
+            )
+        )
+
+        mems, _ = storage.list_memories_by_tag(
+            "wsfilter", owner_user_id="u-ws", workspace_id="ws-a"
+        )
+        assert [m.key for m in mems] == ["ws-a-mem"]
+
     def test_invalid_cursor_raises(self, storage):
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
             storage.list_all_memories(cursor="not-valid-base64!!!")
+
+    def test_non_dict_cursor_raises(self, storage):
+        """A base64 cursor that decodes to a non-dict JSON value (e.g. a list) must raise."""
+        import base64
+        import json
+
+        non_dict_cursor = base64.urlsafe_b64encode(
+            json.dumps(["not", "a", "dict"]).encode()
+        ).decode()
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_all_memories(cursor=non_dict_cursor)
+
+        string_cursor = base64.urlsafe_b64encode(json.dumps("just-a-string").encode()).decode()
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            storage.list_memories_by_tag("t", owner_user_id="u1", cursor=string_cursor)
 
     def test_list_all_memories_follows_scan_pages(self, storage):
         """Covers the scan-loop continuation path when DynamoDB returns LastEvaluatedKey."""
@@ -1669,6 +2126,21 @@ class TestBulkMemoryOperations:
         assert storage.get_memory_by_key("x") is None
         assert storage.get_memory_by_key("y") is not None
 
+    def test_delete_memories_by_tag_with_owner_client_id_filter(self, storage):
+        """Bulk delete scoped by owner_client_id removes only the calling
+        client's memories — cross-tenant deletion guard (GHSA-h9vh-rpcv-xqrr).
+        Both memories are unbound to a user (owner_user_id=None), the
+        production DCR case, so scoping relies on owner_client_id via the GSI
+        path."""
+        m1 = Memory(key="mine", value="1", tags=["t"], owner_client_id="cA")
+        m2 = Memory(key="theirs", value="2", tags=["t"], owner_client_id="cB")
+        for m in [m1, m2]:
+            storage.put_memory(m)
+        deleted = storage.delete_memories_by_tag("t", owner_client_id="cA")
+        assert deleted == 1
+        assert storage.get_memory_by_key("mine") is None
+        assert storage.get_memory_by_key("theirs") is not None
+
     def test_delete_memories_by_tag_empty(self, storage):
         assert storage.delete_memories_by_tag("no-such-tag") == 0
 
@@ -1738,3 +2210,474 @@ class TestBulkMemoryOperations:
             result = list(storage.iter_all_memories())
 
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# Workspaces (#490) — tenancy root
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceStorage:
+    def test_put_and_get(self, storage):
+        ws = Workspace(name="Team Acme", owner_user_id="u1")
+        storage.put_workspace(ws)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched is not None
+        assert fetched.name == "Team Acme"
+        assert fetched.owner_user_id == "u1"
+        assert fetched.is_personal is False
+
+    def test_get_nonexistent_returns_none(self, storage):
+        assert storage.get_workspace("no-such-ws") is None
+
+    def test_rename(self, storage):
+        ws = Workspace(name="Old Name", owner_user_id="u1")
+        storage.put_workspace(ws)
+        assert storage.rename_workspace(ws.workspace_id, "New Name") is True
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched.name == "New Name"
+
+    def test_rename_nonexistent_returns_false(self, storage):
+        assert storage.rename_workspace("no-such-ws", "Any") is False
+
+    def test_rename_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        ws = Workspace(name="X", owner_user_id="u1")
+        storage.put_workspace(ws)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.rename_workspace(ws.workspace_id, "Y")
+
+    def test_delete_removes_meta_and_members(self, storage):
+        ws = Workspace(name="Doomed", owner_user_id="u1")
+        storage.put_workspace(ws)
+        storage.add_workspace_member(ws.workspace_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(ws.workspace_id, "u2", WorkspaceRole.member)
+        assert storage.delete_workspace(ws.workspace_id) is True
+        assert storage.get_workspace(ws.workspace_id) is None
+        assert storage.list_workspace_members(ws.workspace_id) == []
+
+    def test_delete_nonexistent_returns_false(self, storage):
+        assert storage.delete_workspace("no-such-ws") is False
+
+    def test_delete_cleans_up_orphaned_members_when_meta_absent(self, storage):
+        """MEMBER rows are deleted even when META is already gone (prevents orphaned GSI entries)."""
+        ws_id = "ghost-ws"
+        # Add member rows directly without a META item.
+        storage.add_workspace_member(ws_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(ws_id, "u2", WorkspaceRole.member)
+        # META is absent → should return False but still clean up members.
+        result = storage.delete_workspace(ws_id)
+        assert result is False
+        assert storage.list_workspace_members(ws_id) == []
+
+    def test_personal_flag_roundtrips(self, storage):
+        ws = Workspace(name="Me Personal", owner_user_id="u1", is_personal=True)
+        storage.put_workspace(ws)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched.is_personal is True
+
+    def test_description_roundtrips(self, storage):
+        ws = Workspace(name="Docs", owner_user_id="u1", description="Company-wide documentation")
+        storage.put_workspace(ws)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched.description == "Company-wide documentation"
+
+    def test_put_workspace_overwrites_existing(self, storage):
+        ws = Workspace(name="Original", owner_user_id="u1")
+        storage.put_workspace(ws)
+        updated = Workspace(
+            workspace_id=ws.workspace_id,
+            name="Updated",
+            owner_user_id="u1",
+            created_at=ws.created_at,
+        )
+        storage.put_workspace(updated)
+        fetched = storage.get_workspace(ws.workspace_id)
+        assert fetched is not None
+        assert fetched.name == "Updated"
+
+
+class TestWorkspaceMemberStorage:
+    def test_add_and_get_member(self, storage):
+        ws_id = "ws-1"
+        member = storage.add_workspace_member(ws_id, "u1", WorkspaceRole.owner)
+        assert member.role is WorkspaceRole.owner
+        fetched = storage.get_workspace_member(ws_id, "u1")
+        assert fetched is not None
+        assert fetched.role is WorkspaceRole.owner
+
+    def test_get_nonexistent_member_returns_none(self, storage):
+        assert storage.get_workspace_member("ws-1", "u-missing") is None
+
+    def test_default_role_is_member(self, storage):
+        member = storage.add_workspace_member("ws-1", "u1")
+        assert member.role is WorkspaceRole.member
+
+    def test_list_members(self, storage):
+        ws_id = "ws-1"
+        storage.add_workspace_member(ws_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(ws_id, "u2", WorkspaceRole.admin)
+        storage.add_workspace_member(ws_id, "u3", WorkspaceRole.member)
+        members = storage.list_workspace_members(ws_id)
+        assert {m.user_id for m in members} == {"u1", "u2", "u3"}
+        assert {m.role for m in members} == {
+            WorkspaceRole.owner,
+            WorkspaceRole.admin,
+            WorkspaceRole.member,
+        }
+
+    def test_list_members_only_returns_target_workspace(self, storage):
+        storage.add_workspace_member("ws-a", "u1", WorkspaceRole.member)
+        storage.add_workspace_member("ws-b", "u2", WorkspaceRole.member)
+        members = storage.list_workspace_members("ws-a")
+        assert [m.user_id for m in members] == ["u1"]
+
+    def test_remove_member(self, storage):
+        storage.add_workspace_member("ws-1", "u1", WorkspaceRole.member)
+        assert storage.remove_workspace_member("ws-1", "u1") is True
+        assert storage.get_workspace_member("ws-1", "u1") is None
+
+    def test_remove_nonexistent_member_returns_false(self, storage):
+        assert storage.remove_workspace_member("ws-1", "u-missing") is False
+
+    def test_update_member_role(self, storage):
+        storage.add_workspace_member("ws-1", "u1", WorkspaceRole.member)
+        assert storage.update_workspace_member_role("ws-1", "u1", WorkspaceRole.admin) is True
+        fetched = storage.get_workspace_member("ws-1", "u1")
+        assert fetched.role is WorkspaceRole.admin
+
+    def test_update_member_role_nonexistent_returns_false(self, storage):
+        assert (
+            storage.update_workspace_member_role("ws-1", "u-missing", WorkspaceRole.admin) is False
+        )
+
+    def test_update_member_role_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        storage.add_workspace_member("ws-1", "u1", WorkspaceRole.member)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.update_workspace_member_role("ws-1", "u1", WorkspaceRole.admin)
+
+    def test_list_workspaces_for_user_via_gsi(self, storage):
+        a = Workspace(name="A", owner_user_id="u1", is_personal=True)
+        b = Workspace(name="B", owner_user_id="u2", is_personal=False)
+        storage.put_workspace(a)
+        storage.put_workspace(b)
+        storage.add_workspace_member(a.workspace_id, "u1", WorkspaceRole.owner)
+        storage.add_workspace_member(b.workspace_id, "u2", WorkspaceRole.owner)
+        storage.add_workspace_member(b.workspace_id, "u1", WorkspaceRole.member)
+
+        names = {ws.name for ws in storage.list_workspaces_for_user("u1")}
+        assert names == {"A", "B"}
+
+    def test_list_workspaces_for_user_skips_orphaned_members(self, storage):
+        """Orphaned member rows (workspace META deleted) don't crash the list."""
+        a = Workspace(name="Real", owner_user_id="u1")
+        storage.put_workspace(a)
+        storage.add_workspace_member(a.workspace_id, "u1", WorkspaceRole.owner)
+        # Add a member for a workspace whose META never existed.
+        storage.add_workspace_member("ghost-ws", "u1", WorkspaceRole.member)
+        workspaces = storage.list_workspaces_for_user("u1")
+        assert [w.workspace_id for w in workspaces] == [a.workspace_id]
+
+    def test_list_workspaces_for_unknown_user_returns_empty(self, storage):
+        assert storage.list_workspaces_for_user("u-nobody") == []
+
+    def test_list_workspace_members_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_workspace_members."""
+        from unittest.mock import patch
+
+        m1 = WorkspaceMember(workspace_id="ws-1", user_id="u1", role=WorkspaceRole.owner)
+        m2 = WorkspaceMember(workspace_id="ws-1", user_id="u2", role=WorkspaceRole.member)
+        page1 = {
+            "Items": [m1.to_dynamo()],
+            "LastEvaluatedKey": {"PK": "WORKSPACE#ws-1", "SK": "MEMBER#u1"},
+        }
+        page2 = {"Items": [m2.to_dynamo()]}
+        with patch.object(storage.table, "query", side_effect=[page1, page2]) as mock_q:
+            members = storage.list_workspace_members("ws-1")
+        assert {m.user_id for m in members} == {"u1", "u2"}
+        assert mock_q.call_count == 2
+
+    def test_list_workspaces_for_user_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_workspaces_for_user."""
+        from unittest.mock import patch
+
+        ws_a = Workspace(name="A", owner_user_id="u1")
+        ws_b = Workspace(name="B", owner_user_id="u1")
+        storage.put_workspace(ws_a)
+        storage.put_workspace(ws_b)
+        gsi_a = {
+            "workspace_id": ws_a.workspace_id,
+            "GSI5PK": "USER#u1",
+            "GSI5SK": f"WORKSPACE#{ws_a.workspace_id}",
+        }
+        gsi_b = {
+            "workspace_id": ws_b.workspace_id,
+            "GSI5PK": "USER#u1",
+            "GSI5SK": f"WORKSPACE#{ws_b.workspace_id}",
+        }
+        page1 = {
+            "Items": [gsi_a],
+            "LastEvaluatedKey": {"PK": f"WORKSPACE#{ws_a.workspace_id}", "SK": "MEMBER#u1"},
+        }
+        page2 = {"Items": [gsi_b]}
+        with patch.object(storage.table, "query", side_effect=[page1, page2]) as mock_q:
+            workspaces = storage.list_workspaces_for_user("u1")
+        assert {ws.name for ws in workspaces} == {"A", "B"}
+        assert mock_q.call_count == 2
+
+
+class TestInviteStorage:
+    def _invite(self, email: str = "invitee@example.com", workspace_id: str = "ws-1"):
+        from datetime import datetime, timedelta, timezone
+
+        return Invite(
+            workspace_id=workspace_id,
+            email=email,
+            role=WorkspaceRole.member,
+            invited_by_user_id="inviter",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+        )
+
+    def test_put_and_get(self, storage):
+        inv = self._invite()
+        storage.put_invite(inv)
+        fetched = storage.get_invite(inv.invite_id)
+        assert fetched is not None
+        assert fetched.email == "invitee@example.com"
+        assert fetched.role is WorkspaceRole.member
+
+    def test_get_nonexistent_returns_none(self, storage):
+        assert storage.get_invite("no-such-invite") is None
+
+    def test_delete(self, storage):
+        inv = self._invite()
+        storage.put_invite(inv)
+        assert storage.delete_invite(inv.invite_id) is True
+        assert storage.get_invite(inv.invite_id) is None
+
+    def test_delete_nonexistent_returns_false(self, storage):
+        assert storage.delete_invite("no-such-invite") is False
+
+    def test_list_pending_invites_for_email_filters_by_email(self, storage):
+        a = self._invite(email="a@example.com")
+        b = self._invite(email="b@example.com")
+        storage.put_invite(a)
+        storage.put_invite(b)
+        invites = storage.list_pending_invites_for_email("a@example.com")
+        assert [i.invite_id for i in invites] == [a.invite_id]
+
+    def test_list_pending_invites_for_email_skips_expired(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        fresh = self._invite(email="a@example.com")
+        expired = Invite(
+            workspace_id="ws-1",
+            email="a@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="inviter",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        storage.put_invite(fresh)
+        storage.put_invite(expired)
+        invites = storage.list_pending_invites_for_email("a@example.com")
+        assert [i.invite_id for i in invites] == [fresh.invite_id]
+
+    def test_list_pending_invites_for_workspace(self, storage):
+        a = self._invite(email="a@example.com", workspace_id="ws-a")
+        b = self._invite(email="b@example.com", workspace_id="ws-b")
+        storage.put_invite(a)
+        storage.put_invite(b)
+        invites = storage.list_pending_invites_for_workspace("ws-a")
+        assert [i.invite_id for i in invites] == [a.invite_id]
+
+    def test_list_pending_invites_for_workspace_skips_expired(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        fresh = self._invite(email="a@example.com", workspace_id="ws-a")
+        expired = Invite(
+            workspace_id="ws-a",
+            email="b@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="inviter",
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        storage.put_invite(fresh)
+        storage.put_invite(expired)
+        invites = storage.list_pending_invites_for_workspace("ws-a")
+        assert [i.invite_id for i in invites] == [fresh.invite_id]
+
+    def test_list_pending_invites_for_email_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_pending_invites_for_email."""
+        from unittest.mock import patch
+
+        inv1 = self._invite(email="a@example.com")
+        inv2 = self._invite(email="a@example.com")
+        page1 = {
+            "Items": [inv1.to_dynamo()],
+            "LastEvaluatedKey": {"PK": f"INVITE#{inv1.invite_id}", "SK": "META"},
+        }
+        page2 = {"Items": [inv2.to_dynamo()]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            invites = storage.list_pending_invites_for_email("a@example.com")
+        assert {i.invite_id for i in invites} == {inv1.invite_id, inv2.invite_id}
+        assert mock_scan.call_count == 2
+
+    def test_list_pending_invites_for_workspace_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path in list_pending_invites_for_workspace."""
+        from unittest.mock import patch
+
+        inv1 = self._invite(workspace_id="ws-1")
+        inv2 = self._invite(workspace_id="ws-1")
+        page1 = {
+            "Items": [inv1.to_dynamo()],
+            "LastEvaluatedKey": {"PK": f"INVITE#{inv1.invite_id}", "SK": "META"},
+        }
+        page2 = {"Items": [inv2.to_dynamo()]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            invites = storage.list_pending_invites_for_workspace("ws-1")
+        assert {i.invite_id for i in invites} == {inv1.invite_id, inv2.invite_id}
+        assert mock_scan.call_count == 2
+
+
+class TestWorkspaceIdFiltering:
+    """Covers the new workspace_id filter on existing list / count methods."""
+
+    def test_list_all_memories_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a")
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items, _ = storage.list_all_memories(workspace_id="ws-a")
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_list_memories_by_tag_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a", tags=["shared"])
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b", tags=["shared"])
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items, _ = storage.list_memories_by_tag("shared", workspace_id="ws-a")
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_iter_all_memories_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a")
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items = list(storage.iter_all_memories(workspace_id="ws-a"))
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_iter_all_memories_by_tag_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a", tags=["t"])
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b", tags=["t"])
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        items = list(storage.iter_all_memories(workspace_id="ws-a", tag="t"))
+        assert [m.memory_id for m in items] == [m1.memory_id]
+
+    def test_delete_memories_by_tag_filters_by_workspace_id(self, storage):
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a", tags=["gone"])
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-b", tags=["gone"])
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        deleted = storage.delete_memories_by_tag("gone", workspace_id="ws-a")
+        assert deleted == 1
+        assert storage.get_memory_by_id(m1.memory_id) is None
+        assert storage.get_memory_by_id(m2.memory_id) is not None
+
+    def test_count_memories_filters_by_workspace_id(self, storage):
+        storage.put_memory(Memory(key="m1", value="v", owner_client_id="c1", workspace_id="ws-a"))
+        storage.put_memory(Memory(key="m2", value="v", owner_client_id="c1", workspace_id="ws-a"))
+        storage.put_memory(Memory(key="m3", value="v", owner_client_id="c1", workspace_id="ws-b"))
+        assert storage.count_memories(workspace_id="ws-a") == 2
+
+    def test_count_clients_filters_by_workspace_id(self, storage):
+        storage.put_client(OAuthClient(client_name="A", workspace_id="ws-a"))
+        storage.put_client(OAuthClient(client_name="B", workspace_id="ws-b"))
+        assert storage.count_clients(workspace_id="ws-a") == 1
+
+    def test_sum_storage_bytes_filters_by_workspace_id(self, storage):
+        # size_bytes is derived from value during put_memory, not set by the
+        # caller; use distinguishable payload lengths per workspace so the
+        # filter assertion is meaningful regardless of actual encoded length.
+        m1 = Memory(key="m1", value="x" * 10, owner_client_id="c1", workspace_id="ws-a")
+        m2 = Memory(key="m2", value="x" * 500, owner_client_id="c1", workspace_id="ws-b")
+        storage.put_memory(m1)
+        storage.put_memory(m2)
+        assert storage.sum_storage_bytes(workspace_id="ws-a") == 10
+        assert storage.sum_storage_bytes(workspace_id="ws-b") == 500
+
+    def test_list_clients_filters_by_workspace_id(self, storage):
+        storage.put_client(OAuthClient(client_name="A", workspace_id="ws-a"))
+        storage.put_client(OAuthClient(client_name="B", workspace_id="ws-b"))
+        clients, _ = storage.list_clients(workspace_id="ws-a")
+        assert [c.client_name for c in clients] == ["A"]
+
+
+class TestRevokeAllTokens:
+    """Bulk token revocation used by the workspaces migration (#490)."""
+
+    def _issue_token(self, storage, client_id: str = "c1"):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import Token
+
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client_id,
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        return token
+
+    def test_revoke_all_tokens_marks_every_token(self, storage):
+        a = self._issue_token(storage)
+        b = self._issue_token(storage)
+        count = storage.revoke_all_tokens()
+        assert count == 2
+        assert storage.get_token(a.jti).revoked is True
+        assert storage.get_token(b.jti).revoked is True
+
+    def test_revoke_all_tokens_is_idempotent(self, storage):
+        self._issue_token(storage)
+        assert storage.revoke_all_tokens() == 1
+        # Re-running still returns 1 (the already-revoked token is still counted)
+        # but the item stays revoked without raising.
+        assert storage.revoke_all_tokens() == 1
+
+    def test_revoke_all_tokens_handles_empty_table(self, storage):
+        assert storage.revoke_all_tokens() == 0
+
+    def test_revoke_all_tokens_paginates(self, storage):
+        from unittest.mock import patch
+
+        page1 = {"Items": [{"jti": "t1"}], "LastEvaluatedKey": {"PK": "TOKEN#t1", "SK": "META"}}
+        page2 = {"Items": [{"jti": "t2"}]}
+        with (
+            patch.object(storage.table, "scan", side_effect=[page1, page2]),
+            patch.object(storage.table, "update_item") as upd,
+        ):
+            assert storage.revoke_all_tokens() == 2
+        assert upd.call_count == 2
