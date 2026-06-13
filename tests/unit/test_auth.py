@@ -667,35 +667,54 @@ class TestGoogleCallback:
         assert user is not None
         assert user.email == "prod-user@example.com"
 
-    def test_success_binds_user_only_once(self, oauth_client):
-        """First-bind-wins: a second Google login through the same client must
-        not re-point owner_user_id at a different user (matches the bypass
-        path's `owner_user_id is None` guard)."""
+    def _login_via_google(self, tc, storage, client, email: str):
+        """Drive the real Google callback once for ``email`` and return the response."""
+        pending = self._setup_pending(storage, client)
+        claims = {"email": email, "email_verified": True, "sub": email}
+        with (
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=claims),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            return tc.get(
+                "/oauth/google/callback",
+                params={"code": "goog-code", "state": pending.state},
+                follow_redirects=False,
+            )
+
+    def test_different_user_on_owned_client_rejected(self, oauth_client):
+        """Once a client is bound to a user, a *different* Google account
+        authenticating through the same client is rejected with 403 — never
+        re-pointed and never issued a code.
+
+        Security guard for #648: MCP access tokens carry only client_id (no user
+        identity) and tools scope by client.owner_user_id, so letting a second
+        user obtain a token for an already-owned client would expose the first
+        user's memories. First-bind-wins, single-user.
+        """
         tc, storage, client = oauth_client
 
-        def _callback_as(email: str):
-            pending = self._setup_pending(storage, client)
-            claims = {"email": email, "email_verified": True, "sub": email}
-            with (
-                patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
-                patch("hive.auth.google.verify_google_id_token", return_value=claims),
-                patch("hive.auth.google.is_email_allowed", return_value=True),
-                patch("hive.auth.google.is_admin_email", return_value=False),
-            ):
-                return tc.get(
-                    "/oauth/google/callback",
-                    params={"code": "goog-code", "state": pending.state},
-                    follow_redirects=False,
-                )
-
-        assert _callback_as("first@example.com").status_code == 302
+        assert self._login_via_google(tc, storage, client, "first@example.com").status_code == 302
         first_owner = storage.get_client(client.client_id).owner_user_id
         assert first_owner is not None
 
-        assert _callback_as("second@example.com").status_code == 302
-        # Binding stays with the first user even though a different account
-        # later authenticated through the same client.
+        # A different allowlisted account through the same client is refused…
+        assert self._login_via_google(tc, storage, client, "second@example.com").status_code == 403
+        # …and the original binding is left untouched.
         assert storage.get_client(client.client_id).owner_user_id == first_owner
+
+    def test_same_user_relogin_keeps_binding(self, oauth_client):
+        """The owner re-authenticating through their own client still succeeds
+        and the binding is unchanged — the 403 guard only blocks *other* users."""
+        tc, storage, client = oauth_client
+
+        assert self._login_via_google(tc, storage, client, "owner@example.com").status_code == 302
+        owner_id = storage.get_client(client.client_id).owner_user_id
+        assert owner_id is not None
+
+        assert self._login_via_google(tc, storage, client, "owner@example.com").status_code == 302
+        assert storage.get_client(client.client_id).owner_user_id == owner_id
 
 
 class TestOAuthToken:

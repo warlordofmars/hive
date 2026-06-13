@@ -143,9 +143,17 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
     owner_user_id=None, permanently breaking user-scoped MCP tools
     (list_memories, summarize_context).
 
-    Binding is first-bind-wins — owner_user_id is set only when it is currently
-    None, so a client already owned by one user is never re-pointed at a
-    different account that later authenticates through it.
+    Binding is **first-bind-wins and single-user**:
+
+    * owner_user_id is set only when it is currently None (first bind);
+    * once a client is owned, only that same user may re-authenticate through
+      it — a *different* account is rejected with HTTP 403 and the binding is
+      left untouched.
+
+    The single-user rule is a security boundary: MCP access tokens carry only
+    client_id (no user identity) and the tools scope by client.owner_user_id, so
+    if a second user were allowed to obtain a token for an already-owned client
+    they would gain access to the owner's memory scope.
     """
     from hive.auth.google import is_admin_email
 
@@ -154,6 +162,21 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
     role = "admin" if is_admin_email(email) else "user"
 
     user = storage.get_user_by_email(email)
+    client = storage.get_client(client_id)
+
+    # Single-user boundary: refuse to proceed when the client is already bound
+    # to someone other than the authenticating user. Checked before any write so
+    # a rejected login leaves no trace.
+    if (
+        client is not None
+        and client.owner_user_id is not None
+        and (user is None or user.user_id != client.owner_user_id)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="This client is already associated with a different user account.",
+        )
+
     if user is None:
         user = User(email=email, display_name=display_name, role=role, created_at=now)
     else:
@@ -162,7 +185,6 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
     user.last_login_at = now
     storage.put_user(user)
 
-    client = storage.get_client(client_id)
     if client is not None and client.owner_user_id is None:
         client.owner_user_id = user.user_id
         storage.put_client(client)

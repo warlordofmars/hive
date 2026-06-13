@@ -190,3 +190,51 @@ async def test_real_google_callback_binds_user_and_unblocks_tools(google_oauth_s
 
     summary = await summarize_context(topic="issue648", ctx=ctx)
     assert "binding-proof" in summary.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_second_user_on_owned_client(google_oauth_setup):
+    """Security guard for #648: once a client is bound, a *different* Google
+    user authenticating through the same client is refused with 403 and the
+    original owner is left unchanged — preventing token issuance that would let
+    the second user reach the first user's memory scope (client-only tokens)."""
+    from fastapi import HTTPException
+
+    from hive.auth import oauth
+    from hive.models import OAuthClient
+
+    storage = google_oauth_setup
+    client = OAuthClient(
+        client_name="Shared Client",
+        redirect_uris=["https://app.example.com/cb"],
+    )
+    storage.put_client(client)
+
+    async def _callback_as(email: str):
+        pending = storage.create_pending_auth(
+            client_id=client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read memories:write",
+            code_challenge="challenge-value",
+            code_challenge_method="S256",
+            original_state="orig-state",
+        )
+        claims = {"email": email, "email_verified": True, "sub": email}
+        with (
+            patch("hive.auth.google.exchange_google_code", return_value="fake-id-token"),
+            patch("hive.auth.google.verify_google_id_token", return_value=claims),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            return await oauth.google_callback(storage=storage, code="g-code", state=pending.state)
+
+    resp = await _callback_as("owner@example.com")
+    assert resp.status_code == 302
+    owner_id = storage.get_client(client.client_id).owner_user_id
+    assert owner_id is not None
+
+    with pytest.raises(HTTPException) as exc:
+        await _callback_as("intruder@example.com")
+    assert exc.value.status_code == 403
+    # The intruder never displaces the owner.
+    assert storage.get_client(client.client_id).owner_user_id == owner_id
