@@ -6,7 +6,96 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.26.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.27.1. Will be rolled into the next release._
+
+## v0.27.1 — 2026-06-13
+
+A follow-up patch with MCP tool refinements surfaced by end-to-end testing.
+
+### Fixed
+
+#### MCP
+
+- **`recall` surfaces the optimistic-lock `version`.** The version token is now
+  included in `recall`'s `structured_content` (not only `_meta`, which clients
+  don't expose), so a single-key read-modify-write — `recall` →
+  `remember(version=…)` — works without a tag-scoped `list_memories`. (#650)
+- **`relate_memories` reports its semantic score.** Each item's
+  `semantic_score` now carries the actual similarity (this is a pure-semantic
+  endpoint); `keyword_score` / `recency_score` are documented as not computed
+  here rather than silently returned as `0.0`. (#652)
+- **Tool docs made accurate.** `search_memories`' `include_redacted` is
+  documented as normally having no effect — redaction removes the vector-index
+  entry, so redacted memories don't appear in semantic search — and
+  `summarize_context`'s docstring notes that prose synthesis happens only when
+  the client supports MCP Sampling; sampling-less clients (e.g. Claude Desktop)
+  receive the listed memories. (#651, #662)
+
+## v0.27.0 — 2026-06-13
+
+A hardening release. It closes a cross-tenant data-destruction hole in
+`forget_all`, restores MCP spec compliance so strict clients can use every
+tool, and fixes production user-account binding so per-user tools work
+outside the e2e bypass. It also lands the data-model foundation for
+workspaces, Hive's tenancy root.
+
+### Added
+
+#### Workspaces
+
+- **Workspaces data model, storage, and migration.** Introduces the
+  `Workspace` / `WorkspaceMember` models, single-table storage, and the
+  migration path that backfills existing data — the foundation for
+  workspaces as the tenancy root (#482). No user-facing surface yet; this
+  is the plumbing future multi-tenancy features build on. (#490, #639)
+
+### Fixed
+
+#### Security
+
+- **`forget_all` no longer deletes other tenants' memories.** The bulk
+  delete-by-tag issued an unscoped `TagIndex` query, so any authenticated
+  client could destroy every tenant's memories that shared a tag (and their
+  S3 blobs) with a single call. Deletion is now scoped to the calling client
+  at the query level (`owner_client_id`, applied as a DynamoDB
+  `FilterExpression` so other tenants' items are never read), with a
+  post-hydration backstop against stale index items. Tracked as security
+  advisory `GHSA-h9vh-rpcv-xqrr`. (#655)
+
+#### MCP
+
+- **String-returning tools now return conforming `structuredContent`.**
+  FastMCP 3.2 auto-generates an `outputSchema` for every `-> str` tool, but
+  the server returned content-only results, so spec-strict MCP clients (for
+  example AWS Strands-based clients) rejected 11 of 16 tools — `ping`
+  included. Tool results now wrap string payloads to satisfy the advertised
+  schema while keeping the human-readable text and binary content intact.
+  (#654, #657)
+
+#### Auth
+
+- **Production Google OAuth callback binds the DCR client to a user.**
+  `owner_user_id` was only set by the `HIVE_BYPASS_GOOGLE_AUTH` shortcut, so
+  in production `list_memories` and `summarize_context` always failed with
+  *"Client is not associated with a user account."* The real callback now
+  upserts the user from the verified Google claims and binds the client,
+  with an integration test that exercises the non-bypass path. (#648, #656)
+
+#### Reliability
+
+- **Tag-filter lag eliminated.** Filtering memories by tag now reads through
+  the strongly-consistent USERTAG path, removing the GSI propagation delay
+  that made newly-tagged memories briefly invisible. (#642)
+- **MemoryBrowser stale-load race closed.** A newly-created memory is no
+  longer hidden from a tag-filtered list when a slower in-flight load
+  resolves after it. (#646)
+
+### Meta
+
+- **CI: `backup-test` job OIDC auth fixed** by adding
+  `environment: production` so the job can assume the deploy role. (#640)
+- **CI: synthetic-traffic schedule disabled** until the production release
+  to avoid load against an unreleased environment. (#641)
 
 ## v0.26.0 — 2026-04-24
 
