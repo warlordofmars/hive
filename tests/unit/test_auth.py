@@ -833,6 +833,21 @@ class TestGoogleCallback:
         assert resp.status_code == 400
         assert storage.get_user_by_email("vanish@example.com") is None
 
+    def test_owner_account_deleted_returns_400(self, oauth_client):
+        """If a client's owning User record has been deleted (e.g. via the admin
+        delete-user API), a login through that client fails with a clear 400
+        (dangling binding) rather than a misleading 'different user' 403."""
+        tc, storage, client = oauth_client
+        assert self._login_via_google(tc, storage, client, "owner@example.com").status_code == 302
+        owner_id = storage.get_client(client.client_id).owner_user_id
+        assert owner_id is not None
+
+        # Simulate the owning user record being deleted out from under the binding.
+        storage.table.delete_item(Key={"PK": f"USER#{owner_id}", "SK": "META"})
+
+        resp = self._login_via_google(tc, storage, client, "owner@example.com")
+        assert resp.status_code == 400
+
 
 class TestOAuthToken:
     def _get_auth_code(self, tc, storage, client) -> tuple[str, str]:

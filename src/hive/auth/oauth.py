@@ -174,8 +174,15 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
 
     # Single-user boundary: refuse to proceed when the client is already bound
     # to someone other than the authenticating user. Checked before any write so
-    # a rejected login leaves no trace.
+    # a rejected login leaves no trace. Distinguish a dangling binding (the owner
+    # account was deleted) from a genuine different-user attempt so the error is
+    # diagnosable.
     if client.owner_user_id is not None and (user is None or user.user_id != client.owner_user_id):
+        if storage.get_user_by_id(client.owner_user_id) is None:
+            raise HTTPException(
+                status_code=400,
+                detail="This client is bound to a user account that no longer exists.",
+            )
         raise HTTPException(
             status_code=403,
             detail="This client is already associated with a different user account.",
