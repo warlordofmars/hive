@@ -6,7 +6,30 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.27.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.27.1. Will be rolled into the next release._
+
+## v0.27.1 — 2026-06-13
+
+A follow-up patch with MCP tool refinements surfaced by end-to-end testing.
+
+### Fixed
+
+#### MCP
+
+- **`recall` surfaces the optimistic-lock `version`.** The version token is now
+  included in `recall`'s `structured_content` (not only `_meta`, which clients
+  don't expose), so a single-key read-modify-write — `recall` →
+  `remember(version=…)` — works without a tag-scoped `list_memories`. (#650)
+- **`relate_memories` reports its semantic score.** Each item's
+  `semantic_score` now carries the actual similarity (this is a pure-semantic
+  endpoint); `keyword_score` / `recency_score` are documented as not computed
+  here rather than silently returned as `0.0`. (#652)
+- **Tool docs made accurate.** `search_memories`' `include_redacted` is
+  documented as normally having no effect — redaction removes the vector-index
+  entry, so redacted memories don't appear in semantic search — and
+  `summarize_context`'s docstring notes that prose synthesis happens only when
+  the client supports MCP Sampling; sampling-less clients (e.g. Claude Desktop)
+  receive the listed memories. (#651, #662)
 
 ## v0.27.0 — 2026-06-13
 
