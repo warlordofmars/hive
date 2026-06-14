@@ -2,10 +2,12 @@
 """
 Vector store for Hive — S3 Vectors + Bedrock Titan Embeddings V2.
 
-One S3 Vectors index per OAuth client (``client-{client_id}``), lazy-created
-on first write.  All operations are best-effort: errors are logged but never
-propagate to callers so that DynamoDB (the authoritative store) is unaffected
-by vector-layer failures.
+One S3 Vectors index per user account (``user-{owner_user_id}``), lazy-created
+on first write.  Account scoping keeps semantic search consistent with the
+tag/list read path (which is scoped on ``owner_user_id``, #666) and with the
+workspace transition note on ``Memory.owner_user_id`` (#490).  All operations
+are best-effort: errors are logged but never propagate to callers so that
+DynamoDB (the authoritative store) is unaffected by vector-layer failures.
 
 Embedding model: amazon.titan-embed-text-v2:0
   - 1024 dimensions, cosine distance, normalised vectors
@@ -35,7 +37,7 @@ _DISTANCE_METRIC: Literal["cosine", "euclidean"] = "cosine"
 
 
 class VectorIndexNotFoundError(Exception):
-    """Raised when querying a client that has never written a memory."""
+    """Raised when querying an account that has never written a memory."""
 
 
 class VectorStore:
@@ -62,8 +64,8 @@ class VectorStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _index_name(self, client_id: str) -> str:
-        return f"client-{client_id}"
+    def _index_name(self, owner_user_id: str) -> str:
+        return f"user-{owner_user_id}"
 
     def _embed(self, text: str) -> list[float]:
         """Call Bedrock Titan V2 and return a 1024-dim normalised embedding."""
@@ -76,9 +78,9 @@ class VectorStore:
         )
         return json.loads(resp["body"].read())["embedding"]
 
-    def _ensure_index(self, client_id: str) -> str:
+    def _ensure_index(self, owner_user_id: str) -> str:
         """Return the index name, creating it if it doesn't exist yet."""
-        index_name = self._index_name(client_id)
+        index_name = self._index_name(owner_user_id)
         try:
             self._s3v.create_index(
                 vectorBucketName=self._bucket,
@@ -97,9 +99,22 @@ class VectorStore:
     # ------------------------------------------------------------------
 
     def upsert_memory(self, memory: Memory) -> None:
-        """Write (or overwrite) a memory vector.  Best-effort — never raises."""
+        """Write (or overwrite) a memory vector.  Best-effort — never raises.
+
+        Memories without an ``owner_user_id`` (legacy/pre-#648 items) cannot be
+        placed in an account index and are skipped — they remain unsearchable
+        until re-saved or migrated.
+        """
+        owner_user_id = memory.owner_user_id
+        if owner_user_id is None:
+            # Log the internal memory_id, never the user-provided key (PII/secrets).
+            logger.warning(
+                "Skipping vector upsert for memory_id '%s' — no owner_user_id",  # NOSONAR — internal id, not user content
+                memory.memory_id,
+            )
+            return
         try:
-            index_name = self._ensure_index(memory.owner_client_id)
+            index_name = self._ensure_index(owner_user_id)
             text = f"{memory.key}: {memory.value}"
             embedding = self._embed(text)
             self._s3v.put_vectors(
@@ -117,43 +132,52 @@ class VectorStore:
                 ],
             )
         except Exception:
-            logger.warning(
-                "Vector upsert failed for memory '%s' (client %s)",
-                memory.key,
-                memory.owner_client_id,
+            logger.warning(  # NOSONAR — memory_id and owner_user_id are internal identifiers, not user content
+                "Vector upsert failed for memory_id '%s' (user %s)",
+                memory.memory_id,
+                owner_user_id,
                 exc_info=True,
             )
 
-    def delete_memory(self, memory_id: str, client_id: str) -> None:
-        """Remove a memory vector.  Best-effort — never raises."""
+    def delete_memory(self, memory_id: str, owner_user_id: str | None) -> None:
+        """Remove a memory vector.  Best-effort — never raises.
+
+        ``owner_user_id`` identifies the account index the vector lives in. A
+        ``None`` owner (legacy item that was never indexed under an account) is
+        a no-op.
+        """
+        if owner_user_id is None:
+            return
         try:
             self._s3v.delete_vectors(
                 vectorBucketName=self._bucket,
-                indexName=self._index_name(client_id),
+                indexName=self._index_name(owner_user_id),
                 keys=[memory_id],
             )
         except Exception:
-            logger.warning(  # NOSONAR — memory_id and client_id are internal identifiers, not user content
-                "Vector delete failed for memory_id '%s' (client %s)",
+            logger.warning(  # NOSONAR — memory_id and owner_user_id are internal identifiers, not user content
+                "Vector delete failed for memory_id '%s' (user %s)",
                 memory_id,
-                client_id,
+                owner_user_id,
                 exc_info=True,
             )
 
     def search(
         self,
         query: str,
-        client_id: str,
+        owner_user_id: str,
         top_k: int = 20,
     ) -> list[tuple[str, float]]:
         """Return ``(memory_id, score)`` pairs ranked by cosine similarity.
 
-        ``score`` is ``1.0 - distance`` so higher = more relevant.
+        ``score`` is ``1.0 - distance`` so higher = more relevant. The search is
+        scoped to the ``owner_user_id`` account index, so results span every DCR
+        client of that account (consistent with list_memories, #666).
 
-        Raises ``VectorIndexNotFoundError`` when the client has never written
-        a memory (index does not exist yet).
+        Raises ``VectorIndexNotFoundError`` when the account has never written a
+        memory (index does not exist yet).
         """
-        index_name = self._index_name(client_id)
+        index_name = self._index_name(owner_user_id)
         try:
             embedding = self._embed(query)
             resp = self._s3v.query_vectors(
@@ -166,6 +190,6 @@ class VectorStore:
             )
         except self._s3v.exceptions.NotFoundException as exc:
             raise VectorIndexNotFoundError(
-                f"No vector index for client '{client_id}' — no memories indexed yet."
+                f"No vector index for account '{owner_user_id}' — no memories indexed yet."
             ) from exc
         return [(v["key"], round(1.0 - v["distance"], 6)) for v in resp.get("vectors", [])]

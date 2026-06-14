@@ -74,10 +74,12 @@ async def list_memories(
     owner_user_id = _user_filter(claims)
 
     if search:
-        # Semantic search — top-K, no pagination
-        client_id: str = claims["sub"]
+        # Semantic search — top-K, no pagination. The vector index is scoped to
+        # the caller's own account (#666); admins search their own memories
+        # (cross-user semantic search would need a per-user fan-out).
+        search_owner_user_id: str = claims["sub"]
         try:
-            pairs = vs.search(search, client_id, top_k=min(limit, 50))
+            pairs = vs.search(search, search_owner_user_id, top_k=min(limit, 50))
         except VectorIndexNotFoundError:
             return PagedResponse(items=[], count=0, has_more=False, next_cursor=None)
         results = storage.hydrate_memory_ids(pairs)

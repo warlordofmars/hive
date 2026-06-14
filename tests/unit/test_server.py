@@ -1722,6 +1722,56 @@ class TestSearchMemories:
 
         assert _body(result) == {"items": [], "count": 0, "query": "anything"}
 
+    async def test_requires_user_account(self, server_env):
+        """search_memories fails closed when the client isn't bound to a user (#666)."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import search_memories
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Unbound Search")
+        assert client.owner_user_id is None
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+
+        with pytest.raises(ToolError, match="not associated with a user account"):
+            await search_memories("anything", ctx=_make_ctx(jwt))
+
+    async def test_rejects_missing_client_record(self, server_env):
+        """search_memories fails closed when the authenticated client record is gone (#666)."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import search_memories
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Search", owner_user_id="ghost-user-search")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await search_memories("anything", ctx=_make_ctx(jwt))
+
 
 # ---------------------------------------------------------------------------
 # relate_memories

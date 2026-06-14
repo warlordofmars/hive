@@ -542,6 +542,38 @@ def migrate_workspaces(ctx, dry_run=False):
     ctx.run(cmd, env=migrate_env, pty=True)
 
 
+@task
+def migrate_vectors(ctx, dry_run=False):
+    """Re-index memory vectors per user account (#666).
+
+    Rebuilds the per-account (``user-{owner_user_id}``) S3 Vectors indexes from
+    DynamoDB by re-embedding each memory, so semantic search spans all of an
+    account's DCR clients. Run once after deploying the #666 change; the old
+    per-client indexes are left orphaned (delete them once search is verified).
+
+    Idempotent — re-running overwrites the same vector keys. Pass ``--dry-run``
+    to report counts without calling Bedrock / S3 Vectors.
+
+        inv migrate-vectors              # execute against AWS (uses env vars)
+        inv migrate-vectors --dry-run    # report only, no writes
+
+    Requires HIVE_VECTORS_BUCKET (the S3 Vectors bucket) in the environment.
+    """
+    migrate_env = {
+        **os.environ,
+        "HIVE_JWT_SECRET": os.environ.get("HIVE_JWT_SECRET", "dev-secret"),
+        "HIVE_TABLE_NAME": os.environ.get("HIVE_TABLE_NAME", "hive"),
+        "AWS_DEFAULT_REGION": "us-east-1",
+    }
+    if "DYNAMODB_ENDPOINT" in os.environ:
+        migrate_env["DYNAMODB_ENDPOINT"] = os.environ["DYNAMODB_ENDPOINT"]
+        migrate_env.setdefault("AWS_ACCESS_KEY_ID", "local")
+        migrate_env.setdefault("AWS_SECRET_ACCESS_KEY", "local")
+    args = ["--dry-run"] if dry_run else []
+    cmd = "uv run python scripts/migrate_vectors_to_user_index.py " + " ".join(args)
+    ctx.run(cmd, env=migrate_env, pty=True)
+
+
 # ── Bulk memory operations ────────────────────────────────────────────────────
 
 

@@ -210,6 +210,23 @@ def _vector_store() -> VectorStore:
     return VectorStore()
 
 
+def _require_owner_user_id(storage: HiveStorage, client_id: str) -> str:
+    """Resolve the caller's account (``owner_user_id``), failing closed if unbound.
+
+    Per-user memory scoping (#666) requires a user account on the calling
+    client. Returns the ``owner_user_id`` or raises ``ToolError`` when the
+    client record is missing or not yet bound to a user (#648).
+    """
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    return client.owner_user_id
+
+
 def _log(storage: HiveStorage, event: ActivityEvent) -> None:
     """Record the event in both the user-visible activity log and the
     immutable compliance audit log (#395).
@@ -982,7 +999,7 @@ async def forget(
 
     storage.delete_memory(existing.memory_id)
     try:
-        _vector_store().delete_memory(existing.memory_id, client_id)
+        _vector_store().delete_memory(existing.memory_id, existing.owner_user_id)
     except Exception:
         logger.warning("Vector delete failed (non-fatal)", exc_info=True)
     _log(
@@ -1130,7 +1147,7 @@ async def redact_memory(
     existing.updated_at = existing.redacted_at
     storage.put_memory(existing)
     try:
-        _vector_store().delete_memory(existing.memory_id, client_id)
+        _vector_store().delete_memory(existing.memory_id, existing.owner_user_id)
     except Exception:
         logger.warning("Vector delete on redaction failed (non-fatal)", exc_info=True)
 
@@ -1509,9 +1526,10 @@ async def search_memories(
     # post-filter still leaves up to top_k survivors.
     search_top_k = 50 if required_tags else min(max(top_k * 3, 10), 50)
 
+    owner_user_id = _require_owner_user_id(storage, client_id)
     await _report_progress(ctx, 0, 3, f"Running vector search for '{query}'...")
     try:
-        pairs = _vector_store().search(query, client_id, top_k=search_top_k)
+        pairs = _vector_store().search(query, owner_user_id, top_k=search_top_k)
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
     except Exception:
@@ -1644,9 +1662,10 @@ async def relate_memories(
                 exc_info=True,
             )
 
+    owner_user_id = _require_owner_user_id(storage, client_id)
     try:
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
-        pairs = _vector_store().search(query_value, client_id, top_k=top_k + 1)
+        pairs = _vector_store().search(query_value, owner_user_id, top_k=top_k + 1)
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
@@ -1872,8 +1891,9 @@ async def pack_context(
         else ("relevance+recency")
     )
 
+    owner_user_id = _require_owner_user_id(storage, client_id)
     try:
-        pairs = _vector_store().search(topic, client_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
+        pairs = _vector_store().search(topic, owner_user_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
     except VectorIndexNotFoundError:
         return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
     except Exception:
