@@ -729,17 +729,28 @@ exports.handler = async (event) => {
             ),
             rules=[
                 # Managed: OWASP Top 10 protections — enforced on the whole site
-                # EXCEPT the MCP endpoint. /mcp is an OAuth-gated JSON-RPC API whose
-                # payloads include multi-MB base64 blobs (remember_blob, #665). The
-                # Common rule set breaks that two ways: SizeRestrictions_BODY (8 KB)
-                # 403s the request before it reaches the Lambda, and the SQLi/XSS
-                # *body* rules can false-positive on arbitrary base64. Scoping the
-                # group down to NOT /mcp* keeps full protection on the public surface
-                # (UI, docs, management API) while letting authenticated MCP traffic
-                # through. /mcp is still covered by AWSManagedRulesKnownBadInputs and
-                # the GlobalRateLimit rate-based rule below (OAuthRateLimit is scoped
-                # to /oauth/* and does not apply to /mcp); the next size ceiling is
-                # the Lambda Function URL ~6 MB request limit (~4 MB of binary).
+                # EXCEPT the /mcp and /oauth endpoints.
+                #
+                # /mcp is an OAuth-gated JSON-RPC API whose payloads include
+                # multi-MB base64 blobs (remember_blob, #665): SizeRestrictions_BODY
+                # (8 KB) 403s the request before it reaches the Lambda, and the
+                # SQLi/XSS *body* rules can false-positive on arbitrary base64.
+                #
+                # /oauth is the OAuth 2.1 authorization server. Its requests carry
+                # legitimate values that the generic rules flag — notably native MCP
+                # clients' loopback callbacks (redirect_uri=http://localhost:PORT/...),
+                # which the SSRF/RFI rules treat as suspicious and block, breaking
+                # authorization entirely (the metadata advertises these endpoints on
+                # the custom domain per RFC 8414, so the flow goes through CloudFront).
+                # /oauth has its own strict validation (registered client, registered
+                # redirect_uri, PKCE) and is rate-limited.
+                #
+                # Scoping the group down to NOT (/mcp* OR /oauth/*) keeps full
+                # protection on the public surface (UI, docs, management API). Both
+                # exempted paths stay covered by AWSManagedRulesKnownBadInputs and the
+                # GlobalRateLimit rate-based rule below (plus OAuthRateLimit for
+                # /oauth/*); the next /mcp size ceiling is the Lambda Function URL
+                # ~6 MB request limit (~4 MB of binary).
                 wafv2.CfnWebACL.RuleProperty(
                     name="AWSManagedRulesCommonRuleSet",
                     priority=0,
@@ -751,17 +762,39 @@ exports.handler = async (event) => {
                             scope_down_statement=wafv2.CfnWebACL.StatementProperty(
                                 not_statement=wafv2.CfnWebACL.NotStatementProperty(
                                     statement=wafv2.CfnWebACL.StatementProperty(
-                                        byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
-                                            search_string="/mcp",
-                                            field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
-                                                uri_path={}
-                                            ),
-                                            text_transformations=[
-                                                wafv2.CfnWebACL.TextTransformationProperty(
-                                                    priority=0, type="NONE"
-                                                )
-                                            ],
-                                            positional_constraint="STARTS_WITH",
+                                        or_statement=wafv2.CfnWebACL.OrStatementProperty(
+                                            statements=[
+                                                wafv2.CfnWebACL.StatementProperty(
+                                                    byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
+                                                        search_string="/mcp",
+                                                        field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
+                                                            uri_path={}
+                                                        ),
+                                                        text_transformations=[
+                                                            wafv2.CfnWebACL.TextTransformationProperty(
+                                                                priority=0, type="NONE"
+                                                            )
+                                                        ],
+                                                        positional_constraint="STARTS_WITH",
+                                                    )
+                                                ),
+                                                wafv2.CfnWebACL.StatementProperty(
+                                                    byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
+                                                        # Trailing slash so this matches exactly the
+                                                        # CloudFront-routed /oauth/* paths, not /oauth2 etc.
+                                                        search_string="/oauth/",
+                                                        field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
+                                                            uri_path={}
+                                                        ),
+                                                        text_transformations=[
+                                                            wafv2.CfnWebACL.TextTransformationProperty(
+                                                                priority=0, type="NONE"
+                                                            )
+                                                        ],
+                                                        positional_constraint="STARTS_WITH",
+                                                    )
+                                                ),
+                                            ]
                                         )
                                     )
                                 )

@@ -6,7 +6,27 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.28.0. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.28.1. Will be rolled into the next release._
+
+## v0.28.1 — 2026-06-14
+
+A hotfix for an authorization regression introduced in v0.28.0.
+
+### Fixed
+
+#### Auth
+
+- **OAuth authorization no longer blocked by WAF for native MCP clients.**
+  v0.28.0 (#647) moved the OAuth endpoints onto the custom domain, which routed
+  the authorization flow through CloudFront's WAF for the first time (it
+  previously hit the raw Lambda Function URL, bypassing WAF). The AWS Common
+  rule set's SSRF/RFI rules flagged the `http://localhost:PORT/callback`
+  redirect_uri that native MCP clients (Claude Code, Cursor) use and blocked the
+  request with a 403 — which CloudFront's SPA error-fallback served as a 200
+  "Page not found" page — so `/oauth/authorize` failed and clients could not
+  (re-)authenticate. `/oauth/*` is now scoped out of the Common rule set
+  (mirroring the existing `/mcp` exemption); it keeps KnownBadInputs, the
+  rate-based rules, and its own PKCE / registered-redirect_uri validation. (#688)
 
 ## v0.28.0 — 2026-06-14
 
