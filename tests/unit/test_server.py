@@ -1085,11 +1085,65 @@ class TestSummarizeContext:
         assert "verbatim detail" in _text(result)
 
     async def test_sampled_summary_handles_ctx_none(self):
-        """Direct call to the helper with ctx=None returns the fallback verbatim."""
+        """Direct call with ctx=None returns (fallback, synthesised=False)."""
         from hive.server import _sampled_summary
 
         out = await _sampled_summary(None, "t", [], "FALLBACK_TEXT")
-        assert out == "FALLBACK_TEXT"
+        assert out == ("FALLBACK_TEXT", False)
+
+    async def test_summarize_meta_reports_synthesised_mode(self, server_env):
+        """When sampling succeeds, _meta.summary_mode is 'synthesised' (#658)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from hive.server import remember, summarize_context
+
+        _, _, jwt = server_env
+        await remember("m-syn", "detail", ["mode-syn"], ctx=_make_ctx(jwt))
+        ctx = _make_ctx(jwt)
+        sampled = MagicMock()
+        sampled.text = "SYNTH"
+        ctx.sample = AsyncMock(return_value=sampled)
+
+        result = await summarize_context("mode-syn", ctx=ctx)
+        assert _hive_meta(result)["summary_mode"] == "synthesised"
+
+    async def test_summarize_meta_reports_listed_mode_on_fallback(self, server_env):
+        """When sampling is unavailable, _meta.summary_mode is 'listed' (#658)."""
+        from unittest.mock import AsyncMock
+
+        from hive.server import remember, summarize_context
+
+        _, _, jwt = server_env
+        await remember("m-list", "detail", ["mode-list"], ctx=_make_ctx(jwt))
+        ctx = _make_ctx(jwt)
+        ctx.sample = AsyncMock(side_effect=RuntimeError("no sampling"))
+
+        result = await summarize_context("mode-list", ctx=ctx)
+        assert _hive_meta(result)["summary_mode"] == "listed"
+
+    async def test_summarize_empty_reports_listed_mode(self, server_env):
+        """The no-memories path also carries a summary_mode (#658)."""
+        _, _, jwt = server_env
+        from hive.server import summarize_context
+
+        result = await summarize_context("no-such-tag-xyz", ctx=_make_ctx(jwt))
+        assert _hive_meta(result)["summary_mode"] == "listed"
+
+    async def test_summarize_listing_ordered_most_recent_first(self, server_env):
+        """The listed fallback leads with the most recently updated memory (#658)."""
+        from unittest.mock import AsyncMock
+
+        from hive.server import remember, summarize_context
+
+        _, _, jwt = server_env
+        await remember("older-key", "older value", ["recency"], ctx=_make_ctx(jwt))
+        await remember("newer-key", "newer value", ["recency"], ctx=_make_ctx(jwt))
+        ctx = _make_ctx(jwt)
+        ctx.sample = AsyncMock(side_effect=RuntimeError("no sampling"))
+
+        text = _text(await summarize_context("recency", ctx=ctx))
+        # 'newer-key' was written last → later updated_at → appears first.
+        assert text.index("newer-key") < text.index("older-key")
 
 
 # ---------------------------------------------------------------------------
