@@ -301,6 +301,7 @@ def _tool_result(
     client_id: str,
     *,
     memory: Memory | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> ToolResult:
     """Wrap a tool's return value in an MCP ``ToolResult`` carrying quota +
     rate-limit metadata in ``_meta.hive``. Strings become text content;
@@ -324,6 +325,8 @@ def _tool_result(
     meta = _quota_meta(storage, client_id)
     if memory is not None:
         meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
+    if extra_meta:
+        meta["hive"].update(extra_meta)
     if isinstance(payload, dict):
         return ToolResult(structured_content=payload, meta=meta)
     structured: dict[str, Any] = {"result": payload}
@@ -346,18 +349,19 @@ async def _sampled_summary(
     topic: str,
     memories: list[Memory],
     fallback: str,
-) -> str:
+) -> tuple[str, bool]:
     """Synthesise a set of memories via MCP Sampling (#448).
 
-    Sends a ``sampling/createMessage`` request back to the client and uses
-    its model to produce the summary. If the client doesn't support
-    sampling, the transport rejects it, or ctx is unavailable (e.g. direct
-    invocation in tests), returns ``fallback`` — the deterministic
-    concatenated listing — so the tool never fails just because an agent
-    can't sample.
+    Returns ``(text, synthesised)``. ``synthesised`` is ``True`` only when the
+    client's model produced the text via ``sampling/createMessage``; it is
+    ``False`` when the client doesn't support sampling, the transport rejects
+    it, ctx is unavailable (e.g. direct invocation in tests), or the model
+    returned nothing — in which case ``text`` is ``fallback`` (the
+    deterministic listing) so the tool never fails just because an agent can't
+    sample.
     """
     if ctx is None:
-        return fallback
+        return fallback, False
 
     body = "\n\n".join(f"- **{m.key}**: {m.value}" for m in memories)
     prompt = (
@@ -371,10 +375,12 @@ async def _sampled_summary(
         )
     except Exception:
         logger.info("MCP sampling unavailable; falling back to concat summary", exc_info=True)
-        return fallback
+        return fallback, False
 
-    text = getattr(result, "text", None) or fallback
-    return text.strip() or fallback
+    text = getattr(result, "text", None)
+    if text and text.strip():
+        return text.strip(), True
+    return fallback, False
 
 
 async def _report_progress(
@@ -1398,6 +1404,11 @@ async def summarize_context(
     that do not support sampling (e.g. Claude Desktop) instead receive the
     listed memories with a count footer — there is no server-side LLM, so the
     prose synthesis only happens when the client can provide the model (#662).
+
+    The response ``_meta.hive.summary_mode`` reports which path was taken
+    (``"synthesised"`` or ``"listed"``) so an agent that receives a listing can
+    choose to synthesise it itself; the listed memories are ordered most-recent
+    first (#658).
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
@@ -1412,6 +1423,9 @@ async def summarize_context(
 
     await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
     memories, _ = storage.list_memories_by_tag(topic, limit=500, owner_user_id=owner_user_id)
+    # Freshest first, so both the sampling prompt and the listed fallback lead
+    # with the most recent memories (#658).
+    memories.sort(key=lambda m: m.updated_at, reverse=True)
     await _report_progress(
         ctx, 1, 2, f"Retrieved {len(memories)} memories; synthesising summary..."
     )
@@ -1427,7 +1441,12 @@ async def summarize_context(
             },
         )
         await emit_metric("ToolInvocations", operation="summarize_context")
-        return _tool_result(f"No memories found for topic '{topic}'.", storage, client_id)
+        return _tool_result(
+            f"No memories found for topic '{topic}'.",
+            storage,
+            client_id,
+            extra_meta={"summary_mode": "listed"},
+        )
 
     lines = [f"## Memories tagged '{topic}'\n"]
     for m in memories:
@@ -1439,7 +1458,8 @@ async def summarize_context(
     # Try MCP Sampling first (#448). If the client supports it, we get a real
     # LLM synthesis without any server-side Bedrock cost; otherwise the
     # sampler raises and we fall back to the concatenated listing above.
-    summary = await _sampled_summary(ctx, topic, memories, concat_summary)
+    summary, synthesised = await _sampled_summary(ctx, topic, memories, concat_summary)
+    summary_mode = "synthesised" if synthesised else "listed"
 
     _log(
         storage,
@@ -1467,7 +1487,7 @@ async def summarize_context(
         unit="Milliseconds",
         operation="summarize_context",
     )
-    return _tool_result(summary, storage, client_id)
+    return _tool_result(summary, storage, client_id, extra_meta={"summary_mode": summary_mode})
 
 
 @mcp.tool(
