@@ -20,7 +20,10 @@ from hive.models import Token
 from hive.storage import HiveStorage
 
 JWT_ALGORITHM = "HS256"
-ISSUER = os.environ.get("HIVE_ISSUER", "https://hive.example.com")
+# Normalize once at the source: a trailing slash on HIVE_ISSUER would otherwise
+# produce double-slash discovery URLs (e.g. ".../oauth-authorization-server"
+# endpoints built as f"{ISSUER}/oauth/token"), which trips strict clients (#647).
+ISSUER = os.environ.get("HIVE_ISSUER", "https://hive.example.com").rstrip("/")
 
 
 @functools.lru_cache(maxsize=1)

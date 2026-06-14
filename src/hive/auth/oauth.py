@@ -58,15 +58,19 @@ def get_storage() -> HiveStorage:  # noqa: D401
 
 
 @router.get("/.well-known/oauth-authorization-server", include_in_schema=False)
-async def oauth_metadata(request: Request) -> JSONResponse:
-    base = str(request.base_url).rstrip("/")
+async def oauth_metadata() -> JSONResponse:
+    # Build endpoints from the public ISSUER (the CloudFront custom domain),
+    # NOT request.base_url: CloudFront forwards /.well-known and /oauth to the
+    # API Lambda *without* the viewer Host header, so base_url resolves to the
+    # raw Function URL. Using it leaks the origin and trips strict RFC 8414
+    # validators on the issuer/endpoint host mismatch (#647).
     return JSONResponse(
         {
             "issuer": ISSUER,
-            "authorization_endpoint": f"{base}/oauth/authorize",
-            "token_endpoint": f"{base}/oauth/token",
-            "revocation_endpoint": f"{base}/oauth/revoke",
-            "registration_endpoint": f"{base}/oauth/register",
+            "authorization_endpoint": f"{ISSUER}/oauth/authorize",
+            "token_endpoint": f"{ISSUER}/oauth/token",
+            "revocation_endpoint": f"{ISSUER}/oauth/revoke",
+            "registration_endpoint": f"{ISSUER}/oauth/register",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_methods_supported": [
@@ -81,13 +85,24 @@ async def oauth_metadata(request: Request) -> JSONResponse:
 
 
 @router.get("/.well-known/oauth-protected-resource", include_in_schema=False)
-async def protected_resource_metadata() -> JSONResponse:
-    """RFC 9728 protected resource metadata.
+@router.get("/.well-known/oauth-protected-resource/{resource_path:path}", include_in_schema=False)
+async def protected_resource_metadata(resource_path: str = "") -> JSONResponse:
+    """RFC 9728 protected resource metadata (root + path-inserted variants).
 
     Tells OAuth clients (e.g. Claude Desktop) which authorization server
     issues valid tokens for the Hive MCP server.  CloudFront routes
     /.well-known/* to this API Lambda, so the document must live here rather
     than on the MCP Lambda.
+
+    Spec-following clients request the *path-inserted* URL first — for a
+    resource at /mcp that is ``/.well-known/oauth-protected-resource/mcp``
+    (RFC 9728 §3.1). Without an explicit route the Lambda 404s and the
+    distribution-wide CloudFront SPA error-fallback rewrites that 404 into a
+    200 ``text/html`` index page, which makes strict clients abort discovery
+    (#647). Registering the path variant here returns the JSON document, so the
+    SPA fallback never triggers. Hive exposes a single protected resource
+    (/mcp), so ``resource_path`` is accepted for route matching but the document
+    always describes /mcp.
     """
     return JSONResponse(
         {

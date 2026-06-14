@@ -639,6 +639,32 @@ class HiveStack(cdk.Stack):
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
             response_headers_policy=security_headers_policy,
         )
+        # Lambda Function URLs rename the WWW-Authenticate response header to
+        # x-amzn-remapped-www-authenticate, and CloudFront forwards it under that
+        # name. No MCP client reads the remapped header, so the OAuth challenge on
+        # a 401 from /mcp (which carries the resource_metadata pointer) is
+        # invisible and spec-compliant header-based discovery never works (#647).
+        # This viewer-response function restores the spec header name on the way
+        # back to the client.
+        mcp_auth_header_fn = cloudfront.Function(
+            self,
+            "McpAuthHeaderRestore",
+            code=cloudfront.FunctionCode.from_inline(
+                """
+function handler(event) {
+    var headers = event.response.headers;
+    var remapped = headers['x-amzn-remapped-www-authenticate'];
+    if (remapped) {
+        headers['www-authenticate'] = remapped;
+        delete headers['x-amzn-remapped-www-authenticate'];
+    }
+    return event.response;
+}
+"""
+            ),
+            runtime=cloudfront.FunctionRuntime.JS_2_0,
+        )
+
         mcp_behavior = cloudfront.BehaviorOptions(
             origin=mcp_cf_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -646,6 +672,12 @@ class HiveStack(cdk.Stack):
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
             response_headers_policy=security_headers_policy,
+            function_associations=[
+                cloudfront.FunctionAssociation(
+                    function=mcp_auth_header_fn,
+                    event_type=cloudfront.FunctionEventType.VIEWER_RESPONSE,
+                )
+            ],
         )
 
         # ----------------------------------------------------------------
