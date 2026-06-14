@@ -948,6 +948,49 @@ class TestOAuthToken:
         assert resp.status_code == 200
         assert resp.json()["access_token"]
 
+    def test_refresh_token_is_reusable_not_rotated(self, oauth_client):
+        """Refresh tokens are non-rotating (#693): the same refresh token can be
+        redeemed more than once.
+
+        Rotation (revoke-on-use) forced a full browser re-auth whenever a
+        still-good refresh token was reused — by a concurrent MCP connection, a
+        retry, or a stale persisted copy — because only the single newest token
+        stayed valid. The grant must instead mint a fresh access token while
+        leaving the presented refresh token valid and echoing it back unchanged.
+        """
+        tc, storage, client = oauth_client
+        code, verifier = self._get_auth_code(tc, storage, client)
+        refresh_token = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": client.client_id,
+                "code_verifier": verifier,
+            },
+        ).json()["refresh_token"]
+        original_jti = decode_jwt(refresh_token)["jti"]
+
+        # Redeem the refresh token twice with the exact same token value.
+        for _ in range(2):
+            resp = tc.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": client.client_id,
+                    "refresh_token": refresh_token,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["access_token"]
+            # Same refresh token comes back — not a rotated replacement.
+            assert decode_jwt(body["refresh_token"])["jti"] == original_jti
+
+        # The underlying refresh-token record was never revoked.
+        assert storage.get_token(original_jti).is_valid
+
     def test_missing_client_id_returns_400(self, oauth_client):
         tc, *_ = oauth_client
         resp = tc.post(

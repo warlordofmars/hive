@@ -506,14 +506,19 @@ async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
         if stored.client_id != client_id:
             raise HTTPException(status_code=400, detail="refresh_token not issued to this client")
 
-        # Rotate: revoke old refresh token, issue new pair
-        # Re-intersect scope in case client's registered scope was narrowed since issuance
+        # Non-rotating refresh tokens (#693): mint a fresh access token but keep
+        # the presented refresh token valid and echo it back unchanged. Rotation
+        # (revoke-on-use) forced a full browser re-auth whenever a still-good
+        # refresh token was reused — by a concurrent MCP connection, a retry, or
+        # a stale persisted copy — because only the single newest token stayed
+        # valid. Reusing the token makes the silent-refresh path tolerant of all
+        # three. The access token is still re-intersected with the client's
+        # current registered scope in case it was narrowed since issuance.
         effective_scope = (
             " ".join(sorted(set(stored.scope.split()) & set(client.scope.split()))) or stored.scope
         )
-        assert jti is not None
-        storage.revoke_token(jti)
-        access, refresh = storage.create_token_pair(client_id, effective_scope)
+        access = storage.create_access_token(client_id, effective_scope)
+        refresh = stored
 
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported grant_type: {grant_type}")
