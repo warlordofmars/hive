@@ -639,6 +639,45 @@ class HiveStack(cdk.Stack):
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
             response_headers_policy=security_headers_policy,
         )
+        # Lambda Function URLs rename the WWW-Authenticate response header to
+        # x-amzn-remapped-www-authenticate, and CloudFront forwards it under that
+        # name. No MCP client reads the remapped header, so the OAuth challenge on
+        # a 401 from /mcp (which carries the resource_metadata pointer) is
+        # invisible and spec-compliant header-based discovery never works (#647).
+        #
+        # This MUST be a Lambda@Edge *origin-response* function, not a CloudFront
+        # viewer-response Function: CloudFront does not invoke viewer-response
+        # functions when the origin returns HTTP >= 400, so a viewer-response
+        # function can never touch the 401 that carries the challenge. Lambda@Edge
+        # origin-response runs for all status codes (and WWW-Authenticate is not a
+        # read-only header there), so it can restore the spec header name. It only
+        # rewrites when the remapped header is present (i.e. on the 401), so 200s
+        # are untouched.
+        mcp_auth_header_edge = cloudfront.experimental.EdgeFunction(
+            self,
+            "McpAuthHeaderEdge",
+            runtime=lambda_.Runtime.NODEJS_20_X,
+            handler="index.handler",
+            code=lambda_.Code.from_inline(
+                """
+exports.handler = async (event) => {
+    var response = event.Records[0].cf.response;
+    var headers = response.headers;
+    var remapped = headers['x-amzn-remapped-www-authenticate'];
+    if (remapped && remapped.length) {
+        // Preserve every value — WWW-Authenticate may legitimately carry
+        // multiple challenges (CloudFront passes them as separate array entries).
+        headers['www-authenticate'] = remapped.map(function (h) {
+            return { key: 'WWW-Authenticate', value: h.value };
+        });
+        delete headers['x-amzn-remapped-www-authenticate'];
+    }
+    return response;
+};
+"""
+            ),
+        )
+
         mcp_behavior = cloudfront.BehaviorOptions(
             origin=mcp_cf_origin,
             viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -646,6 +685,12 @@ class HiveStack(cdk.Stack):
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
             response_headers_policy=security_headers_policy,
+            edge_lambdas=[
+                cloudfront.EdgeLambda(
+                    function_version=mcp_auth_header_edge.current_version,
+                    event_type=cloudfront.LambdaEdgeEventType.ORIGIN_RESPONSE,
+                )
+            ],
         )
 
         # ----------------------------------------------------------------
@@ -683,7 +728,18 @@ class HiveStack(cdk.Stack):
                 sampled_requests_enabled=True,
             ),
             rules=[
-                # Managed: OWASP Top 10 protections
+                # Managed: OWASP Top 10 protections — enforced on the whole site
+                # EXCEPT the MCP endpoint. /mcp is an OAuth-gated JSON-RPC API whose
+                # payloads include multi-MB base64 blobs (remember_blob, #665). The
+                # Common rule set breaks that two ways: SizeRestrictions_BODY (8 KB)
+                # 403s the request before it reaches the Lambda, and the SQLi/XSS
+                # *body* rules can false-positive on arbitrary base64. Scoping the
+                # group down to NOT /mcp* keeps full protection on the public surface
+                # (UI, docs, management API) while letting authenticated MCP traffic
+                # through. /mcp is still covered by AWSManagedRulesKnownBadInputs and
+                # the GlobalRateLimit rate-based rule below (OAuthRateLimit is scoped
+                # to /oauth/* and does not apply to /mcp); the next size ceiling is
+                # the Lambda Function URL ~6 MB request limit (~4 MB of binary).
                 wafv2.CfnWebACL.RuleProperty(
                     name="AWSManagedRulesCommonRuleSet",
                     priority=0,
@@ -692,6 +748,24 @@ class HiveStack(cdk.Stack):
                         managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
                             vendor_name="AWS",
                             name="AWSManagedRulesCommonRuleSet",
+                            scope_down_statement=wafv2.CfnWebACL.StatementProperty(
+                                not_statement=wafv2.CfnWebACL.NotStatementProperty(
+                                    statement=wafv2.CfnWebACL.StatementProperty(
+                                        byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
+                                            search_string="/mcp",
+                                            field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
+                                                uri_path={}
+                                            ),
+                                            text_transformations=[
+                                                wafv2.CfnWebACL.TextTransformationProperty(
+                                                    priority=0, type="NONE"
+                                                )
+                                            ],
+                                            positional_constraint="STARTS_WITH",
+                                        )
+                                    )
+                                )
+                            ),
                         ),
                     ),
                     visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(

@@ -148,35 +148,65 @@ class TestMemoryStorage:
 
     def test_list_distinct_tags_returns_sorted_unique(self, storage):
         for m in [
-            Memory(key="a", value="1", tags=["zebra", "alpha"], owner_client_id="c1"),
-            Memory(key="b", value="2", tags=["alpha", "mango"], owner_client_id="c1"),
-            Memory(key="c", value="3", tags=[], owner_client_id="c1"),
+            Memory(
+                key="a",
+                value="1",
+                tags=["zebra", "alpha"],
+                owner_client_id="c1",
+                owner_user_id="u1",
+            ),
+            Memory(
+                key="b",
+                value="2",
+                tags=["alpha", "mango"],
+                owner_client_id="c1",
+                owner_user_id="u1",
+            ),
+            Memory(key="c", value="3", tags=[], owner_client_id="c1", owner_user_id="u1"),
         ]:
             storage.put_memory(m)
 
-        assert storage.list_distinct_tags("c1") == ["alpha", "mango", "zebra"]
+        assert storage.list_distinct_tags("u1") == ["alpha", "mango", "zebra"]
 
-    def test_list_distinct_tags_scoped_to_client(self, storage):
-        storage.put_memory(Memory(key="a", value="1", tags=["mine"], owner_client_id="c1"))
-        storage.put_memory(Memory(key="b", value="2", tags=["theirs"], owner_client_id="c2"))
+    def test_list_distinct_tags_scoped_to_account(self, storage):
+        storage.put_memory(
+            Memory(key="a", value="1", tags=["mine"], owner_client_id="c1", owner_user_id="u1")
+        )
+        storage.put_memory(
+            Memory(key="b", value="2", tags=["theirs"], owner_client_id="c2", owner_user_id="u2")
+        )
 
-        assert storage.list_distinct_tags("c1") == ["mine"]
-        assert storage.list_distinct_tags("c2") == ["theirs"]
+        assert storage.list_distinct_tags("u1") == ["mine"]
+        assert storage.list_distinct_tags("u2") == ["theirs"]
+
+    def test_list_distinct_tags_merges_clients_of_same_account(self, storage):
+        # Two DCR clients of the same user account share one tag namespace (#666).
+        storage.put_memory(
+            Memory(key="a", value="1", tags=["from-c1"], owner_client_id="c1", owner_user_id="u1")
+        )
+        storage.put_memory(
+            Memory(key="b", value="2", tags=["from-c2"], owner_client_id="c2", owner_user_id="u1")
+        )
+
+        assert storage.list_distinct_tags("u1") == ["from-c1", "from-c2"]
 
     def test_list_distinct_tags_empty_when_no_memories(self, storage):
-        assert storage.list_distinct_tags("c1") == []
+        assert storage.list_distinct_tags("u1") == []
 
-    def test_list_distinct_tags_follows_scan_pages(self, storage):
+    def test_list_distinct_tags_follows_query_pages(self, storage):
         from unittest.mock import patch
 
         responses = iter(
             [
-                {"Items": [{"GSI2PK": "TAG#alpha"}], "LastEvaluatedKey": {"PK": "x"}},
-                {"Items": [{"GSI2PK": "TAG#beta"}, {"GSI2PK": "NOT_A_TAG"}]},
+                {
+                    "Items": [{"SK": "TAG#alpha#MEMORY#m1"}],
+                    "LastEvaluatedKey": {"PK": "USERTAG#u1", "SK": "TAG#alpha#MEMORY#m1"},
+                },
+                {"Items": [{"SK": "TAG#beta#MEMORY#m2"}, {"SK": "NOT_A_TAG"}]},
             ]
         )
-        with patch.object(storage.table, "scan", side_effect=lambda **_kw: next(responses)):
-            result = storage.list_distinct_tags("c1")
+        with patch.object(storage.table, "query", side_effect=lambda **_kw: next(responses)):
+            result = storage.list_distinct_tags("u1")
 
         assert result == ["alpha", "beta"]
 

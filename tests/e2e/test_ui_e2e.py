@@ -9,6 +9,7 @@ Requires:
 from __future__ import annotations
 
 import os
+from urllib.parse import quote
 
 import pytest
 
@@ -22,71 +23,116 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def browser_page():
+def _chromium():
+    """One shared Chromium for the module.
+
+    Both the admin (``browser_page``) and non-admin (``nonadmin_page``) fixtures
+    open a context on this single browser. They must share one
+    ``sync_playwright`` instance — two simultaneously-open sync-Playwright
+    contexts collide with pytest-asyncio's running loop ("Sync API inside the
+    asyncio loop").
+    """
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        context = browser.new_context()
-
-        # #619 shipped an OnboardingTour that renders a full-viewport
-        # backdrop with pointer-events-auto on first visit — its
-        # "click outside to dismiss" behaviour intercepts every
-        # nav-tab click until it's dismissed. An `add_init_script`
-        # pre-sets the dismissed flag on every page that loads in
-        # this context so e2e tests never see the overlay.
-        #
-        # `hive_first_memory_skipped=1` pre-disables the post-create
-        # "first memory probe" in MemoryBrowser.handleCreate (#645).
-        # The probe itself no longer clobbers the filtered list — the
-        # underlying race was fixed in the same PR (loadRef +
-        # dropping the optimistic setMemories shortcut) — but skipping
-        # it puts the e2e fixture in the same steady state real users
-        # experience after their first save: one POST + one filtered
-        # GET, no spare unfiltered round trip racing the assertion.
-        context.add_init_script(
-            "localStorage.setItem('hive_tour_dismissed', '1');"
-            "localStorage.setItem('hive_first_memory_skipped', '1');"
-        )
-        page = context.new_page()
-
-        # Navigate to the bypass login endpoint via CloudFront (same origin as
-        # the UI) so the mgmt JWT lands in the correct localStorage origin.
-        # test_email is required — HIVE_BYPASS_GOOGLE_AUTH only triggers the
-        # synthetic path when test_email is explicitly supplied (#140).
-        page.goto(
-            f"{UI_URL}/auth/login?test_email=e2e@example.com",
-            timeout=30_000,
-            wait_until="networkidle",
-        )
-
-        # Token is now in localStorage. Navigate directly to /app — the
-        # HomeRoute would also redirect there, but client-side redirects can
-        # race with wait_for_url so we go straight to the destination.
-        page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
-
-        yield page
-        context.close()
+        yield browser
         browser.close()
 
 
+def _open_authenticated_page(browser, test_email):
+    """Open a Chromium context on ``browser`` authenticated as ``test_email``.
+
+    Returns ``(context, page)``; the caller owns context teardown.
+    """
+    context = browser.new_context()
+
+    # #619 shipped an OnboardingTour that renders a full-viewport
+    # backdrop with pointer-events-auto on first visit — its
+    # "click outside to dismiss" behaviour intercepts every
+    # nav-tab click until it's dismissed. An `add_init_script`
+    # pre-sets the dismissed flag on every page that loads in
+    # this context so e2e tests never see the overlay.
+    #
+    # `hive_first_memory_skipped=1` pre-disables the post-create
+    # "first memory probe" in MemoryBrowser.handleCreate (#645).
+    # The probe itself no longer clobbers the filtered list — the
+    # underlying race was fixed in the same PR (loadRef +
+    # dropping the optimistic setMemories shortcut) — but skipping
+    # it puts the e2e fixture in the same steady state real users
+    # experience after their first save: one POST + one filtered
+    # GET, no spare unfiltered round trip racing the assertion.
+    context.add_init_script(
+        "localStorage.setItem('hive_tour_dismissed', '1');"
+        "localStorage.setItem('hive_first_memory_skipped', '1');"
+    )
+    page = context.new_page()
+
+    # Navigate to the bypass login endpoint via CloudFront (same origin as
+    # the UI) so the mgmt JWT lands in the correct localStorage origin.
+    # test_email is required — HIVE_BYPASS_GOOGLE_AUTH only triggers the
+    # synthetic path when test_email is explicitly supplied (#140).
+    page.goto(
+        # Encode the whole value — '+' (plus-addressing) would otherwise decode
+        # to a space server-side and flip the email to a different identity.
+        f"{UI_URL}/auth/login?test_email={quote(test_email, safe='')}",
+        timeout=30_000,
+        wait_until="networkidle",
+    )
+
+    # Token is now in localStorage. Navigate directly to /app — the
+    # HomeRoute would also redirect there, but client-side redirects can
+    # race with wait_for_url so we go straight to the destination.
+    page.goto(f"{UI_URL}/app", timeout=30_000, wait_until="networkidle")
+    return context, page
+
+
+@pytest.fixture(scope="module")
+def browser_page(_chromium):
+    # e2e@example.com is on the dev admin allowlist, so this is an admin session
+    # (the tab set / "see all" behaviour most UI tests exercise).
+    context, page = _open_authenticated_page(_chromium, "e2e@example.com")
+    yield page
+    context.close()
+
+
+@pytest.fixture(scope="module")
+def nonadmin_page(_chromium):
+    """Authenticated page for a NON-admin user, where read-your-writes holds.
+
+    The default ``browser_page`` user (``e2e@example.com``) is an admin: the
+    management API's ``_user_filter`` returns ``None`` for admins ("see all"),
+    so a tag-filtered list cannot use the per-user strongly-consistent USERTAG
+    path (#568) and falls back to the eventually-consistent TagIndex GSI — a
+    just-created memory can lag the filtered GET (#679). A non-allowlisted
+    ``test_email`` registers as ``role="user"``, so its reads are scoped to its
+    own ``owner_user_id`` and served from the consistent USERTAG path: a fresh
+    write is visible the instant the POST returns. Use this fixture for any
+    test that asserts a newly-created memory is immediately readable.
+    """
+    context, page = _open_authenticated_page(_chromium, "e2e-nonadmin@example.com")
+    yield page
+    context.close()
+
+
 class TestMarketingNav:
-    def test_signin_btn_border_is_visible(self):
+    def test_signin_btn_border_is_visible(self, _chromium):
         """Sign in button on marketing navbar has a visible border (not transparent).
 
         Asserts the computed border-color so CSS regressions can't sneak past a
         class-name check.  The nav variant bakes border-white/60 into the variant
         itself — no className override needed.
-        """
-        from playwright.sync_api import sync_playwright
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
+        Uses the shared ``_chromium`` browser (its own fresh page, no auth needed
+        for the marketing root) so the module holds exactly one ``sync_playwright``
+        instance — a second one could overlap with it and trip pytest-asyncio's
+        "Sync API inside the asyncio loop" guard.
+        """
+        page = _chromium.new_page()
+        try:
             page.goto(f"{UI_URL}/", timeout=30_000, wait_until="networkidle")
             signin_btn = page.locator(".marketing-signin-btn")
             if not signin_btn.is_visible():
-                browser.close()
                 pytest.skip("Sign in button not visible (may be mobile viewport)")
             border_color = signin_btn.evaluate("el => getComputedStyle(el).borderColor")
             import re
@@ -96,7 +142,8 @@ class TestMarketingNav:
                 f"Sign in button border is transparent: {border_color!r}. "
                 "Check that the nav variant in button.jsx applies border-white/60."
             )
-            browser.close()
+        finally:
+            page.close()
 
 
 class TestUIE2E:
@@ -105,10 +152,15 @@ class TestUIE2E:
         page.goto(UI_URL)
         assert page.locator("nav button:has-text('Memories')").is_visible()
 
-    def test_create_and_see_memory(self, browser_page):
+    def test_create_and_see_memory(self, nonadmin_page):
         import time
 
-        page = browser_page
+        # Runs as a NON-admin user so the tag-filtered read is owner-scoped and
+        # served from the strongly-consistent USERTAG path — read-your-writes
+        # holds and the assertion below is deterministic. As an admin (the
+        # default browser_page user) this read would come from the eventually-
+        # consistent GSI and intermittently miss the just-created memory (#679).
+        page = nonadmin_page
         # Use a unique key AND a unique tag per run.  The key avoids ownership
         # conflicts; the tag is used to filter the list immediately after create
         # so we never depend on the new memory appearing on page 1 of an

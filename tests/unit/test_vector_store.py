@@ -49,6 +49,7 @@ def _make_memory(**kwargs) -> Memory:
         "value": "test value",
         "tags": ["t1"],
         "owner_client_id": "client-abc",
+        "owner_user_id": "user-abc",
     }
     defaults.update(kwargs)
     return Memory(**defaults)
@@ -87,11 +88,11 @@ class TestEnsureIndex:
     def test_creates_index_on_first_call(self):
         s3v = _make_s3v_client()
         vs = VectorStore(bucket_name="mybucket", _s3v_client=s3v, _bedrock_client=MagicMock())
-        name = vs._ensure_index("client-123")
-        assert name == "client-client-123"
+        name = vs._ensure_index("user-123")
+        assert name == "user-user-123"
         s3v.create_index.assert_called_once_with(
             vectorBucketName="mybucket",
-            indexName="client-client-123",
+            indexName="user-user-123",
             dataType="float32",
             dimension=1024,
             distanceMetric="cosine",
@@ -103,7 +104,7 @@ class TestEnsureIndex:
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=MagicMock())
         # Must not raise
         name = vs._ensure_index("abc")
-        assert name == "client-abc"
+        assert name == "user-abc"
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +122,7 @@ class TestUpsertMemory:
         s3v.put_vectors.assert_called_once()
         call_kwargs = s3v.put_vectors.call_args.kwargs
         assert call_kwargs["vectorBucketName"] == "bkt"
-        assert call_kwargs["indexName"] == f"client-{m.owner_client_id}"
+        assert call_kwargs["indexName"] == f"user-{m.owner_user_id}"
         vectors = call_kwargs["vectors"]
         assert len(vectors) == 1
         assert vectors[0]["key"] == m.memory_id
@@ -135,6 +136,16 @@ class TestUpsertMemory:
         embedded_text = bedrock.invoke_model.call_args.kwargs["body"]
         assert "mykey" in embedded_text
         assert "myvalue" in embedded_text
+
+    def test_skips_when_no_owner_user_id(self):
+        # Legacy/pre-#648 memory with no account owner can't be placed in an
+        # account index — upsert is a silent no-op (#666).
+        s3v = _make_s3v_client()
+        bedrock = _make_bedrock_client()
+        vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=bedrock)
+        vs.upsert_memory(_make_memory(owner_user_id=None))
+        s3v.put_vectors.assert_not_called()
+        bedrock.invoke_model.assert_not_called()
 
     def test_swallows_exceptions_best_effort(self):
         s3v = _make_s3v_client()
@@ -154,19 +165,27 @@ class TestDeleteMemory:
     def test_calls_delete_vectors(self):
         s3v = _make_s3v_client()
         vs = VectorStore(bucket_name="bkt", _s3v_client=s3v, _bedrock_client=MagicMock())
-        vs.delete_memory("mem-id-123", "client-xyz")
+        vs.delete_memory("mem-id-123", "user-xyz")
         s3v.delete_vectors.assert_called_once_with(
             vectorBucketName="bkt",
-            indexName="client-client-xyz",
+            indexName="user-user-xyz",
             keys=["mem-id-123"],
         )
+
+    def test_noop_when_owner_user_id_none(self):
+        # A memory never indexed under an account (owner_user_id None) has no
+        # vector to remove — delete is a no-op, never touching S3 (#666).
+        s3v = _make_s3v_client()
+        vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=MagicMock())
+        vs.delete_memory("id", None)
+        s3v.delete_vectors.assert_not_called()
 
     def test_swallows_exceptions_best_effort(self):
         s3v = _make_s3v_client()
         s3v.delete_vectors.side_effect = RuntimeError("gone")
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=MagicMock())
         # Must not raise
-        vs.delete_memory("id", "client")
+        vs.delete_memory("id", "user-1")
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +204,7 @@ class TestSearch:
         }
         bedrock = _make_bedrock_client()
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=bedrock)
-        results = vs.search("query text", "client-1", top_k=5)
+        results = vs.search("query text", "user-1", top_k=5)
         assert results == [("mem-a", round(0.9, 6)), ("mem-b", round(0.6, 6))]
 
     def test_calls_query_vectors_with_correct_args(self):
@@ -193,10 +212,10 @@ class TestSearch:
         s3v.query_vectors.return_value = {"vectors": []}
         bedrock = _make_bedrock_client()
         vs = VectorStore(bucket_name="mybucket", _s3v_client=s3v, _bedrock_client=bedrock)
-        vs.search("hello", "myclient", top_k=7)
+        vs.search("hello", "myuser", top_k=7)
         call_kwargs = s3v.query_vectors.call_args.kwargs
         assert call_kwargs["vectorBucketName"] == "mybucket"
-        assert call_kwargs["indexName"] == "client-myclient"
+        assert call_kwargs["indexName"] == "user-myuser"
         assert call_kwargs["topK"] == 7
         assert call_kwargs["returnDistance"] is True
         assert call_kwargs["returnMetadata"] is False
@@ -207,18 +226,18 @@ class TestSearch:
         bedrock = _make_bedrock_client()
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=bedrock)
         with pytest.raises(VectorIndexNotFoundError):
-            vs.search("query", "client-never-wrote")
+            vs.search("query", "user-never-wrote")
 
     def test_caps_top_k_at_100(self):
         s3v = _make_s3v_client()
         s3v.query_vectors.return_value = {"vectors": []}
         bedrock = _make_bedrock_client()
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=bedrock)
-        vs.search("q", "c", top_k=999)
+        vs.search("q", "u", top_k=999)
         assert s3v.query_vectors.call_args.kwargs["topK"] == 100
 
     def test_returns_empty_list_when_no_vectors(self):
         s3v = _make_s3v_client()
         s3v.query_vectors.return_value = {"vectors": []}
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=_make_bedrock_client())
-        assert vs.search("q", "c") == []
+        assert vs.search("q", "u") == []

@@ -210,6 +210,23 @@ def _vector_store() -> VectorStore:
     return VectorStore()
 
 
+def _require_owner_user_id(storage: HiveStorage, client_id: str) -> str:
+    """Resolve the caller's account (``owner_user_id``), failing closed if unbound.
+
+    Per-user memory scoping (#666) requires a user account on the calling
+    client. Returns the ``owner_user_id`` or raises ``ToolError`` when the
+    client record is missing or not yet bound to a user (#648).
+    """
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    return client.owner_user_id
+
+
 def _log(storage: HiveStorage, event: ActivityEvent) -> None:
     """Record the event in both the user-visible activity log and the
     immutable compliance audit log (#395).
@@ -284,6 +301,7 @@ def _tool_result(
     client_id: str,
     *,
     memory: Memory | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> ToolResult:
     """Wrap a tool's return value in an MCP ``ToolResult`` carrying quota +
     rate-limit metadata in ``_meta.hive``. Strings become text content;
@@ -307,6 +325,8 @@ def _tool_result(
     meta = _quota_meta(storage, client_id)
     if memory is not None:
         meta["hive"]["memory"] = {"key": memory.key, "version": memory.version}
+    if extra_meta:
+        meta["hive"].update(extra_meta)
     if isinstance(payload, dict):
         return ToolResult(structured_content=payload, meta=meta)
     structured: dict[str, Any] = {"result": payload}
@@ -329,18 +349,19 @@ async def _sampled_summary(
     topic: str,
     memories: list[Memory],
     fallback: str,
-) -> str:
+) -> tuple[str, bool]:
     """Synthesise a set of memories via MCP Sampling (#448).
 
-    Sends a ``sampling/createMessage`` request back to the client and uses
-    its model to produce the summary. If the client doesn't support
-    sampling, the transport rejects it, or ctx is unavailable (e.g. direct
-    invocation in tests), returns ``fallback`` — the deterministic
-    concatenated listing — so the tool never fails just because an agent
-    can't sample.
+    Returns ``(text, synthesised)``. ``synthesised`` is ``True`` only when the
+    client's model produced the text via ``sampling/createMessage``; it is
+    ``False`` when the client doesn't support sampling, the transport rejects
+    it, ctx is unavailable (e.g. direct invocation in tests), or the model
+    returned nothing — in which case ``text`` is ``fallback`` (the
+    deterministic listing) so the tool never fails just because an agent can't
+    sample.
     """
     if ctx is None:
-        return fallback
+        return fallback, False
 
     body = "\n\n".join(f"- **{m.key}**: {m.value}" for m in memories)
     prompt = (
@@ -354,10 +375,12 @@ async def _sampled_summary(
         )
     except Exception:
         logger.info("MCP sampling unavailable; falling back to concat summary", exc_info=True)
-        return fallback
+        return fallback, False
 
-    text = getattr(result, "text", None) or fallback
-    return text.strip() or fallback
+    text = getattr(result, "text", None)
+    if text and text.strip():
+        return text.strip(), True
+    return fallback, False
 
 
 async def _report_progress(
@@ -705,7 +728,16 @@ async def remember_blob(
     ``data`` must be standard Base64-encoded bytes. ``content_type`` must be a
     valid MIME type — memories whose type begins with ``image/`` are stored as
     ``value_type="image"``; all others use ``value_type="blob"``. The encoded
-    payload may not exceed 10 MB.
+    payload may not exceed 10 MB (in practice the deployed request path caps a
+    single call lower — see the docs — so several-MB blobs are the realistic
+    ceiling).
+
+    For ``image/*`` content, store a real, renderable image: clients render a
+    recalled image through an image API that rejects images below roughly a few
+    dozen pixels per side. A 32×32 (or larger) image renders; degenerate
+    fixtures like a 1×1 or 16×16 PNG are stored byte-exact but the consuming
+    client reports "Error processing image" (#649). This is a client/API
+    minimum, not a hive limit.
 
     Calling ``remember_blob`` with the same key again replaces the existing
     blob (upsert semantics).  Use ``recall(key)`` to retrieve the blob as an
@@ -973,7 +1005,7 @@ async def forget(
 
     storage.delete_memory(existing.memory_id)
     try:
-        _vector_store().delete_memory(existing.memory_id, client_id)
+        _vector_store().delete_memory(existing.memory_id, existing.owner_user_id)
     except Exception:
         logger.warning("Vector delete failed (non-fatal)", exc_info=True)
     _log(
@@ -1018,11 +1050,21 @@ async def forget_all(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope="memories:write")
 
-    # Scope bulk deletion to the calling client so it can never delete another
-    # tenant's same-tagged memories (GHSA-h9vh-rpcv-xqrr). owner_client_id is
-    # the axis reliably set on every memory today; user-level scoping follows
-    # once DCR clients are bound to user accounts (#648).
-    deleted = storage.delete_memories_by_tag(tag, owner_client_id=client_id)
+    # Scope bulk deletion to the caller's user account: it deletes the account's
+    # same-tagged memories across all its DCR clients (consistent with
+    # list_memories / list_tags, #666) but can never reach another user's
+    # memories (GHSA-h9vh-rpcv-xqrr). Requiring owner_user_id also guarantees we
+    # never call delete_memories_by_tag with no owner filter (which would delete
+    # across every tenant). Now that DCR clients are bound to user accounts
+    # (#648), owner_user_id is reliably set.
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    deleted = storage.delete_memories_by_tag(tag, owner_user_id=client.owner_user_id)
     _log(
         storage,
         ActivityEvent(
@@ -1111,7 +1153,7 @@ async def redact_memory(
     existing.updated_at = existing.redacted_at
     storage.put_memory(existing)
     try:
-        _vector_store().delete_memory(existing.memory_id, client_id)
+        _vector_store().delete_memory(existing.memory_id, existing.owner_user_id)
     except Exception:
         logger.warning("Vector delete on redaction failed (non-fatal)", exc_info=True)
 
@@ -1320,7 +1362,14 @@ async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
-    tags = storage.list_distinct_tags(client_id)
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    tags = storage.list_distinct_tags(client.owner_user_id)
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Listed %d distinct tags",
@@ -1355,6 +1404,11 @@ async def summarize_context(
     that do not support sampling (e.g. Claude Desktop) instead receive the
     listed memories with a count footer — there is no server-side LLM, so the
     prose synthesis only happens when the client can provide the model (#662).
+
+    The response ``_meta.hive.summary_mode`` reports which path was taken
+    (``"synthesised"`` or ``"listed"``) so an agent that receives a listing can
+    choose to synthesise it itself; the listed memories are ordered most-recent
+    first (#658).
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
@@ -1369,6 +1423,9 @@ async def summarize_context(
 
     await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
     memories, _ = storage.list_memories_by_tag(topic, limit=500, owner_user_id=owner_user_id)
+    # Freshest first, so both the sampling prompt and the listed fallback lead
+    # with the most recent memories (#658).
+    memories.sort(key=lambda m: m.updated_at, reverse=True)
     await _report_progress(
         ctx, 1, 2, f"Retrieved {len(memories)} memories; synthesising summary..."
     )
@@ -1384,7 +1441,12 @@ async def summarize_context(
             },
         )
         await emit_metric("ToolInvocations", operation="summarize_context")
-        return _tool_result(f"No memories found for topic '{topic}'.", storage, client_id)
+        return _tool_result(
+            f"No memories found for topic '{topic}'.",
+            storage,
+            client_id,
+            extra_meta={"summary_mode": "listed"},
+        )
 
     lines = [f"## Memories tagged '{topic}'\n"]
     for m in memories:
@@ -1396,7 +1458,8 @@ async def summarize_context(
     # Try MCP Sampling first (#448). If the client supports it, we get a real
     # LLM synthesis without any server-side Bedrock cost; otherwise the
     # sampler raises and we fall back to the concatenated listing above.
-    summary = await _sampled_summary(ctx, topic, memories, concat_summary)
+    summary, synthesised = await _sampled_summary(ctx, topic, memories, concat_summary)
+    summary_mode = "synthesised" if synthesised else "listed"
 
     _log(
         storage,
@@ -1424,7 +1487,7 @@ async def summarize_context(
         unit="Milliseconds",
         operation="summarize_context",
     )
-    return _tool_result(summary, storage, client_id)
+    return _tool_result(summary, storage, client_id, extra_meta={"summary_mode": summary_mode})
 
 
 @mcp.tool(
@@ -1483,9 +1546,10 @@ async def search_memories(
     # post-filter still leaves up to top_k survivors.
     search_top_k = 50 if required_tags else min(max(top_k * 3, 10), 50)
 
+    owner_user_id = _require_owner_user_id(storage, client_id)
     await _report_progress(ctx, 0, 3, f"Running vector search for '{query}'...")
     try:
-        pairs = _vector_store().search(query, client_id, top_k=search_top_k)
+        pairs = _vector_store().search(query, owner_user_id, top_k=search_top_k)
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
     except Exception:
@@ -1618,9 +1682,10 @@ async def relate_memories(
                 exc_info=True,
             )
 
+    owner_user_id = _require_owner_user_id(storage, client_id)
     try:
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
-        pairs = _vector_store().search(query_value, client_id, top_k=top_k + 1)
+        pairs = _vector_store().search(query_value, owner_user_id, top_k=top_k + 1)
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
@@ -1846,8 +1911,9 @@ async def pack_context(
         else ("relevance+recency")
     )
 
+    owner_user_id = _require_owner_user_id(storage, client_id)
     try:
-        pairs = _vector_store().search(topic, client_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
+        pairs = _vector_store().search(topic, owner_user_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
     except VectorIndexNotFoundError:
         return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
     except Exception:

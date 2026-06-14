@@ -426,29 +426,34 @@ class HiveStorage:
                 results.append((memory, score))
         return results
 
-    def list_distinct_tags(self, client_id: str) -> list[str]:
-        """Return the sorted set of distinct tags on memories owned by ``client_id``.
+    def list_distinct_tags(self, owner_user_id: str) -> list[str]:
+        """Return the sorted distinct tags across the user account's memories.
 
-        Scans the TagIndex GSI (scope is limited to tag items — the base table
-        is never scanned) filtering on ``owner_client_id`` and projecting only
-        the ``GSI2PK`` attribute, which carries the ``TAG#{name}`` marker.
+        Queries the strongly-consistent USERTAG items (PK=USERTAG#{user_id},
+        SK=TAG#{tag}#MEMORY#{id}) so the result is account-scoped — matching the
+        ``owner_user_id`` boundary used by list_memories / summarize_context
+        (#666) — and reads-your-writes without TagIndex GSI propagation lag
+        (#653). The base table is never scanned.
         """
         tags: set[str] = set()
         start_key: dict[str, Any] | None = None
         while True:
             kwargs: dict[str, Any] = {
-                "IndexName": "TagIndex",
-                "FilterExpression": "owner_client_id = :cid",
-                "ExpressionAttributeValues": {":cid": client_id},
-                "ProjectionExpression": "GSI2PK",
+                "KeyConditionExpression": Key("PK").eq(f"USERTAG#{owner_user_id}")
+                & Key("SK").begins_with("TAG#"),
+                "ProjectionExpression": "SK",
+                "ConsistentRead": True,
             }
             if start_key:
                 kwargs["ExclusiveStartKey"] = start_key
-            resp = self.table.scan(**kwargs)
+            resp = self.table.query(**kwargs)
             for item in resp.get("Items", []):
-                gsi_pk = item.get("GSI2PK", "")
-                if gsi_pk.startswith("TAG#"):
-                    tags.add(gsi_pk[len("TAG#") :])
+                sk = item.get("SK", "")
+                # SK = TAG#{tag}#MEMORY#{memory_id}; rsplit isolates the tag even
+                # if the tag itself contains '#'.
+                tag = sk[len("TAG#") :].rsplit("#MEMORY#", 1)[0] if sk.startswith("TAG#") else ""
+                if tag:
+                    tags.add(tag)
             start_key = resp.get("LastEvaluatedKey")
             if not start_key:
                 break
