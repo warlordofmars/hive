@@ -914,13 +914,32 @@ class TestListTags:
         from hive.server import list_tags, remember
 
         await remember("mine", "v", ["owned"], ctx=_make_ctx(jwt))
-        # Write a memory belonging to a different client directly so we bypass auth
+        # A memory belonging to a different user account must not leak in (#666).
         storage.put_memory(
-            Memory(key="theirs", value="v", tags=["not-mine"], owner_client_id="other-client")
+            Memory(
+                key="theirs",
+                value="v",
+                tags=["not-mine"],
+                owner_client_id="other-client",
+                owner_user_id="other-user",
+            )
         )
 
         result = await list_tags(ctx=_make_ctx(jwt))
         assert _body(result)["tags"] == ["owned"]
+
+    async def test_merges_tags_across_clients_of_same_account(self, server_env):
+        """Two DCR clients of the same account share one tag namespace (#666)."""
+        storage, _, _ = server_env
+        from hive.server import list_tags, remember
+
+        jwt_1 = _make_user_jwt(storage, "tag-user")
+        jwt_2 = _make_user_jwt(storage, "tag-user")
+        await remember("k1", "v", ["from-c1"], ctx=_make_ctx(jwt_1))
+        await remember("k2", "v", ["from-c2"], ctx=_make_ctx(jwt_2))
+
+        result = await list_tags(ctx=_make_ctx(jwt_1))
+        assert _body(result)["tags"] == ["from-c1", "from-c2"]
 
     async def test_requires_read_scope(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -931,6 +950,56 @@ class TestListTags:
         write_only_jwt = _make_limited_scope_jwt(storage, "memories:write")
         with pytest.raises(ToolError, match="Insufficient scope"):
             await list_tags(ctx=_make_ctx(write_only_jwt))
+
+    async def test_rejects_missing_client_record(self, server_env):
+        """list_tags fails closed when the authenticated client record is gone."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import list_tags
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client LT", owner_user_id="ghost-user-lt")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await list_tags(ctx=_make_ctx(jwt))
+
+    async def test_requires_user_account(self, server_env):
+        """An unbound client (owner_user_id is None) fails closed."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import list_tags
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Unbound List Tags")
+        assert client.owner_user_id is None
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+
+        with pytest.raises(ToolError, match="not associated with a user account"):
+            await list_tags(ctx=_make_ctx(jwt))
 
 
 # ---------------------------------------------------------------------------
@@ -2265,6 +2334,15 @@ class TestRecallBinary:
         "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
     )
 
+    # A real 32×32 RGBA PNG — above the ~few-dozen-pixel minimum that the
+    # Anthropic image API (and most clients) require to render. The 1×1 fixture
+    # round-trips byte-exact through hive but is too small for a consuming
+    # client to display, which is what the e2e rounds hit (#649).
+    _PNG_32 = (
+        "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAALUlEQVR42u3OIQEAAAgD"
+        "sOckMa0gxs3E/JLZqxIQEBAQEBAQEBAQEBAQEGgHHn/LhHlnLcV4AAAAAElFTkSuQmCC"
+    )
+
     def _setup_blob_bucket(self, monkeypatch):
         bucket = "test-recall-blob-499"
         monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
@@ -2286,6 +2364,27 @@ class TestRecallBinary:
         assert isinstance(block, ImageContent)
         assert block.mimeType == "image/png"
         assert block.data == self._PNG_1PX
+
+    async def test_recall_renderable_image_round_trips_byte_exact(self, server_env, monkeypatch):
+        """A ≥32×32 image (renderable in real clients) round-trips byte-exact (#649).
+
+        The reported "Error processing image" was the consuming image API
+        rejecting a sub-renderable fixture (1×1 / 16×16), not a hive
+        serialization defect — hive returns the original bytes intact.
+        """
+        from mcp.types import ImageContent
+
+        from hive.server import recall, remember_blob
+
+        self._setup_blob_bucket(monkeypatch)
+        _, _, jwt = server_env
+        await remember_blob("img-32", self._PNG_32, "image/png", ctx=_make_ctx(jwt))
+
+        result = await recall("img-32", ctx=_make_ctx(jwt))
+        block = result.content[0]
+        assert isinstance(block, ImageContent)
+        assert block.mimeType == "image/png"
+        assert block.data == self._PNG_32
 
     async def test_recall_image_includes_structured_content(self, server_env, monkeypatch):
         """#654 — recall is `-> str`, so FastMCP advertises the wrap-result
@@ -2439,45 +2538,95 @@ class TestForgetAll:
         with pytest.raises(ToolError, match="Insufficient scope"):
             await forget_all("t", ctx=_make_ctx(read_only_jwt))
 
-    async def test_forget_all_does_not_delete_other_clients_memories(self, server_env):
+    async def test_forget_all_does_not_delete_other_users_memories(self, server_env):
         """Cross-tenant data destruction guard (GHSA-h9vh-rpcv-xqrr).
 
-        forget_all must scope deletion to the calling client. A second,
-        distinct client's same-tagged memory must survive — even when neither
-        client is bound to a user account (the production DCR case where
-        owner_user_id is None), so scoping cannot rely on owner_user_id alone.
+        forget_all is scoped to the caller's user account, so a different
+        user's same-tagged memory must survive (#666).
         """
-        from hive.auth.tokens import issue_jwt
-        from hive.models import OAuthClient, Token
         from hive.server import forget_all, remember
 
-        storage, _client_a_id, jwt_a = server_env
+        storage, _, _ = server_env
+        jwt_a = _make_user_jwt(storage, "user-alice")
+        jwt_b = _make_user_jwt(storage, "user-bob")
 
-        # Client A stores a memory under a tag both clients happen to use.
-        await remember("victim", "owned by A", ["shared"], ctx=_make_ctx(jwt_a))
+        await remember("alice-note", "owned by Alice", ["shared"], ctx=_make_ctx(jwt_a))
+        await remember("bob-note", "owned by Bob", ["shared"], ctx=_make_ctx(jwt_b))
 
-        # A distinct client B, unbound to any user (mirrors production DCR).
-        client_b = OAuthClient(client_name="Other Client")
-        assert client_b.owner_user_id is None
-        storage.put_client(client_b)
+        result = await forget_all("shared", ctx=_make_ctx(jwt_b))
+
+        # Bob may only delete his own memory; Alice's must survive.
+        assert storage.get_memory_by_key("alice-note") is not None
+        assert storage.get_memory_by_key("bob-note") is None
+        assert "1" in _text(result)
+
+    async def test_forget_all_deletes_across_clients_of_same_account(self, server_env):
+        """forget_all spans every DCR client of the caller's account (#666)."""
+        from hive.server import forget_all, remember
+
+        storage, _, _ = server_env
+        # Two distinct DCR clients, same user account.
+        jwt_1 = _make_user_jwt(storage, "shared-user")
+        jwt_2 = _make_user_jwt(storage, "shared-user")
+
+        await remember("from-client-1", "v1", ["sweep"], ctx=_make_ctx(jwt_1))
+        await remember("from-client-2", "v2", ["sweep"], ctx=_make_ctx(jwt_2))
+
+        result = await forget_all("sweep", ctx=_make_ctx(jwt_1))
+
+        assert storage.get_memory_by_key("from-client-1") is None
+        assert storage.get_memory_by_key("from-client-2") is None
+        assert "2" in _text(result)
+
+    async def test_forget_all_requires_user_account(self, server_env):
+        """An unbound client (owner_user_id is None) fails closed, never a no-filter delete."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import forget_all
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Unbound Client")
+        assert client.owner_user_id is None
+        storage.put_client(client)
         now = datetime.now(timezone.utc)
-        token_b = Token(
-            client_id=client_b.client_id,
+        token = Token(
+            client_id=client.client_id,
             scope="memories:read memories:write",
             issued_at=now,
             expires_at=now + timedelta(hours=1),
         )
-        storage.put_token(token_b)
-        jwt_b = issue_jwt(token_b)
-        await remember("b-note", "owned by B", ["shared"], ctx=_make_ctx(jwt_b))
+        storage.put_token(token)
+        jwt = issue_jwt(token)
 
-        # Client B bulk-deletes by the shared tag.
-        result = await forget_all("shared", ctx=_make_ctx(jwt_b))
+        with pytest.raises(ToolError, match="not associated with a user account"):
+            await forget_all("anything", ctx=_make_ctx(jwt))
 
-        # B may only delete its own memory; A's must survive.
-        assert storage.get_memory_by_key("victim") is not None
-        assert storage.get_memory_by_key("b-note") is None
-        assert "1" in _text(result)
+    async def test_forget_all_rejects_missing_client_record(self, server_env):
+        """forget_all fails closed when the authenticated client record is gone."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.auth.tokens import issue_jwt
+        from hive.models import OAuthClient, Token
+        from hive.server import forget_all
+
+        storage, _, _ = server_env
+        client = OAuthClient(client_name="Ghost Client FA", owner_user_id="ghost-user-fa")
+        storage.put_client(client)
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client.client_id,
+            scope="memories:read memories:write",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        jwt = issue_jwt(token)
+        storage.delete_client(client.client_id)
+
+        with pytest.raises(ToolError, match="Unable to load client record"):
+            await forget_all("anything", ctx=_make_ctx(jwt))
 
 
 # ---------------------------------------------------------------------------
