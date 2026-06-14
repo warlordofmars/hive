@@ -59,6 +59,22 @@ describe("buildGrid", () => {
       expect(col).toHaveLength(7);
     }
   });
+
+  it("does not flush a trailing empty column when the span ends on a Saturday", () => {
+    // buildGrid pushes each column the instant it fills the Saturday row
+    // (dayOfWeek 6) and resets `col`. When the span's final day IS a Saturday,
+    // that reset leaves an all-null trailing column, so the flush guard must
+    // skip it. Pinning an explicit Saturday keeps that guard's false branch
+    // covered regardless of the weekday the suite runs on — it was previously
+    // only exercised when the real clock happened to land on a Saturday, so
+    // coverage silently dropped on the other six days.
+    const saturday = new Date("2026-06-13T12:00:00Z"); // Saturday
+    const { cells, weeks } = buildGrid([], saturday);
+    expect(cells[cells.length - 1].dayOfWeek).toBe(6);
+    // The last column is a real, fully-populated final week — not an empty flush.
+    expect(weeks[weeks.length - 1][6]).not.toBeNull();
+    expect(weeks.every((col) => col.some((c) => c !== null))).toBe(true);
+  });
 });
 
 const _sampleData = [
