@@ -17,7 +17,11 @@ Store a binary memory — an image, document, audio file, or any other non-text 
 - If `content_type` starts with `image/` (e.g. `image/png`, `image/jpeg`, `image/webp`), the memory gets `value_type="image"`.
 - All other MIME types produce `value_type="blob"`.
 - Calling `remember_blob` with the same key again **replaces** the existing binary content (upsert semantics, same `memory_id`).
-- The `data` payload (after Base64 decoding) must not exceed **10 MB**.
+- The `data` payload (after Base64 decoding) must not exceed **10 MB**. In practice the deployed request path (CloudFront → Lambda) caps a single request body well below that, so **several-MB blobs are the realistic ceiling** for one call.
+
+### Minimum renderable image size
+
+When you store an `image/*` blob and later `recall` it, the client renders the returned bytes through an image API (Anthropic's, for Claude clients) that **rejects images below roughly a few dozen pixels per side**. A **32×32 image (or larger) renders**; a degenerate fixture such as a 1×1 or 16×16 PNG is stored and returned **byte-exact** by Hive, but the consuming client reports `Error processing image`. This is a client/API minimum, **not** a Hive limit — store real, sensibly-sized images.
 
 ## Examples
 
@@ -38,7 +42,8 @@ Save this architecture PDF as "project/myapp/architecture-doc" with tag "docs".
 
 | Limit | Value |
 | --- | --- |
-| Maximum payload (decoded bytes) | 10 MB |
+| Maximum payload (decoded bytes) | 10 MB (single-request path caps lower; several MB is realistic) |
+| Minimum renderable image | ~32×32 px — smaller images store byte-exact but won't render in clients |
 | Supported MIME types | Any non-empty string (typically a MIME type such as `image/png`) |
 | Key length | Up to 512 characters |
 

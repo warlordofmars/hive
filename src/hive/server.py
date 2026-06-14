@@ -705,7 +705,16 @@ async def remember_blob(
     ``data`` must be standard Base64-encoded bytes. ``content_type`` must be a
     valid MIME type — memories whose type begins with ``image/`` are stored as
     ``value_type="image"``; all others use ``value_type="blob"``. The encoded
-    payload may not exceed 10 MB.
+    payload may not exceed 10 MB (in practice the deployed request path caps a
+    single call lower — see the docs — so several-MB blobs are the realistic
+    ceiling).
+
+    For ``image/*`` content, store a real, renderable image: clients render a
+    recalled image through an image API that rejects images below roughly a few
+    dozen pixels per side. A 32×32 (or larger) image renders; degenerate
+    fixtures like a 1×1 or 16×16 PNG are stored byte-exact but the consuming
+    client reports "Error processing image" (#649). This is a client/API
+    minimum, not a hive limit.
 
     Calling ``remember_blob`` with the same key again replaces the existing
     blob (upsert semantics).  Use ``recall(key)`` to retrieve the blob as an
@@ -1018,11 +1027,21 @@ async def forget_all(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope="memories:write")
 
-    # Scope bulk deletion to the calling client so it can never delete another
-    # tenant's same-tagged memories (GHSA-h9vh-rpcv-xqrr). owner_client_id is
-    # the axis reliably set on every memory today; user-level scoping follows
-    # once DCR clients are bound to user accounts (#648).
-    deleted = storage.delete_memories_by_tag(tag, owner_client_id=client_id)
+    # Scope bulk deletion to the caller's user account: it deletes the account's
+    # same-tagged memories across all its DCR clients (consistent with
+    # list_memories / list_tags, #666) but can never reach another user's
+    # memories (GHSA-h9vh-rpcv-xqrr). Requiring owner_user_id also guarantees we
+    # never call delete_memories_by_tag with no owner filter (which would delete
+    # across every tenant). Now that DCR clients are bound to user accounts
+    # (#648), owner_user_id is reliably set.
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    deleted = storage.delete_memories_by_tag(tag, owner_user_id=client.owner_user_id)
     _log(
         storage,
         ActivityEvent(
@@ -1320,7 +1339,14 @@ async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
-    tags = storage.list_distinct_tags(client_id)
+    client = storage.get_client(client_id)
+    if client is None:
+        raise ToolError("Unable to load client record for authenticated caller.")
+    if client.owner_user_id is None:
+        raise ToolError(
+            "Client is not associated with a user account; per-user memory scoping is required."
+        )
+    tags = storage.list_distinct_tags(client.owner_user_id)
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Listed %d distinct tags",
