@@ -262,6 +262,13 @@ class TestOAuthDiscovery:
         assert "token_endpoint" in data
         assert "code_challenge_methods_supported" in data
         assert "S256" in data["code_challenge_methods_supported"]
+        # #647 — every endpoint must be built from the issuer (the public
+        # custom domain), not the raw Function URL, so the host matches and
+        # strict RFC 8414 validators accept the document.
+        assert data["authorization_endpoint"] == f"{data['issuer']}/oauth/authorize"
+        assert data["token_endpoint"] == f"{data['issuer']}/oauth/token"
+        assert data["revocation_endpoint"] == f"{data['issuer']}/oauth/revoke"
+        assert data["registration_endpoint"] == f"{data['issuer']}/oauth/register"
 
     def test_protected_resource_metadata(self, oauth_client):
         tc, *_ = oauth_client
@@ -276,6 +283,24 @@ class TestOAuthDiscovery:
         assert "memories:read" in data["scopes_supported"]
         assert "memories:write" in data["scopes_supported"]
         assert data["bearer_methods_supported"] == ["header"]
+
+    def test_protected_resource_metadata_path_inserted(self, oauth_client):
+        """#647 — the RFC 9728 path-inserted URL must return the JSON document.
+
+        Spec-strict clients hit ``/.well-known/oauth-protected-resource/mcp``
+        first. Without this route the Lambda 404s and CloudFront's SPA fallback
+        rewrites it to 200 text/html, aborting discovery. It must serve the same
+        JSON as the root variant.
+        """
+        tc, *_ = oauth_client
+        resp = tc.get("/.well-known/oauth-protected-resource/mcp")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        data = resp.json()
+        assert data["resource"].endswith("/mcp")
+        assert "authorization_servers" in data
+        # Identical document to the root variant.
+        assert data == tc.get("/.well-known/oauth-protected-resource").json()
 
 
 class TestOAuthRegister:
