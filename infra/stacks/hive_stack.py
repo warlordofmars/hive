@@ -683,7 +683,18 @@ class HiveStack(cdk.Stack):
                 sampled_requests_enabled=True,
             ),
             rules=[
-                # Managed: OWASP Top 10 protections
+                # Managed: OWASP Top 10 protections — enforced on the whole site
+                # EXCEPT the MCP endpoint. /mcp is an OAuth-gated JSON-RPC API whose
+                # payloads include multi-MB base64 blobs (remember_blob, #665). The
+                # Common rule set breaks that two ways: SizeRestrictions_BODY (8 KB)
+                # 403s the request before it reaches the Lambda, and the SQLi/XSS
+                # *body* rules can false-positive on arbitrary base64. Scoping the
+                # group down to NOT /mcp* keeps full protection on the public surface
+                # (UI, docs, management API) while letting authenticated MCP traffic
+                # through. /mcp is still covered by AWSManagedRulesKnownBadInputs and
+                # the GlobalRateLimit rate-based rule below (OAuthRateLimit is scoped
+                # to /oauth/* and does not apply to /mcp); the next size ceiling is
+                # the Lambda Function URL ~6 MB request limit (~4 MB of binary).
                 wafv2.CfnWebACL.RuleProperty(
                     name="AWSManagedRulesCommonRuleSet",
                     priority=0,
@@ -692,6 +703,24 @@ class HiveStack(cdk.Stack):
                         managed_rule_group_statement=wafv2.CfnWebACL.ManagedRuleGroupStatementProperty(
                             vendor_name="AWS",
                             name="AWSManagedRulesCommonRuleSet",
+                            scope_down_statement=wafv2.CfnWebACL.StatementProperty(
+                                not_statement=wafv2.CfnWebACL.NotStatementProperty(
+                                    statement=wafv2.CfnWebACL.StatementProperty(
+                                        byte_match_statement=wafv2.CfnWebACL.ByteMatchStatementProperty(
+                                            search_string="/mcp",
+                                            field_to_match=wafv2.CfnWebACL.FieldToMatchProperty(
+                                                uri_path={}
+                                            ),
+                                            text_transformations=[
+                                                wafv2.CfnWebACL.TextTransformationProperty(
+                                                    priority=0, type="NONE"
+                                                )
+                                            ],
+                                            positional_constraint="STARTS_WITH",
+                                        )
+                                    )
+                                )
+                            ),
                         ),
                     ),
                     visibility_config=wafv2.CfnWebACL.VisibilityConfigProperty(
