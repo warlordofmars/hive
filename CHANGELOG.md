@@ -6,7 +6,91 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.27.1. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.28.1. Will be rolled into the next release._
+
+## v0.28.1 — 2026-06-14
+
+A hotfix for an authorization regression introduced in v0.28.0.
+
+### Fixed
+
+#### Auth
+
+- **OAuth authorization no longer blocked by WAF for native MCP clients.**
+  v0.28.0 (#647) moved the OAuth endpoints onto the custom domain, which routed
+  the authorization flow through CloudFront's WAF for the first time (it
+  previously hit the raw Lambda Function URL, bypassing WAF). The AWS Common
+  rule set's SSRF/RFI rules flagged the `http://localhost:PORT/callback`
+  redirect_uri that native MCP clients (Claude Code, Cursor) use and blocked the
+  request with a 403 — which CloudFront's SPA error-fallback served as a 200
+  "Page not found" page — so `/oauth/authorize` failed and clients could not
+  (re-)authenticate. `/oauth/*` is now scoped out of the Common rule set
+  (mirroring the existing `/mcp` exemption); it keeps KnownBadInputs, the
+  rate-based rules, and its own PKCE / registered-redirect_uri validation. (#688)
+
+## v0.28.0 — 2026-06-14
+
+An MCP-correctness and consistency release. It makes every memory tool agree
+on the user-account scope — so search, listing, and deletion all see the same
+memories across a user's clients — repairs OAuth discovery so spec-compliant
+MCP clients can connect, and unblocks binary memory storage that AWS WAF was
+silently capping.
+
+### Changed
+
+#### MCP
+
+- **All memory tools now scope to the user account, not the OAuth client.**
+  `search_memories`, `pack_context`, `relate_memories`, `list_tags`,
+  `forget_all`, and the management-UI search now span every DCR client of a
+  user's account — consistent with `list_memories` / `summarize_context`.
+  Previously these were client-scoped, so a memory created from one client
+  (e.g. Claude Code) was invisible to search/listing from another (e.g. Claude
+  Desktop), and a stale-read lag could hide a just-written tag. Semantic search
+  is re-partitioned onto per-user vector indexes; run `inv migrate-vectors`
+  once after deploying to backfill them. (#666, #667, #681, #653)
+- **`summarize_context` reports its mode and leads with recent memories.** The
+  tool only synthesises prose when the calling client supports MCP Sampling
+  (#448); otherwise it returns a deterministic listing. It now signals which
+  path ran via `_meta.hive.summary_mode` (`synthesised` / `listed`) so an agent
+  that receives a listing can synthesise it client-side, and the listed
+  memories are ordered most-recent-first. (#658, #662)
+
+### Fixed
+
+#### Auth
+
+- **MCP OAuth discovery works for spec-compliant clients.** Strict clients
+  could not complete discovery against `/mcp`: the RFC 9728 path-inserted
+  metadata URL returned the SPA's HTML (CloudFront rewrote the API's 404 into a
+  200), the `WWW-Authenticate` challenge was renamed in transit by the Lambda
+  Function URL so no client ever read it, and the authorization-server metadata
+  advertised endpoints on the raw Function URL instead of the custom domain.
+  All three are fixed — the path-inserted route returns JSON, a Lambda@Edge
+  origin-response function restores the `WWW-Authenticate` header on 401s, and
+  the metadata endpoints are built from the public issuer. (#647)
+
+#### MCP
+
+- **`remember_blob` is no longer capped at ~8 KB by WAF.** The CloudFront
+  `AWSManagedRulesCommonRuleSet` `SizeRestrictions_BODY` rule returned a 403 for
+  any request body over 8 KB before it reached the MCP Lambda, so even a small
+  image failed to store. `/mcp` is now scoped out of the Common rule set (it
+  stays covered by KnownBadInputs and the rate-based rules), so multi-MB blobs
+  reach the origin. Also documents the minimum renderable image size — the
+  "Error processing image" reported for tiny fixtures was the consuming image
+  API's dimension floor, not a Hive defect. (#665, #649)
+
+### Meta
+
+- **CI reliability.** Fixed a clock-dependent frontend coverage gap that made
+  `ActivityHeatmap`'s branch coverage pass only on Saturdays (#669), and a
+  flaky `create-and-see-memory` e2e test that raced GSI propagation because the
+  e2e user is an admin (admin reads bypass the strongly-consistent path) (#679).
+- **Dependencies.** Cleared the remaining moderate npm advisories (react-router
+  open redirect, `ws` memory disclosure) via a non-breaking `npm audit fix`;
+  the dev-tooling criticals were already resolved by the move to vite 8 /
+  vitest 4. (#659)
 
 ## v0.27.1 — 2026-06-13
 
