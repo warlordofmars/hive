@@ -644,25 +644,38 @@ class HiveStack(cdk.Stack):
         # name. No MCP client reads the remapped header, so the OAuth challenge on
         # a 401 from /mcp (which carries the resource_metadata pointer) is
         # invisible and spec-compliant header-based discovery never works (#647).
-        # This viewer-response function restores the spec header name on the way
-        # back to the client.
-        mcp_auth_header_fn = cloudfront.Function(
+        #
+        # This MUST be a Lambda@Edge *origin-response* function, not a CloudFront
+        # viewer-response Function: CloudFront does not invoke viewer-response
+        # functions when the origin returns HTTP >= 400, so a viewer-response
+        # function can never touch the 401 that carries the challenge. Lambda@Edge
+        # origin-response runs for all status codes (and WWW-Authenticate is not a
+        # read-only header there), so it can restore the spec header name. It only
+        # rewrites when the remapped header is present (i.e. on the 401), so 200s
+        # are untouched.
+        mcp_auth_header_edge = cloudfront.experimental.EdgeFunction(
             self,
-            "McpAuthHeaderRestore",
-            code=cloudfront.FunctionCode.from_inline(
+            "McpAuthHeaderEdge",
+            runtime=lambda_.Runtime.NODEJS_20_X,
+            handler="index.handler",
+            code=lambda_.Code.from_inline(
                 """
-function handler(event) {
-    var headers = event.response.headers;
+exports.handler = async (event) => {
+    var response = event.Records[0].cf.response;
+    var headers = response.headers;
     var remapped = headers['x-amzn-remapped-www-authenticate'];
-    if (remapped) {
-        headers['www-authenticate'] = remapped;
+    if (remapped && remapped.length) {
+        // Preserve every value — WWW-Authenticate may legitimately carry
+        // multiple challenges (CloudFront passes them as separate array entries).
+        headers['www-authenticate'] = remapped.map(function (h) {
+            return { key: 'WWW-Authenticate', value: h.value };
+        });
         delete headers['x-amzn-remapped-www-authenticate'];
     }
-    return event.response;
-}
+    return response;
+};
 """
             ),
-            runtime=cloudfront.FunctionRuntime.JS_2_0,
         )
 
         mcp_behavior = cloudfront.BehaviorOptions(
@@ -672,10 +685,10 @@ function handler(event) {
             origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
             allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
             response_headers_policy=security_headers_policy,
-            function_associations=[
-                cloudfront.FunctionAssociation(
-                    function=mcp_auth_header_fn,
-                    event_type=cloudfront.FunctionEventType.VIEWER_RESPONSE,
+            edge_lambdas=[
+                cloudfront.EdgeLambda(
+                    function_version=mcp_auth_header_edge.current_version,
+                    event_type=cloudfront.LambdaEdgeEventType.ORIGIN_RESPONSE,
                 )
             ],
         )
