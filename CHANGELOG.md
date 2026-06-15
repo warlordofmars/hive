@@ -6,7 +6,35 @@ See the [GitHub releases page](https://github.com/warlordofmars/hive/releases) f
 
 ## [Unreleased]
 
-_Changes accumulated on `development` since v0.28.1. Will be rolled into the next release._
+_Changes accumulated on `development` since v0.28.2. Will be rolled into the next release._
+
+## v0.28.2 — 2026-06-15
+
+A patch release that stops the Hive MCP server from forcing frequent full
+re-authentication.
+
+### Fixed
+
+#### Auth
+
+- **Refresh tokens are no longer rotated on use, ending frequent re-auth.** The
+  `/oauth/token` refresh grant revoked the presented refresh token and issued a
+  new pair on every use, so only the single newest token stayed valid. Any reuse
+  of a prior token — by a concurrent MCP connection, a retry, or a stale
+  persisted copy — returned a 400, and the MCP client fell back to a full browser
+  re-authorization (observed as roughly hourly re-auths despite a 30-day
+  refresh-token lifetime). The grant now mints a fresh access token while keeping
+  the presented refresh token valid, and rejects a refresh whose scope no longer
+  overlaps the client's current registered scope rather than silently falling
+  back to the token's original scope. (#694)
+
+### Meta
+
+- **`inv e2e` forwards the caller's environment to pytest.** The task built its
+  env from scratch with only the deployed-stack URLs, dropping `HIVE_E2E_EMAIL` /
+  `HIVE_ADMIN_EMAIL`; local runs against a deployed env then registered an OAuth
+  client with no user-account association and the account-scoped MCP tools failed
+  closed. It now merges `os.environ` first, mirroring `inv e2e-local`. (#695, #696)
 
 ## v0.28.1 — 2026-06-14
 
