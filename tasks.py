@@ -264,7 +264,13 @@ def e2e(ctx, env="prod"):
     api_url = _cfn_output(ctx, "ApiFunctionUrl", env=env)
     mcp_url = _cfn_output(ctx, "McpFunctionUrl", env=env)
     ui_url = _cfn_output(ctx, "UiUrl", env=env)
+    # Inherit the caller's environment so HIVE_E2E_EMAIL / HIVE_ADMIN_EMAIL (and
+    # AWS creds) reach pytest — without them the bypass flow registers a client
+    # with no user association and the account-scoped MCP tools (#666) fail
+    # closed. CI sets these as repo vars; local runs rely on this passthrough.
+    # Explicit URL keys come last so they win over any stale values in os.environ.
     extra_env = {
+        **os.environ,
         "HIVE_API_URL": api_url,
         "HIVE_MCP_URL": mcp_url,
         "HIVE_UI_URL": ui_url,
