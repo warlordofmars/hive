@@ -1634,6 +1634,57 @@ class TestRefreshTokenScopeNarrowing:
         assert "memories:write" not in claims["scope"]
         assert "memories:read" in claims["scope"]
 
+    def test_refresh_with_disjoint_client_scope_returns_400(self, oauth_client):
+        """If the client's registered scope no longer overlaps the refresh
+        token's scope, the grant must fail — not fall back to the token's
+        original (now-unauthorized) scope and mint a privileged access token.
+        Mirrors /oauth/authorize's no-overlap handling.
+        """
+        from hive.models import OAuthClient
+
+        tc, storage, _ = oauth_client
+
+        wide_client = OAuthClient(
+            client_name="Disjoint Scope Client",
+            redirect_uris=["https://app.example.com/cb"],
+            scope="memories:read memories:write",
+        )
+        storage.put_client(wide_client)
+
+        verifier, challenge = _pkce_pair()
+        auth_code = storage.create_auth_code(
+            client_id=wide_client.client_id,
+            redirect_uri="https://app.example.com/cb",
+            scope="memories:read memories:write",
+            code_challenge=challenge,
+            code_challenge_method="S256",
+        )
+        refresh_token = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code.code,
+                "redirect_uri": "https://app.example.com/cb",
+                "client_id": wide_client.client_id,
+                "code_verifier": verifier,
+            },
+        ).json()["refresh_token"]
+
+        # Narrow the client to a scope disjoint from the refresh token's scope.
+        wide_client.scope = "admin:console"
+        storage.put_client(wide_client)
+
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": wide_client.client_id,
+                "refresh_token": refresh_token,
+            },
+        )
+        assert resp.status_code == 400
+        assert "overlap" in resp.json()["detail"].lower()
+
 
 class TestTokenScopeIntersection:
     def test_access_token_carries_restricted_scope(self, oauth_client):

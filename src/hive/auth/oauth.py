@@ -513,10 +513,15 @@ async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
         # a stale persisted copy — because only the single newest token stayed
         # valid. Reusing the token makes the silent-refresh path tolerant of all
         # three. The access token is still re-intersected with the client's
-        # current registered scope in case it was narrowed since issuance.
-        effective_scope = (
-            " ".join(sorted(set(stored.scope.split()) & set(client.scope.split()))) or stored.scope
-        )
+        # current registered scope in case it was narrowed since issuance — and,
+        # mirroring /oauth/authorize, a now-disjoint scope fails rather than
+        # falling back to the token's original (now-unauthorized) scope.
+        effective_scope = " ".join(sorted(set(stored.scope.split()) & set(client.scope.split())))
+        if not effective_scope:
+            raise HTTPException(
+                status_code=400,
+                detail="refresh_token scope has no overlap with client's registered scope",
+            )
         access = storage.create_access_token(client_id, effective_scope)
         refresh = stored
 
