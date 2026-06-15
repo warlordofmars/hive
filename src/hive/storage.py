@@ -938,6 +938,24 @@ class HiveStorage:
                 break
         return revoked
 
+    def create_access_token(self, client_id: str, scope: str) -> Token:
+        """Issue and persist a standalone access token.
+
+        Used by the non-rotating refresh-token grant (#693), which mints a
+        fresh access token while keeping the caller's existing refresh token
+        valid instead of rotating it.
+        """
+        now = _now()
+        access = Token(
+            client_id=client_id,
+            scope=scope,
+            token_type=TokenType.access,
+            issued_at=now,
+            expires_at=now + timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
+        )
+        self.put_token(access)
+        return access
+
     def create_token_pair(self, client_id: str, scope: str) -> tuple[Token, Token]:
         """Issue a new (access_token, refresh_token) pair."""
         now = _now()

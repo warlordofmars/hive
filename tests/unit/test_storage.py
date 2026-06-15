@@ -822,6 +822,17 @@ class TestTokenStorage:
         assert fetched.client_id == "c1"
         assert fetched.token_type == TokenType.access
 
+    def test_create_access_token_persists_access_only(self, storage):
+        # The non-rotating refresh grant (#693) mints a lone access token and
+        # leaves the refresh token untouched.
+        access = storage.create_access_token("c1", "memories:read")
+        assert access.token_type == TokenType.access
+        fetched = storage.get_token(access.jti)
+        assert fetched is not None
+        assert fetched.client_id == "c1"
+        assert fetched.scope == "memories:read"
+        assert fetched.is_valid
+
     def test_revoke(self, storage):
         access, _ = storage.create_token_pair("c1", "s")
         storage.revoke_token(access.jti)
