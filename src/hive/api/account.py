@@ -20,9 +20,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from hive.api._auth import require_mgmt_user
-from hive.models import ActivityEvent, EventType
+from hive.models import ActivityEvent, EventType, Memory
 from hive.quota import _exempt_users, get_memory_limit, get_storage_bytes_limit
 from hive.storage import HiveStorage
+from hive.workspace_service import list_sole_owned_shared_workspaces
 
 router = APIRouter(tags=["account"])
 
@@ -57,6 +58,8 @@ class AccountDeleteRequest(BaseModel):
     description=(
         "Permanently delete all data for the authenticated user: memories, OAuth clients, "
         "and the user record itself. Requires `confirm: true` in the request body. "
+        "Blocked with 409 while the user is the sole owner of any shared workspace — "
+        "transfer ownership or delete those workspaces first. "
         "The deletion is recorded in an immutable audit log. This action cannot be undone."
     ),
     status_code=204,
@@ -64,6 +67,7 @@ class AccountDeleteRequest(BaseModel):
         400: {"description": "confirm must be true"},
         401: {"description": "Unauthorized"},
         404: {"description": "User not found"},
+        409: {"description": "User is the sole owner of one or more shared workspaces"},
     },
 )
 async def delete_account(
@@ -79,6 +83,22 @@ async def delete_account(
     user = storage.get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # #495 — sole-owner guard: deleting the only owner of a shared workspace
+    # would orphan it for the remaining members. Block until ownership is
+    # transferred or the workspace is deleted.
+    blocking = list_sole_owned_shared_workspaces(storage, user_id)
+    if blocking:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "You are the sole owner of one or more shared workspaces. "
+                    "Transfer ownership or delete them before deleting your account."
+                ),
+                "workspaces": [{"workspace_id": w.workspace_id, "name": w.name} for w in blocking],
+            },
+        )
 
     counts = storage.delete_user_data(user_id)
 
@@ -100,10 +120,13 @@ async def delete_account(
     summary="Export my data",
     description=(
         "Stream a JSON document containing the authenticated user's profile, "
-        "all their memories, OAuth clients, and recent activity log entries "
-        "(90-day window, matching the retention policy). Satisfies GDPR "
-        "Article 20 and CCPA §1798.100 portability rights. Rate-limited to "
-        "one export per 5 minutes per user."
+        "workspace memberships, memories, OAuth clients, and recent activity "
+        "log entries (90-day window, matching the retention policy). The "
+        "memories section covers the user's personal workspace in full plus "
+        "memories the user personally authored in shared workspaces — other "
+        "members' writes are excluded. Satisfies GDPR Article 20 and CCPA "
+        "§1798.100 portability rights. Rate-limited to one export per 5 "
+        "minutes per user."
     ),
     responses={
         401: {"description": "Unauthorized"},
@@ -142,6 +165,31 @@ async def export_account(
     today = now.date()
     dates = [(today - timedelta(days=i)).isoformat() for i in range(EXPORT_ACTIVITY_LOOKBACK_DAYS)]
 
+    # #495 — workspace-aware export scope. The user's personal workspace is
+    # exported in full; from shared workspaces only memories the user
+    # personally authored are included (other members' writes are their
+    # data, not this user's).
+    workspaces = storage.list_workspaces_for_user(user_id)
+    personal_ws_ids = [
+        w.workspace_id for w in workspaces if w.is_personal and w.owner_user_id == user_id
+    ]
+
+    def _iter_export_memories() -> Iterator[Memory]:
+        seen: set[str] = set()
+        # Pass 1 — everything the user personally authored: personal
+        # workspace, shared workspaces, and legacy pre-workspace rows.
+        for memory in storage.iter_all_memories(owner_user_id=user_id):
+            seen.add(memory.memory_id)
+            yield memory
+        # Pass 2 — the personal workspace in full: catches rows stamped to
+        # the personal workspace whose owner_user_id is absent or stale.
+        for ws_id in personal_ws_ids:
+            for memory in storage.iter_all_memories(workspace_id=ws_id):
+                if memory.memory_id in seen:
+                    continue
+                seen.add(memory.memory_id)
+                yield memory
+
     def _stream() -> Iterator[str]:
         yield "{"
         yield f'"exported_at":{json.dumps(now.isoformat())},'
@@ -154,8 +202,29 @@ async def export_account(
                 "created_at": user.created_at.isoformat(),
             }
         )
-        yield ',"memories":['
-        for i, memory in enumerate(storage.iter_all_memories(owner_user_id=user_id)):
+        yield ',"workspaces":['
+        emitted_ws = 0
+        for workspace in workspaces:
+            member = storage.get_workspace_member(workspace.workspace_id, user_id)
+            if member is None:
+                # Membership vanished between the listing and this read.
+                continue
+            if emitted_ws:
+                yield ","
+            emitted_ws += 1
+            yield json.dumps(
+                {
+                    "workspace_id": workspace.workspace_id,
+                    "name": workspace.name,
+                    "description": workspace.description,
+                    "is_personal": workspace.is_personal,
+                    "role": member.role.value,
+                    "joined_at": member.joined_at.isoformat(),
+                    "created_at": workspace.created_at.isoformat(),
+                }
+            )
+        yield '],"memories":['
+        for i, memory in enumerate(_iter_export_memories()):
             if i:
                 yield ","
             yield json.dumps(
@@ -165,6 +234,7 @@ async def export_account(
                     "value": memory.value,
                     "tags": memory.tags,
                     "owner_client_id": memory.owner_client_id,
+                    "workspace_id": memory.workspace_id,
                     "created_at": memory.created_at.isoformat(),
                     "updated_at": memory.updated_at.isoformat(),
                     "expires_at": (

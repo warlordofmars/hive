@@ -692,6 +692,13 @@ class EventType(str, Enum):
     client_registered = "client_registered"
     client_deleted = "client_deleted"
     account_deleted = "account_deleted"
+    # Workspace membership mutations (#495) — compliance audit trail
+    workspace_created = "workspace_created"
+    workspace_deleted = "workspace_deleted"
+    workspace_invite_sent = "workspace_invite_sent"
+    workspace_invite_accepted = "workspace_invite_accepted"
+    workspace_member_role_changed = "workspace_member_role_changed"
+    workspace_member_removed = "workspace_member_removed"
 
 
 class ActivityEvent(BaseModel):
