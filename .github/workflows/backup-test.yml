@@ -60,11 +60,20 @@ jobs:
           for i in $(seq 1 40); do
             # describe-table is eventually consistent — it can briefly return
             # ResourceNotFoundException right after the restore request, which
-            # would kill the step under bash -e; treat that as still-creating.
-            STATUS=$(aws dynamodb describe-table \
+            # would kill the step under bash -e. Treat only that error as
+            # still-creating; fail fast on anything else (AccessDenied,
+            # throttling, ...) so real errors aren't masked for 20 minutes.
+            if OUTPUT=$(aws dynamodb describe-table \
               --table-name "$RESTORE_TABLE" \
               --query 'Table.TableStatus' \
-              --output text 2>/dev/null || echo "CREATING")
+              --output text 2>&1); then
+              STATUS="$OUTPUT"
+            elif echo "$OUTPUT" | grep -q "ResourceNotFoundException"; then
+              STATUS="CREATING"
+            else
+              echo "ERROR: describe-table failed: $OUTPUT"
+              exit 1
+            fi
             echo "  Attempt $i: status=$STATUS"
             if [ "$STATUS" = "ACTIVE" ]; then
               echo "Restore complete."
