@@ -982,6 +982,28 @@ class HiveStorage:
                 return False
             raise
 
+    def bind_client_workspace(self, client_id: str, workspace_id: str) -> bool:
+        """Atomically set a client's ``workspace_id`` iff it is currently unset.
+
+        Returns ``True`` when this call performed the binding, ``False`` when
+        the client was already workspace-bound (a concurrent bind won, the
+        client was registered with an explicit workspace, or it no longer
+        exists).  First-bind-wins at the DynamoDB layer, mirroring
+        :meth:`bind_client_owner` (#491).
+        """
+        try:
+            self.table.update_item(
+                Key={"PK": f"CLIENT#{client_id}", "SK": "META"},
+                UpdateExpression="SET workspace_id = :wid",
+                ConditionExpression="attribute_exists(PK) AND attribute_not_exists(workspace_id)",
+                ExpressionAttributeValues={":wid": workspace_id},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
     def delete_client(self, client_id: str) -> bool:
         resp = self.table.get_item(Key={"PK": f"CLIENT#{client_id}", "SK": "META"})
         if not resp.get("Item"):
@@ -1162,12 +1184,19 @@ class HiveStorage:
                 break
         return revoked
 
-    def create_access_token(self, client_id: str, scope: str) -> Token:
+    def create_access_token(
+        self,
+        client_id: str,
+        scope: str,
+        workspace_id: str | None = None,
+        workspace_role: str | None = None,
+    ) -> Token:
         """Issue and persist a standalone access token.
 
         Used by the non-rotating refresh-token grant (#693), which mints a
         fresh access token while keeping the caller's existing refresh token
-        valid instead of rotating it.
+        valid instead of rotating it.  ``workspace_id`` / ``workspace_role``
+        stamp the workspace claims (#491) carried over from the refresh token.
         """
         now = _now()
         access = Token(
@@ -1176,12 +1205,25 @@ class HiveStorage:
             token_type=TokenType.access,
             issued_at=now,
             expires_at=now + timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
+            workspace_id=workspace_id,
+            workspace_role=workspace_role,
         )
         self.put_token(access)
         return access
 
-    def create_token_pair(self, client_id: str, scope: str) -> tuple[Token, Token]:
-        """Issue a new (access_token, refresh_token) pair."""
+    def create_token_pair(
+        self,
+        client_id: str,
+        scope: str,
+        workspace_id: str | None = None,
+        workspace_role: str | None = None,
+    ) -> tuple[Token, Token]:
+        """Issue a new (access_token, refresh_token) pair.
+
+        ``workspace_id`` / ``workspace_role`` stamp the workspace claims
+        (#491) on both tokens so refresh grants can carry the scope through
+        unchanged.
+        """
         now = _now()
         access = Token(
             client_id=client_id,
@@ -1189,6 +1231,8 @@ class HiveStorage:
             token_type=TokenType.access,
             issued_at=now,
             expires_at=now + timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
+            workspace_id=workspace_id,
+            workspace_role=workspace_role,
         )
         refresh = Token(
             client_id=client_id,
@@ -1196,6 +1240,8 @@ class HiveStorage:
             token_type=TokenType.refresh,
             issued_at=now,
             expires_at=now + timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
+            workspace_id=workspace_id,
+            workspace_role=workspace_role,
         )
         self.put_token(access)
         self.put_token(refresh)
@@ -1438,6 +1484,43 @@ class HiveStorage:
                 break
             kwargs["ExclusiveStartKey"] = lek
         return workspaces
+
+    def get_personal_workspace(self, user_id: str) -> Workspace | None:
+        """Return the user's Personal workspace, or None if they have none.
+
+        Checks the deterministic ``personal-{user_id}`` id first (workspaces
+        auto-created by the auth flows, #491) with a strongly-consistent
+        ``get_item``, then falls back to the ``WorkspaceMemberIndex`` GSI for
+        Personal workspaces created with random ids by the #490 migration.
+        """
+        workspace = self.get_workspace(f"personal-{user_id}")
+        if workspace is not None:
+            return workspace
+        for workspace in self.list_workspaces_for_user(user_id):
+            if workspace.is_personal and workspace.owner_user_id == user_id:
+                return workspace
+        return None
+
+    def ensure_personal_workspace(self, user: User) -> Workspace:
+        """Return the user's Personal workspace, creating it if absent (#491).
+
+        New Personal workspaces use the deterministic id
+        ``personal-{user_id}`` so concurrent first-logins converge on the same
+        item (both puts are idempotent overwrites of the same keys) instead of
+        racing the eventually-consistent GSI lookup into duplicates.
+        """
+        workspace = self.get_personal_workspace(user.user_id)
+        if workspace is not None:
+            return workspace
+        workspace = Workspace(
+            workspace_id=f"personal-{user.user_id}",
+            name=f"{user.email}'s Personal",
+            owner_user_id=user.user_id,
+            is_personal=True,
+        )
+        self.put_workspace(workspace)
+        self.add_workspace_member(workspace.workspace_id, user.user_id, WorkspaceRole.owner)
+        return workspace
 
     # ------------------------------------------------------------------
     # Workspace invites (#490) — pending invitations to join a workspace

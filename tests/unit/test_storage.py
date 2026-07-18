@@ -3302,3 +3302,131 @@ class TestCostCacheStorage:
             table.put_item.side_effect = RuntimeError("dynamo down")
             # Must not raise — the caller already holds the live CE data.
             storage.put_cost_cache("hash-err", {}, {"x": 1}, ttl_seconds=60)
+
+
+# ---------------------------------------------------------------------------
+# Workspace auth foundation (#491) — client workspace binding, Personal
+# workspace resolution, and workspace-stamped tokens
+# ---------------------------------------------------------------------------
+
+
+class TestClientWorkspaceAtomicBind:
+    """#491 — binding a DCR client to a workspace is first-bind-wins and atomic,
+    mirroring `bind_client_owner`."""
+
+    def test_first_bind_sets_workspace(self, storage):
+        client = OAuthClient(client_name="WS Bind Me")
+        storage.put_client(client)
+        assert storage.bind_client_workspace(client.client_id, "ws-1") is True
+        assert storage.get_client(client.client_id).workspace_id == "ws-1"
+
+    def test_second_bind_returns_false_and_keeps_workspace(self, storage):
+        client = OAuthClient(client_name="WS Bind Once")
+        storage.put_client(client)
+        assert storage.bind_client_workspace(client.client_id, "ws-1") is True
+        assert storage.bind_client_workspace(client.client_id, "ws-2") is False
+        assert storage.get_client(client.client_id).workspace_id == "ws-1"
+
+    def test_explicit_dcr_binding_is_not_overwritten(self, storage):
+        client = OAuthClient(client_name="WS Pre-bound", workspace_id="ws-dcr")
+        storage.put_client(client)
+        assert storage.bind_client_workspace(client.client_id, "ws-other") is False
+        assert storage.get_client(client.client_id).workspace_id == "ws-dcr"
+
+    def test_bind_missing_client_returns_false(self, storage):
+        assert storage.bind_client_workspace("never-registered", "ws-1") is False
+        assert storage.get_client("never-registered") is None
+
+    def test_unexpected_client_error_reraises(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        err = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=err),
+            pytest.raises(ClientError),
+        ):
+            storage.bind_client_workspace("client-x", "ws-1")
+
+
+class TestPersonalWorkspace:
+    def _user(self, user_id="pw-user-1", email="pw@example.com") -> User:
+        return User(user_id=user_id, email=email, display_name="PW")
+
+    def test_get_returns_none_when_absent(self, storage):
+        assert storage.get_personal_workspace("nobody") is None
+
+    def test_ensure_creates_deterministic_workspace_with_owner_member(self, storage):
+        user = self._user()
+        workspace = storage.ensure_personal_workspace(user)
+        assert workspace.workspace_id == f"personal-{user.user_id}"
+        assert workspace.name == "pw@example.com's Personal"
+        assert workspace.is_personal is True
+        assert workspace.owner_user_id == user.user_id
+        member = storage.get_workspace_member(workspace.workspace_id, user.user_id)
+        assert member is not None
+        assert member.role is WorkspaceRole.owner
+
+    def test_ensure_is_idempotent(self, storage):
+        user = self._user()
+        first = storage.ensure_personal_workspace(user)
+        second = storage.ensure_personal_workspace(user)
+        assert second.workspace_id == first.workspace_id
+        assert [w.workspace_id for w in storage.list_workspaces_for_user(user.user_id)] == [
+            first.workspace_id
+        ]
+
+    def test_get_finds_migration_era_random_id_workspace(self, storage):
+        """Personal workspaces created by the #490 migration have random ids —
+        they must be found via the WorkspaceMemberIndex fallback and never
+        duplicated by ensure_personal_workspace."""
+        user = self._user(user_id="migrated-user")
+        legacy = Workspace(
+            workspace_id="rand-legacy-id",
+            name="pw@example.com's Personal",
+            owner_user_id=user.user_id,
+            is_personal=True,
+        )
+        storage.put_workspace(legacy)
+        storage.add_workspace_member(legacy.workspace_id, user.user_id, WorkspaceRole.owner)
+
+        assert storage.get_personal_workspace(user.user_id).workspace_id == "rand-legacy-id"
+        assert storage.ensure_personal_workspace(user).workspace_id == "rand-legacy-id"
+
+    def test_get_skips_shared_workspaces_in_fallback(self, storage):
+        """Membership in a shared (non-personal) workspace must not satisfy the
+        Personal-workspace lookup."""
+        user = self._user(user_id="shared-only-user")
+        shared = Workspace(workspace_id="ws-shared", name="Team", owner_user_id="someone-else")
+        storage.put_workspace(shared)
+        storage.add_workspace_member(shared.workspace_id, user.user_id, WorkspaceRole.member)
+        assert storage.get_personal_workspace(user.user_id) is None
+
+
+class TestWorkspaceStampedTokens:
+    def test_create_token_pair_stamps_workspace(self, storage):
+        access, refresh = storage.create_token_pair(
+            "client-1", "memories:read", workspace_id="ws-1", workspace_role="admin"
+        )
+        for token in (access, refresh):
+            stored = storage.get_token(token.jti)
+            assert stored.workspace_id == "ws-1"
+            assert stored.workspace_role == "admin"
+
+    def test_create_token_pair_defaults_claim_free(self, storage):
+        access, _ = storage.create_token_pair("client-1", "memories:read")
+        stored = storage.get_token(access.jti)
+        assert stored.workspace_id is None
+        assert stored.workspace_role is None
+
+    def test_create_access_token_stamps_workspace(self, storage):
+        access = storage.create_access_token(
+            "client-1", "memories:read", workspace_id="ws-1", workspace_role="member"
+        )
+        stored = storage.get_token(access.jti)
+        assert stored.workspace_id == "ws-1"
+        assert stored.workspace_role == "member"

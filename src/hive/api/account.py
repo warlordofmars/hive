@@ -20,7 +20,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from hive.api._auth import require_mgmt_user
-from hive.models import ActivityEvent, EventType
+from hive.auth.tokens import issue_mgmt_jwt
+from hive.models import ActivityEvent, EventType, WorkspaceTokenRequest, WorkspaceTokenResponse
 from hive.quota import _exempt_users, get_memory_limit, get_storage_bytes_limit
 from hive.storage import HiveStorage
 from hive.workspace_service import list_sole_owned_shared_workspaces
@@ -482,3 +483,50 @@ async def get_account_stats(
     data = _compute_account_stats(user_id, window_days, storage, is_admin=is_admin)
     _STATS_CACHE[cache_key] = (time.time(), data)
     return data
+
+
+@router.post(
+    "/account/workspace-token",
+    summary="Re-issue the management token scoped to a workspace",
+    description=(
+        "Issue a fresh management JWT carrying `workspace_id` and "
+        "`workspace_role` claims for the requested workspace (#491). The "
+        "caller must be a member of that workspace; the role claim is stamped "
+        "from their membership record. The UI calls this when the user "
+        "switches workspace and replaces its stored token with the result."
+    ),
+    responses={
+        401: {"description": "Unauthorized"},
+        403: {"description": "Not a member of the workspace"},
+        404: {"description": "User or workspace not found"},
+    },
+)
+async def issue_workspace_token(
+    body: WorkspaceTokenRequest,
+    claims: Annotated[dict[str, Any], Depends(require_mgmt_user)],
+    storage: Annotated[HiveStorage, Depends(_storage)],
+) -> WorkspaceTokenResponse:
+    user_id: str = claims["sub"]
+
+    user = storage.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    workspace = storage.get_workspace(body.workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    member = storage.get_workspace_member(workspace.workspace_id, user_id)
+    if member is None:
+        raise HTTPException(status_code=403, detail="You are not a member of this workspace")
+
+    token = issue_mgmt_jwt(
+        user,
+        workspace_id=workspace.workspace_id,
+        workspace_role=member.role.value,
+    )
+    return WorkspaceTokenResponse(
+        token=token,
+        workspace_id=workspace.workspace_id,
+        workspace_role=member.role.value,
+    )

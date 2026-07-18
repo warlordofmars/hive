@@ -22,6 +22,7 @@ import importlib.metadata
 import json
 import os
 import time
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 from urllib.parse import quote, unquote
@@ -38,7 +39,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
-from hive.auth.tokens import ISSUER, _origin_verify_secret, validate_bearer_token
+from hive.auth.tokens import (
+    ISSUER,
+    _origin_verify_secret,
+    resolve_workspace_scope,
+    validate_bearer_token,
+)
 from hive.hybrid_search import (
     DEFAULT_W_KEYWORD,
     DEFAULT_W_RECENCY,
@@ -50,7 +56,7 @@ from hive.hybrid_search import (
 )
 from hive.logging_config import configure_logging, get_logger, new_request_id, set_request_context
 from hive.metrics import emit_metric
-from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult
+from hive.models import ActivityEvent, EventType, Memory, MemorySearchResult, Token
 from hive.quota import QuotaExceeded, check_memory_quota, check_storage_quota, get_memory_limit
 from hive.rate_limiter import (
     DEFAULT_RATE_LIMIT_RPD,
@@ -142,6 +148,11 @@ mcp = FastMCP(
 # Auth helper
 # ---------------------------------------------------------------------------
 
+# The validated Token for the current tool call (#491). Set by _auth() so
+# workspace-scope helpers can read the workspace claims without threading the
+# Token through every handler signature. ContextVar is async-task-safe.
+_current_token: ContextVar[Token | None] = ContextVar("hive_current_token", default=None)
+
 
 async def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple[HiveStorage, str]:
     """Validate Bearer token; return (storage, client_id).
@@ -203,6 +214,7 @@ async def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple
         raise ToolError(f"Rate limit exceeded. Retry after {exc.retry_after}s.") from exc
 
     set_request_context(request_id, token.client_id)
+    _current_token.set(token)
     return storage, token.client_id
 
 
@@ -225,6 +237,38 @@ def _require_owner_user_id(storage: HiveStorage, client_id: str) -> str:
             "Client is not associated with a user account; per-user memory scoping is required."
         )
     return client.owner_user_id
+
+
+def _caller_workspace_scope(storage: HiveStorage) -> tuple[str | None, str | None]:
+    """Resolve the (workspace_id, workspace_role) of the current tool call (#491).
+
+    Claim-first via the Token stashed by ``_auth()``; legacy tokens without
+    the claim fall back to the issuing client's binding and, ultimately, the
+    owner's Personal workspace.  ``(None, None)`` means the caller has no
+    resolvable workspace — enforcement fails closed on any workspace-stamped
+    memory in that case.
+    """
+    token = _current_token.get()
+    if token is None:
+        return None, None
+    return resolve_workspace_scope(storage, token)
+
+
+def _check_workspace_access(storage: HiveStorage, memory: Memory, error: str) -> None:
+    """Enforce the caller's workspace claim against a memory's workspace (#491).
+
+    Memories without a ``workspace_id`` (pre-migration rows) pass through —
+    the existing owner-based checks still govern them until the migration
+    stamps them.  Workspace-stamped memories are only accessible when the
+    caller's resolved workspace matches; anything else raises ``error``
+    (phrased by the call site to match its not-found/denied semantics so
+    cross-workspace probing learns nothing new).
+    """
+    if memory.workspace_id is None:
+        return
+    workspace_id, _ = _caller_workspace_scope(storage)
+    if workspace_id != memory.workspace_id:
+        raise ToolError(error)
 
 
 def _log(storage: HiveStorage, event: ActivityEvent) -> None:
@@ -470,6 +514,11 @@ async def remember(
     existing = storage.get_memory_by_key(key)
 
     if existing:
+        # Workspace boundary (#491): keys are globally unique, so an existing
+        # memory in another workspace must not be overwritten. Checked before
+        # the optimistic-lock path so a conflict message can never leak a
+        # foreign memory's value.
+        _check_workspace_access(storage, existing, f"Key '{key}' is already in use.")
         # Optimistic lock: reject early if the caller's version is already stale.
         if version is not None and existing.version != version:
             await emit_metric("ToolErrors", operation="remember")
@@ -532,12 +581,14 @@ async def remember(
             check_storage_quota(owner_user_id, actual, storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
+        workspace_id, _ = _caller_workspace_scope(storage)
         memory = Memory(
             key=key,
             value=value,
             tags=tags,
             owner_client_id=client_id,
             owner_user_id=owner_user_id,
+            workspace_id=workspace_id,
             expires_at=expires_at,
         )
         try:
@@ -643,12 +694,14 @@ async def remember_if_absent(
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
 
+        workspace_id, _ = _caller_workspace_scope(storage)
         candidate = Memory(
             key=key,
             value=value,
             tags=tags,
             owner_client_id=client_id,
             owner_user_id=owner_user_id,
+            workspace_id=workspace_id,
             expires_at=expires_at,
         )
         try:
@@ -775,6 +828,8 @@ async def remember_blob(
 
     existing = storage.get_memory_by_key(key)
     if existing:
+        # Workspace boundary (#491): never overwrite a foreign workspace's blob.
+        _check_workspace_access(storage, existing, f"Key '{key}' is already in use.")
         old_blob_size = existing.size_bytes or 0
         delta = len(raw) - old_blob_size
         if delta > 0:
@@ -813,12 +868,14 @@ async def remember_blob(
             check_storage_quota(owner_user_id, len(raw), storage)
         except QuotaExceeded as exc:
             raise ToolError(exc.detail) from exc
+        workspace_id, _ = _caller_workspace_scope(storage)
         memory = Memory(
             key=key,
             value="",
             tags=tags,
             owner_client_id=client_id,
             owner_user_id=owner_user_id,
+            workspace_id=workspace_id,
             value_type=value_type,  # type: ignore[arg-type]
             content_type=content_type,
             size_bytes=len(raw),
@@ -880,9 +937,17 @@ async def recall(
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope=_MEMORIES_READ_SCOPE)
 
-    # record_recall atomically bumps recall_count + last_accessed_at and
-    # returns the updated Memory (None if missing/expired).
-    memory = storage.record_recall(key)
+    # Workspace boundary (#491): resolve the memory and enforce the workspace
+    # claim BEFORE record_recall mutates recall stats — a denied cross-
+    # workspace probe must not touch the foreign memory at all, and the error
+    # is indistinguishable from a missing key.
+    memory = storage.get_memory_by_key(key)
+    if memory is not None:
+        _check_workspace_access(storage, memory, f"No memory found for key '{key}'.")
+        # record_recall atomically bumps recall_count + last_accessed_at and
+        # returns the updated Memory (None if it was deleted or expired between
+        # the lookup above and the update).
+        memory = storage.record_recall(key)
     if memory is None:
         logger.warning(
             "Memory not found for key '%s'",
@@ -1009,6 +1074,9 @@ async def forget(
         )
         await emit_metric("ToolErrors", operation="forget")
         raise ToolError(f"No memory found for key '{key}'.")
+    # Workspace boundary (#491): deny cross-workspace deletion, phrased as
+    # not-found so probing learns nothing.
+    _check_workspace_access(storage, existing, f"No memory found for key '{key}'.")
 
     storage.delete_memory(existing.memory_id)
     try:
@@ -1135,6 +1203,10 @@ async def redact_memory(
     if existing is None:
         await emit_metric("ToolErrors", operation="redact_memory")
         raise ToolError(f"No memory found for key '{key}'.")
+    # Workspace boundary (#491): deny cross-workspace redaction, phrased as
+    # not-found so probing learns nothing (checked before the already-redacted
+    # state can leak).
+    _check_workspace_access(storage, existing, f"No memory found for key '{key}'.")
     if existing.is_redacted:
         return _tool_result(f"Memory '{key}' is already redacted.", storage, client_id)
 
@@ -1205,6 +1277,8 @@ async def memory_history(
     memory = storage.get_memory_by_key(key)
     if memory is None:
         raise ToolError(f"No memory found for key '{key}'.")
+    # Workspace boundary (#491): version history is as sensitive as the value.
+    _check_workspace_access(storage, memory, f"No memory found for key '{key}'.")
     versions = storage.list_memory_versions(memory.memory_id)
     duration_ms = int((time.monotonic() - t0) * 1000)
     await emit_metric("ToolInvocations", operation="memory_history")
@@ -1247,6 +1321,8 @@ async def restore_memory(
     memory = storage.get_memory_by_key(key)
     if memory is None:
         raise ToolError(f"No memory found for key '{key}'.")
+    # Workspace boundary (#491): deny cross-workspace restores as not-found.
+    _check_workspace_access(storage, memory, f"No memory found for key '{key}'.")
     version = storage.get_memory_version(memory.memory_id, version_timestamp)
     if version is None:
         raise ToolError(f"Version '{version_timestamp}' not found for memory '{key}'.")
@@ -1677,6 +1753,9 @@ async def relate_memories(
     memory = storage.get_memory_by_key(key)
     if memory is None:
         raise ToolError(f"No memory found for key '{key}'.")
+    # Workspace boundary (#491): the source memory's value seeds the vector
+    # query — never let a foreign workspace's content drive a search.
+    _check_workspace_access(storage, memory, f"No memory found for key '{key}'.")
 
     query_value = memory.value or ""
     if memory.value_type == "text-large":

@@ -72,6 +72,8 @@ def setup():
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI5PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5SK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -87,6 +89,14 @@ def setup():
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "WorkspaceMemberIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -270,6 +280,8 @@ def two_user_setup():
             {"AttributeName": "GSI1SK", "AttributeType": "S"},
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
+            {"AttributeName": "GSI5PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5SK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -285,6 +297,14 @@ def two_user_setup():
                 "KeySchema": [
                     {"AttributeName": "GSI2PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI2SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "WorkspaceMemberIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },

@@ -639,9 +639,14 @@ class Token(BaseModel):
     issued_at: datetime = Field(default_factory=_now_utc)
     expires_at: datetime
     revoked: bool = False
+    # Workspaces (#491): the tenancy scope this token was issued for.
+    # None on legacy tokens minted before the workspace cutover — validation
+    # falls back to resolving the owner's Personal workspace in that case.
+    workspace_id: str | None = None
+    workspace_role: str | None = None
 
     def to_dynamo(self) -> dict[str, Any]:
-        return {
+        item: dict[str, Any] = {
             "PK": f"TOKEN#{self.jti}",
             "SK": "META",
             "jti": self.jti,
@@ -654,6 +659,11 @@ class Token(BaseModel):
             # DynamoDB TTL attribute
             "ttl": int(self.expires_at.timestamp()),
         }
+        if self.workspace_id is not None:
+            item["workspace_id"] = self.workspace_id
+        if self.workspace_role is not None:
+            item["workspace_role"] = self.workspace_role
+        return item
 
     @classmethod
     def from_dynamo(cls, item: dict[str, Any]) -> Token:
@@ -665,6 +675,8 @@ class Token(BaseModel):
             issued_at=datetime.fromisoformat(item["issued_at"]),
             expires_at=datetime.fromisoformat(item["expires_at"]),
             revoked=item.get("revoked", False),
+            workspace_id=item.get("workspace_id"),
+            workspace_role=item.get("workspace_role"),
         )
 
     @property
@@ -874,6 +886,10 @@ class ClientRegistrationRequest(BaseModel):
     response_types: list[str] = Field(default_factory=lambda: ["code"])
     scope: str = _DEFAULT_SCOPE
     token_endpoint_auth_method: str = "none"
+    # Workspaces (#491): optional explicit workspace binding. When omitted the
+    # client is bound to the authenticating user's Personal workspace at the
+    # OAuth callback (backwards compatible with pre-workspace MCP clients).
+    workspace_id: str | None = None
 
 
 class ClientRegistrationResponse(BaseModel):
@@ -881,7 +897,8 @@ class ClientRegistrationResponse(BaseModel):
 
     ``client_secret`` is omitted entirely for public clients (RFC 7591 §3.2.1)
     rather than serialised as ``null``, which breaks strict Zod schemas in
-    clients such as mcp-remote.
+    clients such as mcp-remote.  ``workspace_id`` (a Hive extension, #491) is
+    likewise omitted when the client has no explicit workspace binding yet.
     """
 
     client_id: str
@@ -893,12 +910,14 @@ class ClientRegistrationResponse(BaseModel):
     scope: str
     token_endpoint_auth_method: str
     client_id_issued_at: int  # Unix timestamp
+    workspace_id: str | None = None
 
     @model_serializer(mode="wrap")
-    def _drop_null_secret(self, handler: Any) -> dict:  # type: ignore[override]
+    def _drop_null_fields(self, handler: Any) -> dict:  # type: ignore[override]
         data = handler(self)
-        if data.get("client_secret") is None:
-            data.pop("client_secret", None)
+        for field in ("client_secret", "workspace_id"):
+            if data.get(field) is None:
+                data.pop(field, None)
         return data
 
     @classmethod
@@ -913,6 +932,7 @@ class ClientRegistrationResponse(BaseModel):
             scope=c.scope,
             token_endpoint_auth_method=c.token_endpoint_auth_method,
             client_id_issued_at=int(c.created_at.timestamp()),
+            workspace_id=c.workspace_id,
         )
 
 
@@ -924,6 +944,20 @@ class TokenResponse(BaseModel):
     expires_in: int
     refresh_token: str | None = None
     scope: str
+
+
+class WorkspaceTokenRequest(BaseModel):
+    """Request body for re-issuing a management JWT scoped to a workspace (#491)."""
+
+    workspace_id: str
+
+
+class WorkspaceTokenResponse(BaseModel):
+    """A freshly issued workspace-scoped management JWT (#491)."""
+
+    token: str
+    workspace_id: str
+    workspace_role: str
 
 
 class StatsResponse(BaseModel):
