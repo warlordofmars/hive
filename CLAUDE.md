@@ -102,6 +102,7 @@ hive/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml             # CI on PRs + deploy on push to dev/main
+│       ├── backup-test.yml    # Weekly DynamoDB PITR restore test (prod)
 │       ├── deploy-dev.yml     # Manual dev deploy (workflow_dispatch)
 │       ├── security.yml       # Scheduled security scans
 │       └── synthetic-traffic.yml  # Scheduled synthetic traffic
@@ -209,6 +210,8 @@ hive/
 
 Other workflows:
 
+- `backup-test.yml` — weekly DynamoDB PITR restore test against prod
+  (Sundays 03:00 UTC; opens/updates a `reliability` issue on failure)
 - `deploy-dev.yml` — manual dev deploy via `workflow_dispatch`
 - `security.yml` — scheduled security scans
 - `synthetic-traffic.yml` — scheduled synthetic load against dev environment
