@@ -285,9 +285,7 @@ async def test_google_callback_provisions_personal_workspace_and_scoped_tokens(
 
     verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
     challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     )
     pending = storage.create_pending_auth(
         client_id=client.client_id,

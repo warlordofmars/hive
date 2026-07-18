@@ -4358,8 +4358,6 @@ class TestWorkspaceScopeHelpers:
 
         storage, _, _ = server_env
         _current_token.set(None)
-        stamped = Memory(
-            key="k", value="v", owner_client_id="c", workspace_id="ws-somewhere"
-        )
+        stamped = Memory(key="k", value="v", owner_client_id="c", workspace_id="ws-somewhere")
         with pytest.raises(ToolError, match="denied"):
             _check_workspace_access(storage, stamped, "denied")

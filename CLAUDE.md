@@ -123,11 +123,18 @@ hive/
 ## Auth
 
 - OAuth 2.1 authorization server built into Hive (self-contained)
-- Dynamic Client Registration per RFC 7591 (required by MCP spec)
+- Dynamic Client Registration per RFC 7591 (required by MCP spec);
+  registrations may carry an optional `workspace_id` binding (#491) —
+  unbound clients bind to the authenticating user's Personal workspace
+  at the OAuth callback
 - PKCE required on all authorization code flows
 - Tokens stored in DynamoDB with TTL
+- JWTs (MCP + mgmt) carry `workspace_id` / `workspace_role` claims (#491);
+  legacy claim-free tokens fall back to the owner's Personal workspace via
+  `resolve_workspace_scope` — missing claim never breaks validation
 - All MCP and API endpoints require a valid Bearer token
-- Management UI login via Google OAuth (`/auth/login`)
+- Management UI login via Google OAuth (`/auth/login`); switch workspace by
+  re-issuing the mgmt JWT via `POST /api/account/workspace-token`
 
 ## DynamoDB single table design
 
@@ -140,6 +147,12 @@ hive/
   (immutable compliance trail, TTL via `HIVE_AUDIT_RETENTION_DAYS`,
   default 365 days; survives user-initiated activity-log purges)
 - User items: `PK=USER#{user_id}`, `SK=META`
+- Workspace items: `PK=WORKSPACE#{workspace_id}`, `SK=META`;
+  members at `SK=MEMBER#{user_id}` (#490). Personal workspaces created by
+  the auth flows use the deterministic id `personal-{user_id}` (#491);
+  migration-era ones have random ids — resolve via
+  `storage.get_personal_workspace`, never by constructing the id inline
+- Invite items: `PK=INVITE#{invite_id}`, `SK=META` (TTL enabled)
 - Mgmt state items: `PK=MGMT_STATE#{state}`, `SK=META`
   (TTL enabled, used for OAuth state parameter)
 - Key-claim items: `PK=KEYCLAIM#{key}`, `SK=META`
@@ -149,6 +162,10 @@ hive/
   - `TagIndex` — `GSI2PK=TAG#{tag}`, `GSI2SK=memory_id` (for list_memories)
   - `ClientIdIndex` — `GSI3PK=CLIENT#{client_id}` (for client lookups)
   - `UserEmailIndex` — `PK=EMAIL#{email}` (for user lookups by email)
+  - `WorkspaceMemberIndex` — `GSI5PK=USER#{user_id}`,
+    `GSI5SK=WORKSPACE#{workspace_id}` (workspaces a user belongs to).
+    Unit/integration test fixtures that create the table must include this
+    GSI — the auth flows now resolve Personal workspaces through it
 
 ## Management UI
 
