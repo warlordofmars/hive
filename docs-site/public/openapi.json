@@ -1201,7 +1201,7 @@
     },
     "/api/admin/costs": {
       "get": {
-        "description": "Return AWS Cost Explorer monthly spend breakdown.\n\nAdmin-only. Results cached for 24 h.",
+        "description": "Return AWS Cost Explorer monthly spend breakdown.\n\nAdmin-only. Served from a DynamoDB-backed cache\n(``HIVE_COST_CACHE_TTL_SECONDS``, default 6 h).",
         "operationId": "get_costs_api_admin_costs_get",
         "responses": {
           "200": {

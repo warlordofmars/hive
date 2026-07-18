@@ -9,6 +9,7 @@ tests run without any AWS credentials.
 from __future__ import annotations
 
 import datetime
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -257,11 +258,25 @@ class TestAdminMetrics:
 
 
 class TestAdminCosts:
-    def setup_method(self):
-        # Clear the module-level cache before each test
-        import hive.api.admin as admin_mod
+    """/admin/costs backed by the DynamoDB cost cache (#578)."""
 
-        admin_mod._cost_cache.clear()
+    @pytest.fixture()
+    def cost_storage(self, admin_tc):
+        """HiveStorage bound to the per-test moto table, injected into
+        ``hive.api.admin._storage``.
+
+        ``_get_cost_data`` calls ``_storage()`` directly (not via Depends),
+        so FastAPI ``dependency_overrides`` don't apply. Patching the
+        factory also insulates the test from whichever ``HIVE_TABLE_NAME``
+        another unit-test module happened to set first at import time.
+        Depends on ``admin_tc`` so the boto3 resource is created inside
+        the active ``mock_aws`` context.
+        """
+        from hive.storage import HiveStorage
+
+        storage = HiveStorage(table_name="hive-unit-admin", region="us-east-1")
+        with patch("hive.api.admin._storage", return_value=storage):
+            yield storage
 
     def _mock_ce(self, mock_ce, repeats=1):
         """Set side_effect to return monthly then daily responses, repeated N times."""
@@ -271,7 +286,22 @@ class TestAdminCosts:
             responses.append(_make_ce_daily_response())
         mock_ce.get_cost_and_usage.side_effect = responses
 
-    def test_returns_cost_data(self, admin_tc):
+    def _cache_items(self):
+        """Return all COST_CACHE# items in the moto table."""
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table("hive-unit-admin")
+        return [i for i in table.scan()["Items"] if str(i["PK"]).startswith("COST_CACHE#")]
+
+    def _set_cache_attr(self, pk, attr, value):
+        """Overwrite one attribute on a cached item (to expire/corrupt it)."""
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table("hive-unit-admin")
+        table.update_item(
+            Key={"PK": pk, "SK": "META"},
+            UpdateExpression="SET #a = :v",
+            ExpressionAttributeNames={"#a": attr},
+            ExpressionAttributeValues={":v": value},
+        )
+
+    def test_returns_cost_data(self, admin_tc, cost_storage):
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
             self._mock_ce(mock_ce)
@@ -295,19 +325,58 @@ class TestAdminCosts:
         resp = user_tc.get("/api/admin/costs")
         assert resp.status_code == 403
 
-    def test_cache_is_used_on_second_call(self, admin_tc):
+    def test_cache_is_used_on_second_call(self, admin_tc, cost_storage):
+        with patch("hive.api.admin._ce_client") as mock_ce_factory:
+            mock_ce = MagicMock()
+            self._mock_ce(mock_ce)
+            mock_ce_factory.return_value = mock_ce
+
+            first = admin_tc.get("/api/admin/costs")
+            second = admin_tc.get("/api/admin/costs")
+
+            # CE makes 2 calls (monthly + daily) on first request; second
+            # is served entirely from the DynamoDB cache (zero CE calls).
+            assert mock_ce.get_cost_and_usage.call_count == 2
+        assert first.json() == second.json()
+
+    def test_cache_miss_writes_back_with_default_ttl(self, admin_tc, cost_storage):
+        import time as time_mod
+
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
             self._mock_ce(mock_ce)
             mock_ce_factory.return_value = mock_ce
 
             admin_tc.get("/api/admin/costs")
+
+        items = self._cache_items()
+        assert len(items) == 1
+        item = items[0]
+        assert item["SK"] == "META"
+        assert "query_params" in item
+        assert "cached_at" in item
+        payload = json.loads(item["response"])
+        assert payload["currency"] == "USD"
+        # Default TTL = 21600 s (6 h), stored in the table's `ttl` attribute
+        assert int(item["ttl"]) == pytest.approx(time_mod.time() + 21600, abs=60)
+
+    def test_ttl_env_var_override(self, admin_tc, cost_storage, monkeypatch):
+        import time as time_mod
+
+        monkeypatch.setenv("HIVE_COST_CACHE_TTL_SECONDS", "123")
+        with patch("hive.api.admin._ce_client") as mock_ce_factory:
+            mock_ce = MagicMock()
+            self._mock_ce(mock_ce)
+            mock_ce_factory.return_value = mock_ce
+
             admin_tc.get("/api/admin/costs")
 
-            # CE makes 2 calls (monthly + daily) on first request; second uses cache
-            assert mock_ce.get_cost_and_usage.call_count == 2
+        item = self._cache_items()[0]
+        assert int(item["ttl"]) == pytest.approx(time_mod.time() + 123, abs=60)
 
-    def test_cache_expires_after_ttl(self, admin_tc):
+    def test_cache_expires_after_ttl(self, admin_tc, cost_storage):
+        import time as time_mod
+
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
             self._mock_ce(mock_ce, repeats=2)
@@ -315,18 +384,93 @@ class TestAdminCosts:
 
             admin_tc.get("/api/admin/costs")
 
-            # Backdate the cache entry so it appears expired
-            import hive.api.admin as admin_mod
-
-            env = admin_mod.ENVIRONMENT
-            ts, data = admin_mod._cost_cache[env]
-            admin_mod._cost_cache[env] = (ts - admin_mod._COST_CACHE_TTL - 1, data)
+            # Backdate the cached item's ttl so it reads as expired even
+            # though DynamoDB's lazy TTL sweep hasn't removed it yet.
+            item = self._cache_items()[0]
+            self._set_cache_attr(item["PK"], "ttl", int(time_mod.time()) - 1)
 
             admin_tc.get("/api/admin/costs")
             # 2 CE calls per request × 2 requests = 4
             assert mock_ce.get_cost_and_usage.call_count == 4
 
-    def test_note_and_environment_in_response(self, admin_tc):
+    def test_corrupt_cache_entry_falls_through_to_ce(self, admin_tc, cost_storage):
+        with patch("hive.api.admin._ce_client") as mock_ce_factory:
+            mock_ce = MagicMock()
+            self._mock_ce(mock_ce, repeats=2)
+            mock_ce_factory.return_value = mock_ce
+
+            admin_tc.get("/api/admin/costs")
+
+            item = self._cache_items()[0]
+            self._set_cache_attr(item["PK"], "response", "{not-valid-json")
+
+            resp = admin_tc.get("/api/admin/costs")
+            # Corrupt entry → live CE call, never a 500
+            assert resp.status_code == 200
+            assert mock_ce.get_cost_and_usage.call_count == 4
+
+    def test_non_object_cached_payload_falls_through_to_ce(self, admin_tc, cost_storage):
+        with patch("hive.api.admin._ce_client") as mock_ce_factory:
+            mock_ce = MagicMock()
+            self._mock_ce(mock_ce, repeats=2)
+            mock_ce_factory.return_value = mock_ce
+
+            admin_tc.get("/api/admin/costs")
+
+            item = self._cache_items()[0]
+            # Valid JSON, but not an object — still treated as corrupt
+            self._set_cache_attr(item["PK"], "response", '["not", "a", "dict"]')
+
+            resp = admin_tc.get("/api/admin/costs")
+            assert resp.status_code == 200
+            assert mock_ce.get_cost_and_usage.call_count == 4
+
+    def test_unreachable_cache_table_falls_through_to_ce(self, admin_tc):
+        """Cache infrastructure being down must not break /admin/costs."""
+        from hive.storage import HiveStorage
+
+        broken = HiveStorage(table_name="does-not-exist", region="us-east-1")
+        with (
+            patch("hive.api.admin._storage", return_value=broken),
+            patch("hive.api.admin._ce_client") as mock_ce_factory,
+        ):
+            mock_ce = MagicMock()
+            self._mock_ce(mock_ce)
+            mock_ce_factory.return_value = mock_ce
+
+            resp = admin_tc.get("/api/admin/costs")
+
+        assert resp.status_code == 200
+        assert resp.json()["currency"] == "USD"
+
+    def test_emits_hit_and_miss_metrics(self, admin_tc, cost_storage):
+        from unittest.mock import AsyncMock
+
+        with (
+            patch("hive.api.admin.emit_metric", new_callable=AsyncMock) as mock_emit,
+            patch("hive.api.admin._ce_client") as mock_ce_factory,
+        ):
+            mock_ce = MagicMock()
+            self._mock_ce(mock_ce)
+            mock_ce_factory.return_value = mock_ce
+
+            admin_tc.get("/api/admin/costs")
+            admin_tc.get("/api/admin/costs")
+
+        emitted = [c.args[0] for c in mock_emit.await_args_list]
+        assert emitted == ["CostCacheMisses", "CostCacheHits"]
+
+    def test_query_hash_is_deterministic(self):
+        from hive.api.admin import _cost_query_hash
+
+        params_a = {"b": 2, "a": {"y": 1, "x": [1, 2]}}
+        params_b = {"a": {"x": [1, 2], "y": 1}, "b": 2}
+        assert _cost_query_hash(params_a) == _cost_query_hash(params_b)
+        assert _cost_query_hash(params_a) != _cost_query_hash({"a": {"x": [1, 2], "y": 1}})
+        # Full sha256 hex digest — stable across processes / Lambda containers
+        assert len(_cost_query_hash(params_a)) == 64
+
+    def test_note_and_environment_in_response(self, admin_tc, cost_storage):
         with patch("hive.api.admin._ce_client") as mock_ce_factory:
             mock_ce = MagicMock()
             self._mock_ce(mock_ce)

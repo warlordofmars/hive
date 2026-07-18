@@ -6,6 +6,8 @@ Admin-only endpoints for CloudWatch metrics and AWS Cost Explorer data.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import json
 import os
 import time
 from typing import Annotated, Any
@@ -14,6 +16,7 @@ import boto3
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from hive.api._auth import require_admin
+from hive.metrics import emit_metric
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -35,10 +38,11 @@ _STAT_PERIOD = {
     "30d": 86400,  # 1-day buckets
 }
 
-# Cost cache: store results in a module-level dict keyed by env to avoid
-# hammering the Cost Explorer API ($0.01/request). TTL = 24 h.
-_cost_cache: dict[str, tuple[float, Any]] = {}
-_COST_CACHE_TTL = 86400  # 24 hours
+# Cost cache (#578): Cost Explorer charges $0.01/paginated request and CE
+# data lags ~24 h upstream, so results are cached in DynamoDB
+# (PK=COST_CACHE#{query_hash}) rather than per-Lambda-container memory —
+# container recycling made the old in-process cache mostly ineffective.
+_COST_CACHE_TTL_DEFAULT = 21600  # 6 hours
 
 # Alarm cache: alarm state changes infrequently; cache for 5 min.
 _alarm_cache: dict[str, tuple[float, Any]] = {}
@@ -206,37 +210,77 @@ def _get_cloudwatch_metrics(period_label: str) -> dict[str, Any]:
     return results
 
 
-def _get_cost_data() -> dict[str, Any]:
-    """Fetch cost data from Cost Explorer, cached for 24 h."""
+def _cost_cache_ttl_seconds() -> int:
+    """TTL for DynamoDB-cached Cost Explorer responses (#578).
+
+    Read at call time so tests (and deployed envs) can override via
+    ``HIVE_COST_CACHE_TTL_SECONDS`` without re-importing the module.
+    """
+    return int(os.environ.get("HIVE_COST_CACHE_TTL_SECONDS", str(_COST_CACHE_TTL_DEFAULT)))
+
+
+def _cost_query_hash(query_params: dict[str, Any]) -> str:
+    """Stable hash of the CE query shape (dates, granularity, filters).
+
+    Canonical JSON (sorted keys, fixed separators) keeps the hash
+    deterministic across Lambda invocations regardless of dict insertion
+    order, so every container maps the same query shape to the same
+    ``COST_CACHE#{query_hash}`` item.
+    """
+    canonical = json.dumps(query_params, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def _get_cost_data() -> dict[str, Any]:
+    """Fetch cost data from Cost Explorer via a DynamoDB-backed cache (#578).
+
+    Flow: compute the query hash → read ``COST_CACHE#{query_hash}`` → if a
+    fresh entry exists return it (zero CE calls) → else call CE, write the
+    payload back with ``ttl = now + HIVE_COST_CACHE_TTL_SECONDS`` (default
+    6 h), and return it. CE charges $0.01/paginated request and its data
+    lags ~24 h upstream, so sub-daily freshness buys nothing.
+    """
     import datetime
 
-    cached = _cost_cache.get(ENVIRONMENT)
-    if cached and time.time() - cached[0] < _COST_CACHE_TTL:
-        return cached[1]
-
-    ce = _ce_client()
     today = datetime.date.today()
     # Last 6 full months + current month
     start_date = (today.replace(day=1) - datetime.timedelta(days=6 * 30)).replace(day=1)
+    daily_start = (today - datetime.timedelta(days=30)).isoformat()
 
     _tag_filter = {"Tags": {"Key": "project", "Values": ["hive"], "MatchOptions": ["EQUALS"]}}
 
+    monthly_params: dict[str, Any] = {
+        "TimePeriod": {"Start": start_date.isoformat(), "End": today.isoformat()},
+        "Granularity": "MONTHLY",
+        "Filter": _tag_filter,
+        "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+        "Metrics": ["UnblendedCost"],
+    }
+    daily_params: dict[str, Any] = {
+        "TimePeriod": {"Start": daily_start, "End": today.isoformat()},
+        "Granularity": "DAILY",
+        "Filter": _tag_filter,
+        "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+        "Metrics": ["UnblendedCost"],
+    }
+    query_params = {
+        "environment": ENVIRONMENT,
+        "monthly": monthly_params,
+        "daily": daily_params,
+    }
+    query_hash = _cost_query_hash(query_params)
+
+    storage = _storage()
+    cached = storage.get_cost_cache(query_hash)
+    if cached is not None:
+        await emit_metric("CostCacheHits")
+        return cached
+    await emit_metric("CostCacheMisses")
+
+    ce = _ce_client()
     try:
-        monthly_resp = ce.get_cost_and_usage(
-            TimePeriod={"Start": start_date.isoformat(), "End": today.isoformat()},
-            Granularity="MONTHLY",
-            Filter=_tag_filter,
-            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-            Metrics=["UnblendedCost"],
-        )
-        daily_start = (today - datetime.timedelta(days=30)).isoformat()
-        daily_resp = ce.get_cost_and_usage(
-            TimePeriod={"Start": daily_start, "End": today.isoformat()},
-            Granularity="DAILY",
-            Filter=_tag_filter,
-            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-            Metrics=["UnblendedCost"],
-        )
+        monthly_resp = ce.get_cost_and_usage(**monthly_params)
+        daily_resp = ce.get_cost_and_usage(**daily_params)
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=502, detail=f"Cost Explorer error: {exc}") from exc
 
@@ -264,9 +308,9 @@ def _get_cost_data() -> dict[str, Any]:
         "monthly": monthly,
         "daily": daily,
         "currency": "USD",
-        "note": "Cost data lags ~24 h. Cached for 24 h.",
+        "note": "Cost data lags ~24 h. Cached server-side (default 6 h).",
     }
-    _cost_cache[ENVIRONMENT] = (time.time(), data)
+    storage.put_cost_cache(query_hash, query_params, data, ttl_seconds=_cost_cache_ttl_seconds())
     return data
 
 
@@ -308,9 +352,10 @@ async def get_costs(
 ) -> dict[str, Any]:
     """Return AWS Cost Explorer monthly spend breakdown.
 
-    Admin-only. Results cached for 24 h.
+    Admin-only. Served from a DynamoDB-backed cache
+    (``HIVE_COST_CACHE_TTL_SECONDS``, default 6 h).
     """
-    return _get_cost_data()
+    return await _get_cost_data()
 
 
 def _get_alarm_data() -> dict[str, Any]:
