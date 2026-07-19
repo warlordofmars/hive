@@ -49,12 +49,17 @@ class TestTtlSeconds:
         monkeypatch.setenv(TTL_ENV_VAR, "42.5")
         assert _ttl_seconds() == 42.5
 
-    def test_invalid_env_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv(TTL_ENV_VAR, "not-a-number")
+    @pytest.mark.parametrize("raw", ["not-a-number", "nan", "inf", "-inf", "-5"])
+    def test_invalid_env_falls_back_to_default(self, monkeypatch, raw):
+        monkeypatch.setenv(TTL_ENV_VAR, raw)
         with patch("hive.auth.secret_cache.logger") as mock_logger:
             assert _ttl_seconds() == DEFAULT_TTL_SECONDS
         mock_logger.warning.assert_called_once()
         assert "Invalid" in mock_logger.warning.call_args[0][0]
+
+    def test_zero_is_a_valid_ttl(self, monkeypatch):
+        monkeypatch.setenv(TTL_ENV_VAR, "0")
+        assert _ttl_seconds() == 0.0
 
 
 # ---------------------------------------------------------------------------

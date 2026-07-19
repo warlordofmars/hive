@@ -3,10 +3,10 @@
 Time-based (TTL) caching for auth secrets.
 
 Replaces the previous ``functools.lru_cache(maxsize=1)`` on the secret
-fetchers (#585): an unbounded cache meant SSM parameter rotations never took
-effect in a warm Lambda without a cold start.  Cached values are re-fetched
-once the TTL expires — default 300 seconds, overridable via the
-``HIVE_SECRET_CACHE_TTL_SECONDS`` environment variable.
+fetchers (#585): those cache entries never expired, so SSM parameter
+rotations never took effect in a warm Lambda without a cold start.  Cached
+values are now re-fetched once the TTL expires — default 300 seconds,
+overridable via the ``HIVE_SECRET_CACHE_TTL_SECONDS`` environment variable.
 
 Failure semantics are fail-static: when a *refresh* fetch fails but a
 previously fetched value exists, the stale value is served and a warning is
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import os
 import threading
 import time
@@ -35,15 +36,23 @@ T = TypeVar("T")
 
 
 def _ttl_seconds() -> float:
-    """Return the cache TTL, honouring the env override (default 300s)."""
+    """Return the cache TTL, honouring the env override (default 300s).
+
+    Only finite, non-negative values are accepted — NaN would disable
+    caching entirely (comparisons are always False) and negative or
+    non-numeric values are misconfigurations; all fall back to the default.
+    """
     raw = os.environ.get(TTL_ENV_VAR)
     if not raw:
         return DEFAULT_TTL_SECONDS
     try:
-        return float(raw)
+        ttl = float(raw)
     except ValueError:
+        ttl = math.nan
+    if not (math.isfinite(ttl) and ttl >= 0):
         logger.warning("Invalid %s=%r; using default %ss", TTL_ENV_VAR, raw, DEFAULT_TTL_SECONDS)
         return DEFAULT_TTL_SECONDS
+    return ttl
 
 
 class _TtlCache(Generic[T]):
