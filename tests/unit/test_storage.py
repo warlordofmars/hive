@@ -3336,6 +3336,130 @@ class TestWorkspaceIdFiltering:
         assert [c.client_name for c in clients] == ["A"]
 
 
+class TestWorkspaceScopedFiltering:
+    """The ``workspace_scoped=True`` compat filter used by the MCP tool
+    handlers (#493): stamped-foreign memories are dropped, unstamped
+    (pre-migration) memories stay visible, and a ``None`` workspace fails
+    closed to unstamped memories only.
+    """
+
+    def _seed(self, storage):
+        own = Memory(
+            key="own",
+            value="v",
+            owner_client_id="c1",
+            owner_user_id="u1",
+            workspace_id="ws-a",
+            tags=["shared"],
+        )
+        foreign = Memory(
+            key="foreign",
+            value="v",
+            owner_client_id="c2",
+            owner_user_id="u1",
+            workspace_id="ws-b",
+            tags=["shared"],
+        )
+        legacy = Memory(
+            key="legacy",
+            value="v",
+            owner_client_id="c1",
+            owner_user_id="u1",
+            tags=["shared"],
+        )
+        for m in (own, foreign, legacy):
+            storage.put_memory(m)
+        return own, foreign, legacy
+
+    def test_consistent_path_scoped_keeps_unstamped_drops_foreign(self, storage):
+        own, foreign, legacy = self._seed(storage)
+        items, _ = storage.list_memories_by_tag(
+            "shared", owner_user_id="u1", workspace_id="ws-a", workspace_scoped=True
+        )
+        keys = {m.key for m in items}
+        assert keys == {"own", "legacy"}
+
+    def test_consistent_path_scoped_none_workspace_fails_closed(self, storage):
+        self._seed(storage)
+        items, _ = storage.list_memories_by_tag(
+            "shared", owner_user_id="u1", workspace_id=None, workspace_scoped=True
+        )
+        assert {m.key for m in items} == {"legacy"}
+
+    def test_gsi_path_scoped_keeps_unstamped_drops_foreign(self, storage):
+        self._seed(storage)
+        # No owner_user_id — exercises the TagIndex GSI branch of the filter.
+        items, _ = storage.list_memories_by_tag(
+            "shared", workspace_id="ws-a", workspace_scoped=True
+        )
+        assert {m.key for m in items} == {"own", "legacy"}
+
+    def test_exact_match_default_still_drops_unstamped(self, storage):
+        self._seed(storage)
+        # Without workspace_scoped the literal filter applies: only ws-a rows.
+        items, _ = storage.list_memories_by_tag("shared", owner_user_id="u1", workspace_id="ws-a")
+        assert {m.key for m in items} == {"own"}
+
+    def test_delete_by_tag_scoped_spares_foreign_workspace(self, storage):
+        own, foreign, legacy = self._seed(storage)
+        deleted = storage.delete_memories_by_tag(
+            "shared", owner_user_id="u1", workspace_id="ws-a", workspace_scoped=True
+        )
+        assert deleted == 2
+        assert storage.get_memory_by_id(own.memory_id) is None
+        assert storage.get_memory_by_id(legacy.memory_id) is None
+        assert storage.get_memory_by_id(foreign.memory_id) is not None
+
+
+class TestListDistinctTagsWorkspaceScoped:
+    """list_distinct_tags workspace filtering via stamped USERTAG items (#493)."""
+
+    def _seed(self, storage):
+        storage.put_memory(
+            Memory(
+                key="own",
+                value="v",
+                owner_client_id="c1",
+                owner_user_id="u1",
+                workspace_id="ws-a",
+                tags=["tag-a"],
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="foreign",
+                value="v",
+                owner_client_id="c2",
+                owner_user_id="u1",
+                workspace_id="ws-b",
+                tags=["tag-b"],
+            )
+        )
+        storage.put_memory(
+            Memory(
+                key="legacy",
+                value="v",
+                owner_client_id="c1",
+                owner_user_id="u1",
+                tags=["tag-legacy"],
+            )
+        )
+
+    def test_scoped_hides_foreign_workspace_tags(self, storage):
+        self._seed(storage)
+        tags = storage.list_distinct_tags("u1", "ws-a", workspace_scoped=True)
+        assert tags == ["tag-a", "tag-legacy"]
+
+    def test_scoped_none_workspace_fails_closed_to_unstamped(self, storage):
+        self._seed(storage)
+        tags = storage.list_distinct_tags("u1", None, workspace_scoped=True)
+        assert tags == ["tag-legacy"]
+
+    def test_unscoped_default_returns_account_wide_tags(self, storage):
+        self._seed(storage)
+        assert storage.list_distinct_tags("u1") == ["tag-a", "tag-b", "tag-legacy"]
+
+
 class TestRevokeAllTokens:
     """Bulk token revocation used by the workspaces migration (#490)."""
 

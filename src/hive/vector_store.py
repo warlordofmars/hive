@@ -117,6 +117,17 @@ class VectorStore:
             index_name = self._ensure_index(owner_user_id)
             text = f"{memory.key}: {memory.value}"
             embedding = self._embed(text)
+            metadata: dict[str, Any] = {
+                "memory_key": memory.key,
+                "tags": json.dumps(memory.tags),
+            }
+            # Workspace scoping (#493): stamp the vector with the memory's
+            # workspace so `search` can filter foreign-workspace vectors at
+            # query time. Unstamped memories (pre-migration rows) carry no
+            # key — the query filter's `$exists: false` arm keeps them
+            # reachable, mirroring the DynamoDB compat rules.
+            if memory.workspace_id is not None:
+                metadata["workspace_id"] = memory.workspace_id
             self._s3v.put_vectors(
                 vectorBucketName=self._bucket,
                 indexName=index_name,
@@ -124,10 +135,7 @@ class VectorStore:
                     {
                         "key": memory.memory_id,
                         "data": {"float32": embedding},
-                        "metadata": {
-                            "memory_key": memory.key,
-                            "tags": json.dumps(memory.tags),
-                        },
+                        "metadata": metadata,
                     }
                 ],
             )
@@ -167,6 +175,9 @@ class VectorStore:
         query: str,
         owner_user_id: str,
         top_k: int = 20,
+        *,
+        workspace_id: str | None = None,
+        workspace_scoped: bool = False,
     ) -> list[tuple[str, float]]:
         """Return ``(memory_id, score)`` pairs ranked by cosine similarity.
 
@@ -174,19 +185,41 @@ class VectorStore:
         scoped to the ``owner_user_id`` account index, so results span every DCR
         client of that account (consistent with list_memories, #666).
 
+        ``workspace_scoped=True`` applies an S3 Vectors metadata filter using
+        the workspace compat rules (#493), mirroring the storage API: matches
+        are restricted to vectors stamped with ``workspace_id`` *or* carrying
+        no ``workspace_id`` metadata at all, and a ``None`` ``workspace_id``
+        (unresolvable caller) fails closed to unstamped vectors only. The
+        ``$exists: false`` arm keeps pre-#493 vectors (written before
+        workspace stamping) reachable; callers must still post-filter hydrated
+        results against the authoritative DynamoDB ``workspace_id`` — and do
+        so before any ranking/limit truncation — because a pre-#493 vector may
+        belong to a memory that the migration has since stamped into a foreign
+        workspace. The default (``False``) disables the filter entirely
+        (legacy account-wide search); ``workspace_id`` is ignored then.
+
         Raises ``VectorIndexNotFoundError`` when the account has never written a
         memory (index does not exist yet).
         """
         index_name = self._index_name(owner_user_id)
+        query_kwargs: dict[str, Any] = {
+            "vectorBucketName": self._bucket,
+            "indexName": index_name,
+            "topK": min(top_k, 100),
+            "returnDistance": True,
+            "returnMetadata": False,
+        }
+        if workspace_scoped:
+            no_stamp = {"workspace_id": {"$exists": False}}
+            if workspace_id is not None:
+                query_kwargs["filter"] = {"$or": [{"workspace_id": workspace_id}, no_stamp]}
+            else:
+                query_kwargs["filter"] = no_stamp
         try:
             embedding = self._embed(query)
             resp = self._s3v.query_vectors(
-                vectorBucketName=self._bucket,
-                indexName=index_name,
                 queryVector={"float32": embedding},
-                topK=min(top_k, 100),
-                returnDistance=True,
-                returnMetadata=False,
+                **query_kwargs,
             )
         except self._s3v.exceptions.NotFoundException as exc:
             raise VectorIndexNotFoundError(
