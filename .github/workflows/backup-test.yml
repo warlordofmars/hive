@@ -45,19 +45,35 @@ jobs:
         run: |
           RESTORE_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "Restoring $SOURCE_TABLE → $RESTORE_TABLE at $RESTORE_TIME"
+          # No --sse-specification-override: omitting it keeps the default
+          # encryption (AWS owned key), matching the source table. The CLI
+          # has no --no-sse-specification-override boolean variant — the
+          # parameter is a structure, and passing the bogus flag makes the
+          # CLI abort with "Unknown options" before the restore starts.
           aws dynamodb restore-table-to-point-in-time \
             --source-table-name "$SOURCE_TABLE" \
             --target-table-name "$RESTORE_TABLE" \
-            --use-latest-restorable-time \
-            --no-sse-specification-override
+            --use-latest-restorable-time
 
           # Wait up to 20 minutes for the restore to complete
           echo "Waiting for restore to complete (up to 20 min)..."
           for i in $(seq 1 40); do
-            STATUS=$(aws dynamodb describe-table \
+            # describe-table is eventually consistent — it can briefly return
+            # ResourceNotFoundException right after the restore request, which
+            # would kill the step under bash -e. Treat only that error as
+            # still-creating; fail fast on anything else (AccessDenied,
+            # throttling, ...) so real errors aren't masked for 20 minutes.
+            if OUTPUT=$(aws dynamodb describe-table \
               --table-name "$RESTORE_TABLE" \
               --query 'Table.TableStatus' \
-              --output text)
+              --output text 2>&1); then
+              STATUS="$OUTPUT"
+            elif echo "$OUTPUT" | grep -q "ResourceNotFoundException"; then
+              STATUS="CREATING"
+            else
+              echo "ERROR: describe-table failed: $OUTPUT"
+              exit 1
+            fi
             echo "  Attempt $i: status=$STATUS"
             if [ "$STATUS" = "ACTIVE" ]; then
               echo "Restore complete."
