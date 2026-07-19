@@ -357,7 +357,25 @@ class TestUserTagMigration:
         )
         stats = run(dry_run=True, storage=storage)
         assert stats.user_tags_stamped == 1
+        assert stats.user_tags_skipped == 0
         assert "workspace_id" not in self._user_tag_item(storage, mem, "t1")
+
+    def test_dry_run_counts_already_stamped_and_missing_rows_as_skipped(self, storage):
+        # Dry-run must mirror the real run's conditional-update semantics:
+        # already-stamped rows and missing rows read as skipped, not as
+        # pending work (would overstate the remaining migration).
+        alice = _seed_user(storage)
+        mem = self._seed_tagged_memory(storage, alice.user_id, ["t1", "t2"])
+        run(storage=storage)  # real run stamps both USERTAG rows
+        storage.table.delete_item(
+            Key={
+                "PK": f"USERTAG#{alice.user_id}",
+                "SK": f"TAG#t2#MEMORY#{mem.memory_id}",
+            }
+        )
+        stats = run(dry_run=True, storage=storage)
+        assert stats.user_tags_stamped == 0
+        assert stats.user_tags_skipped == 2
 
 
 class TestClientMigration:

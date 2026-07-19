@@ -262,20 +262,31 @@ def migrate_user_tags(
     so each memory's META ``workspace_id`` (the source of truth) is already
     populated. Idempotent: already-stamped items and rows whose memory is
     still unstamped are skipped.
+
+    In ``--dry-run`` mode each USERTAG row is read to report accurately:
+    already-stamped or missing rows count as skipped, mirroring the
+    conditional-update semantics of a real run. (Memories whose META is
+    still unstamped are not visited in dry-run — the memory phase hasn't
+    written its stamps — so the dry-run count reflects the table as-is.)
     """
     for memory in storage.iter_all_memories():
         if memory.workspace_id is None or memory.owner_user_id is None:
             continue
         for tag in memory.tags:
+            key = {
+                "PK": f"USERTAG#{memory.owner_user_id}",
+                "SK": f"TAG#{tag}#MEMORY#{memory.memory_id}",
+            }
             if dry_run:
-                stats.user_tags_stamped += 1
+                item = storage.table.get_item(Key=key).get("Item")
+                if item is None or "workspace_id" in item:
+                    stats.user_tags_skipped += 1
+                else:
+                    stats.user_tags_stamped += 1
                 continue
             try:
                 storage.table.update_item(
-                    Key={
-                        "PK": f"USERTAG#{memory.owner_user_id}",
-                        "SK": f"TAG#{tag}#MEMORY#{memory.memory_id}",
-                    },
+                    Key=key,
                     UpdateExpression="SET workspace_id = :wsid",
                     ExpressionAttributeValues={":wsid": memory.workspace_id},
                     ConditionExpression=(
