@@ -3220,3 +3220,85 @@ class TestRevokeAllTokens:
         ):
             assert storage.revoke_all_tokens() == 2
         assert upd.call_count == 2
+
+
+class TestCostCacheStorage:
+    """COST_CACHE# read/write for the Cost Explorer cache (#578)."""
+
+    def test_put_and_get_roundtrip(self, storage):
+        payload = {"currency": "USD", "monthly": [{"period": "2026-06-01", "total": 1.23}]}
+        storage.put_cost_cache("hash-1", {"Granularity": "MONTHLY"}, payload, ttl_seconds=60)
+
+        assert storage.get_cost_cache("hash-1") == payload
+
+    def test_item_shape_matches_design(self, storage):
+        import json as json_mod
+        import time as time_mod
+
+        storage.put_cost_cache("hash-shape", {"q": 1}, {"data": True}, ttl_seconds=300)
+
+        item = storage.table.get_item(Key={"PK": "COST_CACHE#hash-shape", "SK": "META"})["Item"]
+        assert item["SK"] == "META"
+        assert json_mod.loads(item["query_params"]) == {"q": 1}
+        assert json_mod.loads(item["response"]) == {"data": True}
+        assert "cached_at" in item
+        # ttl uses the table's configured TTL attribute name so DynamoDB
+        # auto-expires the item.
+        assert int(item["ttl"]) == pytest.approx(time_mod.time() + 300, abs=30)
+
+    def test_get_missing_returns_none(self, storage):
+        assert storage.get_cost_cache("no-such-hash") is None
+
+    def test_expired_entry_returns_none(self, storage):
+        # DynamoDB's TTL sweep is lazy — the read path must enforce expiry
+        # itself. A ttl in the past reads as a miss even though the item
+        # is still physically present.
+        storage.put_cost_cache("hash-expired", {}, {"stale": True}, ttl_seconds=-10)
+
+        assert storage.get_cost_cache("hash-expired") is None
+
+    def test_corrupt_response_returns_none(self, storage):
+        storage.table.put_item(
+            Item={
+                "PK": "COST_CACHE#hash-corrupt",
+                "SK": "META",
+                "response": "{not-valid-json",
+                "ttl": 9999999999,
+            }
+        )
+
+        assert storage.get_cost_cache("hash-corrupt") is None
+
+    def test_non_dict_payload_returns_none(self, storage):
+        storage.table.put_item(
+            Item={
+                "PK": "COST_CACHE#hash-list",
+                "SK": "META",
+                "response": '["valid", "json", "wrong", "shape"]',
+                "ttl": 9999999999,
+            }
+        )
+
+        assert storage.get_cost_cache("hash-list") is None
+
+    def test_missing_ttl_attribute_returns_none(self, storage):
+        # An item written without a ttl can never be auto-expired by
+        # DynamoDB — treat it as unreadable rather than serving it forever.
+        storage.table.put_item(Item={"PK": "COST_CACHE#hash-nottl", "SK": "META", "response": "{}"})
+
+        assert storage.get_cost_cache("hash-nottl") is None
+
+    def test_get_swallows_dynamo_errors(self, storage):
+        from unittest.mock import patch
+
+        with patch.object(storage, "table") as table:
+            table.get_item.side_effect = RuntimeError("dynamo down")
+            assert storage.get_cost_cache("hash-err") is None
+
+    def test_put_swallows_dynamo_errors(self, storage):
+        from unittest.mock import patch
+
+        with patch.object(storage, "table") as table:
+            table.put_item.side_effect = RuntimeError("dynamo down")
+            # Must not raise — the caller already holds the live CE data.
+            storage.put_cost_cache("hash-err", {}, {"x": 1}, ttl_seconds=60)

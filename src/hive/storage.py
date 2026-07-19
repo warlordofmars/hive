@@ -1849,6 +1849,76 @@ class HiveStorage:
         return events[:limit]
 
     # ------------------------------------------------------------------
+    # Cost Explorer response cache (#578)
+    # ------------------------------------------------------------------
+
+    def get_cost_cache(self, query_hash: str) -> dict[str, Any] | None:
+        """Return a cached Cost Explorer payload for ``query_hash``, or None.
+
+        Best-effort by design: an absent, expired, corrupt, or unreadable
+        cache entry returns None so the caller falls through to a live
+        Cost Explorer call — a cache problem must never surface as a 500.
+
+        Expiry is enforced on read because DynamoDB's TTL sweep is lazy
+        (deletion can lag the ``ttl`` timestamp by up to ~48 h); the item
+        uses the table's configured TTL attribute (``ttl``) so it is still
+        physically removed eventually.
+        """
+        try:
+            resp = self.table.get_item(Key={"PK": f"COST_CACHE#{query_hash}", "SK": "META"})
+        except Exception:
+            # Infrastructure failure — keep the stack trace, it's actionable.
+            logger.warning("cost_cache_read_failed query_hash=%s", query_hash, exc_info=True)
+            return None
+        item = resp.get("Item")
+        if not item:
+            return None
+        try:
+            if int(item["ttl"]) <= int(_now().timestamp()):
+                return None
+            payload = json.loads(item["response"])
+            if not isinstance(payload, dict):
+                raise ValueError("cached cost payload is not a JSON object")
+            return payload
+        except Exception as exc:
+            # Content-shape problem (missing ttl/response, bad JSON, wrong
+            # type) — an expected miss, not an incident: log without a
+            # traceback to keep dashboard-load noise and log cost down. The
+            # entry self-heals when the fall-through CE call writes back.
+            logger.warning("cost_cache_entry_invalid query_hash=%s error=%s", query_hash, exc)
+            return None
+
+    def put_cost_cache(
+        self,
+        query_hash: str,
+        query_params: dict[str, Any],
+        response: dict[str, Any],
+        ttl_seconds: int,
+    ) -> None:
+        """Write a Cost Explorer payload to the cache (best-effort).
+
+        The payload is stored as a JSON string (floats are not valid
+        DynamoDB numbers) with ``ttl`` set to now + ``ttl_seconds`` so the
+        table's TTL config auto-expires stale entries. ``query_params`` is
+        stored alongside for debugging only. Write failures are logged and
+        swallowed — the caller already holds the live CE response.
+        """
+        now = _now()
+        try:
+            self.table.put_item(
+                Item={
+                    "PK": f"COST_CACHE#{query_hash}",
+                    "SK": "META",
+                    "query_params": json.dumps(query_params, sort_keys=True),
+                    "response": json.dumps(response),
+                    "cached_at": now.isoformat(),
+                    "ttl": int(now.timestamp()) + ttl_seconds,
+                }
+            )
+        except Exception:
+            logger.warning("cost_cache_write_failed query_hash=%s", query_hash, exc_info=True)
+
+    # ------------------------------------------------------------------
     # Account deletion
     # ------------------------------------------------------------------
 
