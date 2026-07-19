@@ -312,6 +312,78 @@ class HiveStorage:
         # Drop the inline value — DynamoDB only keeps the pointer.
         memory.value = ""
 
+    def put_memory_if_absent(self, memory: Memory) -> bool:
+        """Atomically create a memory only if its key is not already claimed.
+
+        Key uniqueness lives on the KeyIndex GSI (``GSI1PK=KEY#{key}``), and
+        neither a GSI nor a condition on the META item (whose PK is a fresh
+        surrogate UUID) can enforce it. The atomic unit is therefore a
+        dedicated key-claim item (``PK=KEYCLAIM#{key}``, ``SK=META``) written
+        with a conditional ``PutItem``::
+
+            attribute_not_exists(PK) OR expires_at <= :now
+
+        DynamoDB serialises conditional writes on the same item, so exactly
+        one of any number of concurrent callers wins the claim (#592). The
+        ``OR`` arm lets a claim whose memory has expired be taken over
+        atomically — expired memories read as absent everywhere else — and
+        is itself race-safe: the winner's put replaces ``expires_at`` with
+        its own future value (or removes it), so every other taker's
+        condition evaluates false.
+
+        Returns ``True`` when the claim and the memory write both succeed,
+        ``False`` when the key is already claimed by a live memory. If the
+        memory write fails after a successful claim, the claim is rolled
+        back and the error re-raised.
+
+        Claims are released by ``delete_memory`` / ``delete_memories_by_tag``
+        so a forgotten key can be re-created. Memories created through other
+        paths (``remember``'s create branch, the management API) carry no
+        claim; callers must pair this method with a ``get_memory_by_key``
+        pre-check to preserve if-absent semantics against those.
+        """
+        now_iso = _now().isoformat()
+        claim: dict[str, Any] = {
+            "PK": f"KEYCLAIM#{memory.key}",
+            "SK": "META",
+            "key": memory.key,
+            "memory_id": memory.memory_id,
+            "created_at": now_iso,
+        }
+        if memory.expires_at is not None:
+            claim["expires_at"] = memory.expires_at.isoformat()
+            # Mirror the memory's DynamoDB TTL so the reaper prunes the claim
+            # alongside the memory item itself.
+            claim["ttl"] = int(memory.expires_at.timestamp())
+        try:
+            self.table.put_item(
+                Item=claim,
+                ConditionExpression=(Attr("PK").not_exists() | Attr("expires_at").lte(now_iso)),
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        try:
+            self.put_memory(memory)
+        except Exception:
+            # Roll back the claim so a failed create doesn't poison the key.
+            self._release_key_claim(memory.key)
+            raise
+        return True
+
+    def _release_key_claim(self, key: str) -> None:
+        """Delete the key-claim item for ``key`` (no-op if none exists).
+
+        Deliberately unconditional: deleting a claim for a key whose memory
+        still exists merely degrades remember_if_absent back to its
+        read-check for that key, whereas a conditional delete could leave an
+        orphaned claim permanently blocking if-absent creates after a
+        mid-write crash. An orphaned claim is self-healing — any delete of a
+        same-key memory (e.g. remember then forget) clears it.
+        """
+        self.table.delete_item(Key={"PK": f"KEYCLAIM#{key}", "SK": "META"})
+
     def get_memory_by_id(self, memory_id: str) -> Memory | None:
         item = self._get_memory_meta(memory_id)
         if item is None:
@@ -375,6 +447,7 @@ class HiveStorage:
         self._delete_tag_items(memory)
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         self._delete_blob_if_needed(memory)
+        self._release_key_claim(memory.key)
         return True
 
     # ------------------------------------------------------------------
@@ -669,6 +742,7 @@ class HiveStorage:
                 self._delete_tag_items(memory)
                 self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
                 self._delete_blob_if_needed(memory)
+                self._release_key_claim(memory.key)
                 deleted += 1
             if cursor is None:
                 break

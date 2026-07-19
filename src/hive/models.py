@@ -14,6 +14,9 @@ DynamoDB single-table design:
   Invite items:     PK=INVITE#{invite_id}   SK=META          (TTL enabled)
   Mgmt state:       PK=MGMT_STATE#{state}   SK=META          (TTL enabled)
   API key items:    PK=APIKEY#{key_id}      SK=META
+  Key-claim items:  PK=KEYCLAIM#{key}       SK=META          (uniqueness anchor
+                    for remember_if_absent conditional writes; mirrors the
+                    memory's TTL when one is set)
 
 GSIs:
   TagIndex:              PK=TAG#{tag}, SK=memory_id   — list_memories(tag)

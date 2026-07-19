@@ -466,6 +466,164 @@ class TestMemoryStorage:
 
 
 # ---------------------------------------------------------------------------
+# Atomic if-absent creation via key-claim items (#592)
+# ---------------------------------------------------------------------------
+
+
+class TestPutMemoryIfAbsent:
+    """put_memory_if_absent arbitrates concurrent same-key creates with a
+    conditional write on a KEYCLAIM item — the KeyIndex GSI can't enforce
+    uniqueness, and the META item's PK is a fresh surrogate UUID."""
+
+    @staticmethod
+    def _claim_item(storage, key):
+        resp = storage.table.get_item(Key={"PK": f"KEYCLAIM#{key}", "SK": "META"})
+        return resp.get("Item")
+
+    def test_creates_memory_and_claim_when_key_unclaimed(self, storage):
+        m = Memory(key="ifa", value="v1", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        stored = storage.get_memory_by_key("ifa")
+        assert stored is not None
+        assert stored.value == "v1"
+        claim = self._claim_item(storage, "ifa")
+        assert claim is not None
+        assert claim["memory_id"] == m.memory_id
+        # No TTL on the memory → no TTL on the claim
+        assert "ttl" not in claim
+        assert "expires_at" not in claim
+
+    def test_second_call_returns_false_and_does_not_overwrite(self, storage):
+        first = Memory(key="ifa-dupe", value="original", owner_client_id="c1")
+        assert storage.put_memory_if_absent(first) is True
+        second = Memory(key="ifa-dupe", value="usurper", owner_client_id="c2")
+        assert storage.put_memory_if_absent(second) is False
+        stored = storage.get_memory_by_key("ifa-dupe")
+        assert stored.value == "original"
+        assert stored.memory_id == first.memory_id
+        # The loser's memory was never written
+        assert storage.get_memory_by_id(second.memory_id) is None
+
+    def test_claim_write_is_conditional(self, storage):
+        """Pin the wire-level contract: the claim put carries
+        ``attribute_not_exists(PK) OR expires_at <= :now`` so a refactor
+        can't silently drop the atomicity (#592). DynamoDB's server-side
+        serialisation of conditional writes is what enforces single-create."""
+        from unittest.mock import MagicMock
+
+        captured: dict[str, object] = {}
+        original = storage.table.put_item
+
+        def _spy(**kwargs: object) -> object:
+            if "ConditionExpression" in kwargs and not captured:
+                captured.update(kwargs)
+            return original(**kwargs)
+
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.put_item.side_effect = _spy
+
+        m = Memory(key="ifa-cond", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+        assert captured["Item"]["PK"] == "KEYCLAIM#ifa-cond"
+        assert captured["Item"]["SK"] == "META"
+        expr = captured["ConditionExpression"].get_expression()
+        assert expr["operator"] == "OR"
+        not_exists, expired = expr["values"]
+        assert not_exists.get_expression()["operator"] == "attribute_not_exists"
+        assert not_exists.get_expression()["values"][0].name == "PK"
+        assert expired.get_expression()["operator"] == "<="
+        assert expired.get_expression()["values"][0].name == "expires_at"
+
+    def test_claim_mirrors_memory_ttl(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        m = Memory(key="ifa-ttl", value="v", owner_client_id="c1", expires_at=expires)
+        assert storage.put_memory_if_absent(m) is True
+        claim = self._claim_item(storage, "ifa-ttl")
+        assert claim["expires_at"] == expires.isoformat()
+        assert claim["ttl"] == int(expires.timestamp())
+
+    def test_expired_claim_is_taken_over(self, storage):
+        """A claim whose memory has expired reads as absent everywhere else,
+        so the ``expires_at <= :now`` arm lets a new create take it over."""
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        stale = Memory(key="ifa-exp", value="old", owner_client_id="c1", expires_at=past)
+        assert storage.put_memory_if_absent(stale) is True
+        fresh = Memory(key="ifa-exp", value="new", owner_client_id="c1")
+        assert storage.put_memory_if_absent(fresh) is True
+        claim = self._claim_item(storage, "ifa-exp")
+        assert claim["memory_id"] == fresh.memory_id
+        # The takeover rewrites the claim wholesale — no stale expiry left
+        assert "expires_at" not in claim
+
+    def test_live_ttl_claim_still_blocks(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        live = Memory(key="ifa-live", value="v", owner_client_id="c1", expires_at=future)
+        assert storage.put_memory_if_absent(live) is True
+        rival = Memory(key="ifa-live", value="x", owner_client_id="c1")
+        assert storage.put_memory_if_absent(rival) is False
+
+    def test_failed_memory_write_rolls_back_claim(self, storage):
+        from unittest.mock import patch
+
+        m = Memory(key="ifa-rollback", value="v", owner_client_id="c1")
+        with (
+            patch.object(storage.__class__, "put_memory", side_effect=ValueError("too big")),
+            pytest.raises(ValueError, match="too big"),
+        ):
+            storage.put_memory_if_absent(m)
+        assert self._claim_item(storage, "ifa-rollback") is None
+        # The key is not poisoned — a subsequent create succeeds
+        retry = Memory(key="ifa-rollback", value="v2", owner_client_id="c1")
+        assert storage.put_memory_if_absent(retry) is True
+
+    def test_unexpected_client_error_reraises(self, storage):
+        """Only ConditionalCheckFailedException maps to False — anything else
+        bubbles up so genuine AWS failures aren't masked as 'exists'."""
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="PutItem",
+        )
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.put_item.side_effect = throttled
+        m = Memory(key="ifa-throttle", value="v", owner_client_id="c1")
+        with pytest.raises(ClientError):
+            storage.put_memory_if_absent(m)
+
+    def test_delete_memory_releases_claim(self, storage):
+        m = Memory(key="ifa-del", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert storage.delete_memory(m.memory_id) is True
+        assert self._claim_item(storage, "ifa-del") is None
+        recreated = Memory(key="ifa-del", value="v2", owner_client_id="c1")
+        assert storage.put_memory_if_absent(recreated) is True
+
+    def test_delete_memory_without_claim_is_a_noop_release(self, storage):
+        m = Memory(key="ifa-noclaim", value="v", owner_client_id="c1")
+        storage.put_memory(m)  # plain create path — no claim written
+        assert self._claim_item(storage, "ifa-noclaim") is None
+        assert storage.delete_memory(m.memory_id) is True
+
+    def test_delete_memories_by_tag_releases_claims(self, storage):
+        m = Memory(key="ifa-tagged", value="v", tags=["t592"], owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert storage.delete_memories_by_tag("t592", owner_client_id="c1") == 1
+        assert self._claim_item(storage, "ifa-tagged") is None
+        recreated = Memory(key="ifa-tagged", value="v2", tags=["t592"], owner_client_id="c1")
+        assert storage.put_memory_if_absent(recreated) is True
+
+
+# ---------------------------------------------------------------------------
 # Large-memory routing tests (#497)
 # ---------------------------------------------------------------------------
 
