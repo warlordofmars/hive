@@ -2564,6 +2564,11 @@ class TestApiKeyStorage:
         assert found.key_id == k.key_id
         mock_scan.assert_not_called()
 
+    def test_get_by_hash_ignores_non_apikey_items_in_index(self, storage):
+        """A foreign item carrying key_hash (invariant breach) is treated as a miss."""
+        storage.table.put_item(Item={"PK": "OTHER#rogue", "SK": "META", "key_hash": "hash-rogue"})
+        assert storage.get_api_key_by_hash("hash-rogue") is None
+
     def test_get_by_hash_falls_back_when_index_missing(self, storage_no_apikey_index):
         """A table without the GSI (legacy schema / backfilling) still resolves keys."""
         k = self._key()
