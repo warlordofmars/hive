@@ -164,8 +164,10 @@ async def delete_client(
     storage.delete_client(client_id)
 
     # Second sweep: catch tokens minted by grants in flight during the
-    # first scan. With the client gone nothing new can be minted, so this
-    # sweep is final.
+    # first scan. Deleting the record stops new grants from
+    # authenticating, so this narrows the race window to a grant that
+    # loaded the client before the delete and persists its token after
+    # this scan — such stragglers still expire via their short TTLs.
     revoked_tokens += storage.delete_tokens_for_clients({client_id})
 
     storage.log_event(
