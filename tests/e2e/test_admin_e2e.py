@@ -101,6 +101,14 @@ class TestAdminMetricsE2E:
             )
             assert resp.status_code == 401
 
+    @pytest.mark.skipif(
+        os.environ.get("HIVE_SYNTHETIC_TRAFFIC_ENABLED") != "1",
+        reason=(
+            "synthetic-traffic schedule is disabled until prod release (#641); "
+            "the 7d window is legitimately empty — set HIVE_SYNTHETIC_TRAFFIC_ENABLED=1 "
+            "in the e2e CI step when re-enabling the cron (#706)"
+        ),
+    )
     async def test_metrics_has_data_after_synthetic_traffic(self, live_admin_token):
         """After synthetic traffic has run, the 7d window should have invocation data."""
         async with httpx.AsyncClient(base_url=API_URL, timeout=30.0) as http:
