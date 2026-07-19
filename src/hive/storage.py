@@ -1501,7 +1501,13 @@ class HiveStorage:
         )
         item = resp.get("Item")
         if item:
-            return Workspace.from_dynamo(item)
+            workspace = Workspace.from_dynamo(item)
+            # Trust but verify: only ensure_personal_workspace writes this id
+            # namespace, but a mis-created item squatting on the deterministic
+            # key must never cross tenancy boundaries — apply the same
+            # predicate as the GSI fallback below and fall through otherwise.
+            if workspace.is_personal and workspace.owner_user_id == user_id:
+                return workspace
         for workspace in self.list_workspaces_for_user(user_id):
             if workspace.is_personal and workspace.owner_user_id == user_id:
                 return workspace

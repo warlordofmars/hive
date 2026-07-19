@@ -3418,6 +3418,33 @@ class TestPersonalWorkspace:
         assert storage.get_personal_workspace(user.user_id).workspace_id == "rand-legacy-id"
         assert storage.ensure_personal_workspace(user).workspace_id == "rand-legacy-id"
 
+    def test_get_rejects_squatted_deterministic_id(self, storage):
+        """An item squatting on the ``personal-{user_id}`` key that is not a
+        Personal workspace owned by that user must never be returned — that
+        would cross tenancy boundaries when auth flows bind to it."""
+        user = self._user(user_id="squatted-user")
+        storage.put_workspace(
+            Workspace(
+                workspace_id=f"personal-{user.user_id}",
+                name="Not Actually Personal",
+                owner_user_id="attacker",
+                is_personal=False,
+            )
+        )
+        assert storage.get_personal_workspace(user.user_id) is None
+
+        # A legitimate migration-era Personal workspace is still found via the
+        # GSI fallback even with the deterministic key squatted.
+        legit = Workspace(
+            workspace_id="legit-random-id",
+            name="pw@example.com's Personal",
+            owner_user_id=user.user_id,
+            is_personal=True,
+        )
+        storage.put_workspace(legit)
+        storage.add_workspace_member(legit.workspace_id, user.user_id, WorkspaceRole.owner)
+        assert storage.get_personal_workspace(user.user_id).workspace_id == "legit-random-id"
+
     def test_get_skips_shared_workspaces_in_fallback(self, storage):
         """Membership in a shared (non-personal) workspace must not satisfy the
         Personal-workspace lookup."""
