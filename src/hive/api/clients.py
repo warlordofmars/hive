@@ -130,7 +130,11 @@ async def get_client(
 @router.delete(
     "/clients/{client_id}",
     summary="Delete an OAuth client",
-    description="Permanently delete an OAuth client by its client ID. Non-admins can only delete their own clients.",
+    description=(
+        "Permanently delete an OAuth client by its client ID and immediately "
+        "revoke every access and refresh token issued to it. Non-admins can "
+        "only delete their own clients."
+    ),
     status_code=204,
     responses={
         401: {"description": "Unauthorized"},
@@ -149,11 +153,25 @@ async def delete_client(
     if owner_user_id and client.owner_user_id != owner_user_id:
         raise HTTPException(status_code=404, detail=_CLIENT_NOT_FOUND)
 
+    # First sweep: revoke the client's outstanding tokens while its record
+    # still exists — if anything below fails, a retry can rediscover the
+    # client and finish the job (#711, mirroring #588's ordering).
+    revoked_tokens = storage.delete_tokens_for_clients({client_id})
+
+    # Close the mint path: /oauth/token authenticates the client via
+    # get_client, so removing the record stops a concurrent refresh grant
+    # from issuing new tokens.
     storage.delete_client(client_id)
+
+    # Second sweep: catch tokens minted by grants in flight during the
+    # first scan. With the client gone nothing new can be minted, so this
+    # sweep is final.
+    revoked_tokens += storage.delete_tokens_for_clients({client_id})
+
     storage.log_event(
         ActivityEvent(
             event_type=EventType.client_deleted,
             client_id=claims["sub"],
-            metadata={"deleted_client_id": client_id},
+            metadata={"deleted_client_id": client_id, "revoked_tokens": revoked_tokens},
         )
     )

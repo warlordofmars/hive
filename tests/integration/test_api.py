@@ -297,3 +297,74 @@ class TestAccountDeletionRevokesTokens:
         assert storage.get_token(b_access.jti) is not None
         assert storage.get_client(client_b.client_id) is not None
         assert storage.get_user_by_id("itest-588-user-b") is not None
+
+
+class TestClientDeletionRevokesTokens:
+    """#711 — DELETE /api/clients/{id} must revoke the client's tokens."""
+
+    @pytest.fixture()
+    def storage(self, client):
+        from hive.storage import HiveStorage
+
+        # `client` guarantees the table exists before storage is used.
+        return HiveStorage(
+            table_name="hive-integration-test",
+            region="us-east-1",
+            endpoint_url=DYNAMO_ENDPOINT,
+            aws_access_key_id="local",
+            aws_secret_access_key="local",
+        )
+
+    @staticmethod
+    def _issue_token(storage, client_id: str, token_type=None, ttl_seconds: int = 3600):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import Token, TokenType
+
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client_id,
+            scope="memories:read",
+            token_type=token_type or TokenType.access,
+            issued_at=now,
+            expires_at=now + timedelta(seconds=ttl_seconds),
+        )
+        storage.put_token(token)
+        return token
+
+    def test_deleted_clients_tokens_are_gone_other_clients_survive(self, storage):
+        from hive.api.main import app
+        from hive.auth.tokens import issue_mgmt_jwt
+        from hive.models import OAuthClient, TokenType, User
+
+        user = User(
+            user_id="itest-711-owner",
+            email="itest-711-owner@example.com",
+            display_name="Owner 711",
+        )
+        storage.put_user(user)
+
+        doomed = OAuthClient(client_name="itest-711-doomed", owner_user_id=user.user_id)
+        bystander = OAuthClient(client_name="itest-711-bystander", owner_user_id=user.user_id)
+        storage.put_client(doomed)
+        storage.put_client(bystander)
+
+        doomed_access = self._issue_token(storage, doomed.client_id)
+        doomed_refresh = self._issue_token(
+            storage, doomed.client_id, token_type=TokenType.refresh, ttl_seconds=86400 * 30
+        )
+        bystander_access = self._issue_token(storage, bystander.client_id)
+
+        mgmt_tc = TestClient(app)
+        mgmt_tc.headers.update({"Authorization": f"Bearer {issue_mgmt_jwt(user)}"})
+
+        resp = mgmt_tc.delete(f"/api/clients/{doomed.client_id}")
+
+        assert resp.status_code == 204
+        # The deleted client's access and refresh tokens are gone
+        assert storage.get_client(doomed.client_id) is None
+        assert storage.get_token(doomed_access.jti) is None
+        assert storage.get_token(doomed_refresh.jti) is None
+        # The other client's registration and token survive
+        assert storage.get_client(bystander.client_id) is not None
+        assert storage.get_token(bystander_access.jti) is not None

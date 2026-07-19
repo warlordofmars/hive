@@ -20,6 +20,6 @@ You can see all your memories across all clients in the [Memory Browser](/ui-gui
 
 ## Revoking access
 
-To revoke a client's access, click **Delete** on its card. The client's token is immediately invalidated and any future requests using that token will be rejected. The memories created by that client are not deleted — they remain accessible via the management UI and other clients.
+To revoke a client's access, click **Delete** on its card. The client's access and refresh tokens are immediately invalidated and any future requests using those tokens will be rejected. The memories created by that client are not deleted — they remain accessible via the management UI and other clients.
 
 To reconnect after deletion, simply use a Hive tool from that client again — it will re-register and prompt for re-authorisation.

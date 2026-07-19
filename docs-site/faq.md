@@ -46,7 +46,7 @@ Access tokens are valid for **1 hour** and refresh automatically in supported cl
 
 ### How do I revoke access from a specific client?
 
-Go to the **Clients** tab in the management UI and click **Delete** on the client you want to revoke. The token is immediately invalidated. See [OAuth clients](/ui-guide/oauth-clients) for details.
+Go to the **Clients** tab in the management UI and click **Delete** on the client you want to revoke. The client's access and refresh tokens are immediately invalidated. See [OAuth clients](/ui-guide/oauth-clients) for details.
 
 ### How do I delete my account?
 
