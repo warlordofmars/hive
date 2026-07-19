@@ -1193,9 +1193,13 @@ class HiveStorage:
         ClientIndex, so this walks the same ``TOKEN#`` scan as
         ``revoke_all_tokens`` and deletes matches outright: validation
         fails immediately on the missing item, and DynamoDB TTL has
-        nothing left to clean up. The batch writer transparently chunks
-        deletes to BatchWriteItem's 25-item limit and retries unprocessed
-        items. Returns the number of tokens deleted.
+        nothing left to clean up. The scan is strongly consistent so
+        tokens minted just before the call cannot be missed, and matches
+        are deleted by their scanned ``PK`` so a malformed row without a
+        ``jti`` attribute cannot abort the sweep. The batch writer
+        transparently chunks deletes to BatchWriteItem's 25-item limit
+        and retries unprocessed items. Returns the number of tokens
+        deleted.
         """
         if not client_ids:
             return 0
@@ -1205,15 +1209,17 @@ class HiveStorage:
             while True:
                 kwargs: dict[str, Any] = {
                     "FilterExpression": _SK_PK_PREFIX_EXPR,
+                    "ExpressionAttributeNames": {"#pk": "PK"},
                     "ExpressionAttributeValues": {":sk": "META", _PK_PREFIX_KEY: "TOKEN#"},
-                    "ProjectionExpression": "jti, client_id",
+                    "ProjectionExpression": "#pk, client_id",
+                    "ConsistentRead": True,
                 }
                 if start_key:
                     kwargs["ExclusiveStartKey"] = start_key
                 resp = self.table.scan(**kwargs)
                 for item in resp.get("Items", []):
                     if item.get("client_id") in client_ids:
-                        batch.delete_item(Key={"PK": f"TOKEN#{item['jti']}", "SK": "META"})
+                        batch.delete_item(Key={"PK": item["PK"], "SK": "META"})
                         deleted += 1
                 start_key = resp.get("LastEvaluatedKey")
                 if start_key is None:
@@ -2100,9 +2106,6 @@ class HiveStorage:
             if cursor is None:
                 break
 
-        # Collect the user's clients before deleting them: tokens are
-        # found by client_id, and revoking first means a partial failure
-        # leaves the clients discoverable so a retry can finish the job.
         client_ids: list[str] = []
         cursor = None
         while True:
@@ -2111,12 +2114,17 @@ class HiveStorage:
             if cursor is None:
                 break
 
-        deleted_tokens = self.delete_tokens_for_clients(set(client_ids))
-
+        # Delete the client records BEFORE sweeping tokens: /oauth/token
+        # authenticates the client via get_client, so removing the client
+        # first closes the mint path — a concurrent refresh grant can no
+        # longer issue a fresh access token after the token sweep has
+        # passed it.
         deleted_clients = 0
         for client_id in client_ids:
             self.delete_client(client_id)
             deleted_clients += 1
+
+        deleted_tokens = self.delete_tokens_for_clients(set(client_ids))
 
         self.delete_user(user_id)
 

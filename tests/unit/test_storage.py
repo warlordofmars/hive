@@ -3262,18 +3262,28 @@ class TestDeleteTokensForClients:
         from unittest.mock import patch
 
         page1 = {
-            "Items": [{"jti": "t1", "client_id": "c1"}],
+            "Items": [{"PK": "TOKEN#t1", "client_id": "c1"}],
             "LastEvaluatedKey": {"PK": "TOKEN#t1", "SK": "META"},
         }
         page2 = {
             "Items": [
-                {"jti": "t2", "client_id": "c1"},
-                {"jti": "t3", "client_id": "someone-else"},
+                {"PK": "TOKEN#t2", "client_id": "c1"},
+                {"PK": "TOKEN#t3", "client_id": "someone-else"},
             ]
         }
         with patch.object(storage.table, "scan", side_effect=[page1, page2]) as scan:
             assert storage.delete_tokens_for_clients({"c1"}) == 2
         assert "ExclusiveStartKey" in scan.call_args_list[1].kwargs
+        # Security-critical sweep must be strongly consistent — an
+        # eventually-consistent scan could miss just-minted tokens
+        assert scan.call_args_list[0].kwargs["ConsistentRead"] is True
+
+    def test_row_without_client_id_is_skipped(self, storage):
+        from unittest.mock import patch
+
+        page = {"Items": [{"PK": "TOKEN#orphan"}, {"PK": "TOKEN#t1", "client_id": "c1"}]}
+        with patch.object(storage.table, "scan", side_effect=[page]):
+            assert storage.delete_tokens_for_clients({"c1"}) == 1
 
 
 class TestDeleteUserDataRevokesTokens:
