@@ -531,6 +531,34 @@ class TestRememberIfAbsent:
         with pytest.raises(ToolError, match="Insufficient scope"):
             await remember_if_absent("ifa-scope", "v", ctx=_make_ctx(read_only_jwt))
 
+    async def test_lost_conditional_write_returns_already_exists(self, server_env):
+        """A concurrent caller winning the conditional claim between the
+        read-check and the write yields the already-exists response (#592)."""
+        from unittest.mock import patch
+
+        from hive.server import remember_if_absent
+
+        storage, _, jwt = server_env
+        with (
+            patch.object(storage.__class__, "get_memory_by_key", return_value=None),
+            patch.object(storage.__class__, "put_memory_if_absent", return_value=False) as mock_put,
+        ):
+            result = await remember_if_absent("ifa-race", "v", ctx=_make_ctx(jwt))
+        assert _text(result) == "Memory 'ifa-race' already exists — not overwritten."
+        mock_put.assert_called_once()
+
+    async def test_forgotten_key_can_be_recreated(self, server_env):
+        """forget releases the key claim, so a later if-absent create works."""
+        storage, _, jwt = server_env
+        from hive.server import forget, remember_if_absent
+
+        await remember_if_absent("ifa-cycle", "v1", ctx=_make_ctx(jwt))
+        await forget("ifa-cycle", ctx=_make_ctx(jwt))
+        result = await remember_if_absent("ifa-cycle", "v2", ctx=_make_ctx(jwt))
+        assert _text(result) == "Stored memory 'ifa-cycle'."
+        m = storage.get_memory_by_key("ifa-cycle")
+        assert m.value == "v2"
+
 
 # ---------------------------------------------------------------------------
 # recall

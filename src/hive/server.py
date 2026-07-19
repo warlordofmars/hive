@@ -609,9 +609,11 @@ async def remember_if_absent(
     Returns "Stored memory '{key}'." on write, or
     "Memory '{key}' already exists — not overwritten." on skip.
 
-    Uses a read-then-write check. Two concurrent callers with the same key
-    can still race in the narrow window between the read and the write;
-    strict DynamoDB-level atomicity is tracked in #391.
+    Existence is enforced in two layers: a fast read via the key index,
+    then a DynamoDB conditional write (``attribute_not_exists``) on a
+    per-key claim item. The conditional write is atomic server-side, so
+    two concurrent callers with the same key can never both create the
+    memory — the loser gets the "already exists" response (#592).
     """
     t0 = time.monotonic()
     storage, client_id = await _auth(ctx, required_scope="memories:write")
@@ -629,8 +631,36 @@ async def remember_if_absent(
         else None
     )
 
-    existing = storage.get_memory_by_key(key)
-    if existing:
+    memory: Memory | None = None
+    if storage.get_memory_by_key(key) is None:
+        client = storage.get_client(client_id)
+        if client is None:
+            raise ToolError("Unable to load client record for authenticated caller.")
+        owner_user_id = client.owner_user_id
+        try:
+            check_memory_quota(owner_user_id, storage)
+            check_storage_quota(owner_user_id, actual, storage)
+        except QuotaExceeded as exc:
+            raise ToolError(exc.detail) from exc
+
+        candidate = Memory(
+            key=key,
+            value=value,
+            tags=tags,
+            owner_client_id=client_id,
+            owner_user_id=owner_user_id,
+            expires_at=expires_at,
+        )
+        try:
+            if storage.put_memory_if_absent(candidate):
+                memory = candidate
+        except ValueError as exc:
+            await emit_metric("ToolErrors", operation="remember_if_absent")
+            raise ToolError(str(exc)) from exc
+
+    if memory is None:
+        # Either the read-check found the key, or a concurrent caller won
+        # the conditional write in the window after it — same outcome.
         duration_ms = int((time.monotonic() - t0) * 1000)
         logger.info(
             "Memory '%s' already exists — not overwritten",
@@ -644,29 +674,6 @@ async def remember_if_absent(
         await emit_metric("ToolInvocations", operation="remember_if_absent")
         return _tool_result(f"Memory '{key}' already exists — not overwritten.", storage, client_id)
 
-    client = storage.get_client(client_id)
-    if client is None:
-        raise ToolError("Unable to load client record for authenticated caller.")
-    owner_user_id = client.owner_user_id
-    try:
-        check_memory_quota(owner_user_id, storage)
-        check_storage_quota(owner_user_id, actual, storage)
-    except QuotaExceeded as exc:
-        raise ToolError(exc.detail) from exc
-
-    memory = Memory(
-        key=key,
-        value=value,
-        tags=tags,
-        owner_client_id=client_id,
-        owner_user_id=owner_user_id,
-        expires_at=expires_at,
-    )
-    try:
-        storage.put_memory(memory)
-    except ValueError as exc:
-        await emit_metric("ToolErrors", operation="remember_if_absent")
-        raise ToolError(str(exc)) from exc
     try:
         _vector_store().upsert_memory(
             memory.model_copy(update={"value": value})

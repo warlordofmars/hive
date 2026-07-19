@@ -173,6 +173,49 @@ class TestMCPTools:
         assert "summary" in text.lower()
         assert "s1" in text or "s2" in text
 
+    async def test_remember_if_absent_second_call_does_not_overwrite(self, setup):
+        from hive.server import recall, remember_if_absent
+
+        jwt = setup
+        ctx = _make_context(jwt)
+        first = await remember_if_absent(key="ifa-int", value="original", ctx=ctx)
+        assert _text(first) == "Stored memory 'ifa-int'."
+
+        second = await remember_if_absent(key="ifa-int", value="usurper", ctx=ctx)
+        assert _text(second) == "Memory 'ifa-int' already exists — not overwritten."
+        assert _text(await recall(key="ifa-int", ctx=ctx)) == "original"
+
+    async def test_remember_if_absent_conditional_write_blocks_race(self, setup):
+        """Deterministically exercise the #592 race window against real
+        DynamoDB conditional-write semantics: bypass the read-check (as if
+        both callers read 'absent' simultaneously) and prove the second
+        writer loses the conditional claim instead of double-creating."""
+        from unittest.mock import patch
+
+        from hive.server import recall, remember_if_absent
+        from hive.storage import HiveStorage
+
+        jwt = setup
+        ctx = _make_context(jwt)
+        with patch.object(HiveStorage, "get_memory_by_key", return_value=None):
+            first = await remember_if_absent(key="ifa-race-int", value="winner", ctx=ctx)
+            second = await remember_if_absent(key="ifa-race-int", value="loser", ctx=ctx)
+
+        assert _text(first) == "Stored memory 'ifa-race-int'."
+        assert _text(second) == "Memory 'ifa-race-int' already exists — not overwritten."
+        assert _text(await recall(key="ifa-race-int", ctx=ctx)) == "winner"
+
+    async def test_remember_if_absent_key_reusable_after_forget(self, setup):
+        from hive.server import forget, recall, remember_if_absent
+
+        jwt = setup
+        ctx = _make_context(jwt)
+        await remember_if_absent(key="ifa-reuse", value="v1", ctx=ctx)
+        await forget(key="ifa-reuse", ctx=ctx)
+        result = await remember_if_absent(key="ifa-reuse", value="v2", ctx=ctx)
+        assert _text(result) == "Stored memory 'ifa-reuse'."
+        assert _text(await recall(key="ifa-reuse", ctx=ctx)) == "v2"
+
 
 def _make_user_token(storage, owner_user_id: str) -> str:
     """Create an OAuth client + token for ``owner_user_id`` and return a JWT."""
