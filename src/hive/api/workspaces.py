@@ -130,10 +130,14 @@ class InviteCreateRequest(BaseModel):
     # an existing owner via the role endpoint after the invitee has joined.
     role: Literal["admin", "member"] = "member"
 
-    @field_validator("email")
+    @field_validator("email", mode="before")
     @classmethod
-    def _normalize_email(cls, value: str) -> str:
-        return value.strip().lower()
+    def _normalize_email(cls, value: Any) -> Any:
+        # mode="before" so trimming/lowercasing happens ahead of the Field
+        # pattern check — a pasted " User@Example.com " normalizes instead
+        # of tripping the whitespace-rejecting regex. Non-strings pass
+        # through for pydantic's own type validation to reject.
+        return value.strip().lower() if isinstance(value, str) else value
 
 
 class InviteResponse(BaseModel):

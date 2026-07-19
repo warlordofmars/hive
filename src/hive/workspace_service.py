@@ -206,6 +206,10 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
         # Lost the race with a concurrent acceptor — the invite was
         # consumed between the read and the claim.
         raise InviteError(f"Invite '{invite_id}' not found or expired.")
+    if invite.is_expired:
+        # Crossed expires_at between the read and the claim — enforce
+        # expiry strictly. The consumed invite is moot: it is expired.
+        raise InviteError(f"Invite '{invite_id}' not found or expired.")
     if storage.get_workspace(invite.workspace_id) is None:
         # Workspace deleted between the claim and the membership write —
         # re-check so no MEMBER row is created for a dead workspace (it

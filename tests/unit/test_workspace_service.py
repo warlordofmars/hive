@@ -272,6 +272,35 @@ class TestAcceptInvite:
         assert storage.get_workspace_member(ws.workspace_id, "u2") is None
         assert _audit_events(storage, EventType.workspace_invite_accepted) == []
 
+    def test_invite_expiring_between_read_and_claim_raises(self, storage, monkeypatch):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="edge@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        # ``is_expired`` is evaluated twice in accept_invite: before the
+        # claim (not yet expired) and after (expired) — simulating the
+        # invite crossing expires_at mid-redemption.
+        calls = {"n": 0}
+
+        def _fake_now():
+            calls["n"] += 1
+            offset = timedelta(seconds=-1) if calls["n"] == 1 else timedelta(seconds=1)
+            return invite.expires_at + offset
+
+        monkeypatch.setattr("hive.models._now_utc", _fake_now)
+        with pytest.raises(workspace_service.InviteError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        # Expiry is enforced: no membership, no audit event; the invite was
+        # consumed by the claim, which is moot for an expired invite.
+        assert storage.get_workspace_member(ws.workspace_id, "u2") is None
+        assert storage.get_invite(invite.invite_id) is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
     def test_existing_membership_raises_already_member_without_role_change(self, storage):
         ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
         invite = workspace_service.send_invite(

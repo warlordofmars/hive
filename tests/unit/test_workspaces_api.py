@@ -613,10 +613,19 @@ class TestCreateInvite:
         assert resp.status_code == 201
         assert resp.json()["role"] == "admin"
 
-    def test_email_is_normalized_to_lowercase(self, ctx):
-        resp = self._post(ctx, email="NewComer@Example.COM")
+    def test_email_is_normalized_before_pattern_check(self, ctx):
+        # Trimming/lowercasing runs before the pattern constraint, so a
+        # pasted address with surrounding whitespace is accepted.
+        resp = self._post(ctx, email="  NewComer@Example.COM  ")
         assert resp.status_code == 201
         assert resp.json()["email"] == "newcomer@example.com"
+
+    def test_non_string_email_rejected(self, ctx):
+        resp = ctx.client.post(
+            f"/api/workspaces/{ctx.workspace_id}/invites",
+            json={"email": 123, "role": "member"},
+        )
+        assert resp.status_code == 422
 
     def test_invite_ttl_env_override(self, ctx, monkeypatch):
         monkeypatch.setenv("HIVE_INVITE_TTL_DAYS", "1")
