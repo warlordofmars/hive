@@ -374,7 +374,7 @@ class HiveStorage:
             self.put_memory(memory)
         except Exception:
             # Roll back the claim so a failed create doesn't poison the key.
-            self._release_key_claim(memory.key)
+            self._release_key_claim(memory.key, memory.memory_id)
             raise
         return True
 
@@ -466,26 +466,33 @@ class HiveStorage:
         # retry the conditional write exactly once.
         return self._try_claim_key(memory)
 
-    def _release_key_claim(self, key: str) -> None:
-        """Best-effort delete of the key-claim item for ``key``.
+    def _release_key_claim(self, key: str, memory_id: str) -> None:
+        """Best-effort delete of ``key``'s claim, only if ``memory_id`` owns it.
 
-        Deliberately unconditional: deleting a claim for a key whose memory
-        still exists merely degrades remember_if_absent back to its
-        read-check for that key, whereas a conditional delete could leave an
-        orphaned claim permanently blocking if-absent creates after a
-        mid-write crash.
+        The delete is conditional on the claim's ``memory_id`` matching the
+        memory being deleted: if duplicate same-key memories exist (possible
+        via the non-if-absent create paths, or historically from the
+        pre-#592 race), deleting one of them must not clear the claim that
+        belongs to the other, still-live memory. A failed condition is the
+        expected no-op for memories that never held a claim.
 
-        Failures are logged and swallowed (mirroring
+        This conditionality cannot strand an orphaned claim: a claim whose
+        memory is gone is reclaimed by ``_reclaim_stale_key`` on the next
+        if-absent create once the grace period passes.
+
+        Other failures are logged and swallowed (mirroring
         ``_delete_blob_if_needed``): by the time this runs the memory
         delete has already happened, so a throttled claim cleanup must not
-        turn an otherwise-successful delete into an API/tool error. A
-        claim that survives is self-healing — the next same-key delete
-        clears it, and the grace-based reclaim in ``_reclaim_stale_key``
-        takes it over on the next if-absent create.
+        turn an otherwise-successful delete into an API/tool error.
         """
         try:
-            self.table.delete_item(Key={"PK": f"KEYCLAIM#{key}", "SK": "META"})
-        except ClientError:
+            self.table.delete_item(
+                Key={"PK": f"KEYCLAIM#{key}", "SK": "META"},
+                ConditionExpression=Attr("memory_id").eq(memory_id),
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return  # no claim, or the claim belongs to another memory
             logger.warning("Failed to release key claim for %r (non-fatal)", key, exc_info=True)
 
     def get_memory_by_id(self, memory_id: str) -> Memory | None:
@@ -551,7 +558,7 @@ class HiveStorage:
         self._delete_tag_items(memory)
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         self._delete_blob_if_needed(memory)
-        self._release_key_claim(memory.key)
+        self._release_key_claim(memory.key, memory.memory_id)
         return True
 
     # ------------------------------------------------------------------
@@ -846,7 +853,7 @@ class HiveStorage:
                 self._delete_tag_items(memory)
                 self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
                 self._delete_blob_if_needed(memory)
-                self._release_key_claim(memory.key)
+                self._release_key_claim(memory.key, memory.memory_id)
                 deleted += 1
             if cursor is None:
                 break

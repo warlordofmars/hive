@@ -815,6 +815,24 @@ class TestPutMemoryIfAbsent:
         assert self._claim_item(storage, "ifa-noclaim") is None
         assert storage.delete_memory(m.memory_id) is True
 
+    def test_delete_of_duplicate_key_memory_preserves_other_claim(self, storage):
+        """Claim release is conditional on the owning memory_id: with
+        duplicate same-key memories (possible via non-if-absent paths or the
+        pre-#592 race), deleting one must not clear the claim that protects
+        the other, still-live memory."""
+        claimed = Memory(key="ifa-dupe-del", value="claimed", owner_client_id="c1")
+        assert storage.put_memory_if_absent(claimed) is True
+        # Simulate a duplicate created through a claim-less path
+        rogue = Memory(key="ifa-dupe-del", value="rogue", owner_client_id="c1")
+        storage.put_memory(rogue)
+
+        assert storage.delete_memory(rogue.memory_id) is True
+        # The claim still belongs to the if-absent memory
+        assert self._claim_item(storage, "ifa-dupe-del")["memory_id"] == claimed.memory_id
+
+        assert storage.delete_memory(claimed.memory_id) is True
+        assert self._claim_item(storage, "ifa-dupe-del") is None
+
     def test_release_key_claim_failure_does_not_fail_delete(self, storage):
         """Claim cleanup is best-effort: a throttled release must not turn a
         successful memory delete into an error — the surviving claim
