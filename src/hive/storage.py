@@ -2114,17 +2114,23 @@ class HiveStorage:
             if cursor is None:
                 break
 
-        # Delete the client records BEFORE sweeping tokens: /oauth/token
-        # authenticates the client via get_client, so removing the client
-        # first closes the mint path — a concurrent refresh grant can no
-        # longer issue a fresh access token after the token sweep has
-        # passed it.
+        # First sweep: revoke everything outstanding while the client
+        # records still exist — if anything below fails, a retry can
+        # rediscover the clients via list_clients and finish the job.
+        deleted_tokens = self.delete_tokens_for_clients(set(client_ids))
+
+        # Close the mint path: /oauth/token authenticates the client via
+        # get_client, so removing the client records stops a concurrent
+        # refresh grant from issuing new tokens.
         deleted_clients = 0
         for client_id in client_ids:
             self.delete_client(client_id)
             deleted_clients += 1
 
-        deleted_tokens = self.delete_tokens_for_clients(set(client_ids))
+        # Second sweep: catch tokens minted by grants in flight during
+        # the first scan. With the clients gone nothing new can be
+        # minted, so this sweep is final.
+        deleted_tokens += self.delete_tokens_for_clients(set(client_ids))
 
         self.delete_user(user_id)
 

@@ -3325,6 +3325,27 @@ class TestDeleteUserDataRevokesTokens:
         assert counts == {"deleted_memories": 0, "deleted_clients": 0, "deleted_tokens": 0}
         assert storage.get_token(stray.jti) is not None
 
+    def test_token_minted_during_deletion_is_caught_by_second_sweep(self, storage):
+        from unittest.mock import patch
+
+        client = self._make_user_with_client(storage, "user-r")
+        _issue_token(storage, client.client_id)
+
+        real_delete_client = storage.delete_client
+        late_tokens = []
+
+        def _delete_client_with_race(client_id):
+            # Simulate a concurrent refresh grant minting a token after the
+            # first sweep has already run but before the client is deleted.
+            late_tokens.append(_issue_token(storage, client_id))
+            return real_delete_client(client_id)
+
+        with patch.object(storage, "delete_client", side_effect=_delete_client_with_race):
+            counts = storage.delete_user_data("user-r")
+
+        assert counts["deleted_tokens"] == 2
+        assert storage.get_token(late_tokens[0].jti) is None
+
 
 class TestCostCacheStorage:
     """COST_CACHE# read/write for the Cost Explorer cache (#578)."""
