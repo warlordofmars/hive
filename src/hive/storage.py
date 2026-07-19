@@ -467,16 +467,26 @@ class HiveStorage:
         return self._try_claim_key(memory)
 
     def _release_key_claim(self, key: str) -> None:
-        """Delete the key-claim item for ``key`` (no-op if none exists).
+        """Best-effort delete of the key-claim item for ``key``.
 
         Deliberately unconditional: deleting a claim for a key whose memory
         still exists merely degrades remember_if_absent back to its
         read-check for that key, whereas a conditional delete could leave an
         orphaned claim permanently blocking if-absent creates after a
-        mid-write crash. An orphaned claim is self-healing — any delete of a
-        same-key memory (e.g. remember then forget) clears it.
+        mid-write crash.
+
+        Failures are logged and swallowed (mirroring
+        ``_delete_blob_if_needed``): by the time this runs the memory
+        delete has already happened, so a throttled claim cleanup must not
+        turn an otherwise-successful delete into an API/tool error. A
+        claim that survives is self-healing — the next same-key delete
+        clears it, and the grace-based reclaim in ``_reclaim_stale_key``
+        takes it over on the next if-absent create.
         """
-        self.table.delete_item(Key={"PK": f"KEYCLAIM#{key}", "SK": "META"})
+        try:
+            self.table.delete_item(Key={"PK": f"KEYCLAIM#{key}", "SK": "META"})
+        except ClientError:
+            logger.warning("Failed to release key claim for %r (non-fatal)", key, exc_info=True)
 
     def get_memory_by_id(self, memory_id: str) -> Memory | None:
         item = self._get_memory_meta(memory_id)

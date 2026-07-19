@@ -815,6 +815,34 @@ class TestPutMemoryIfAbsent:
         assert self._claim_item(storage, "ifa-noclaim") is None
         assert storage.delete_memory(m.memory_id) is True
 
+    def test_release_key_claim_failure_does_not_fail_delete(self, storage):
+        """Claim cleanup is best-effort: a throttled release must not turn a
+        successful memory delete into an error — the surviving claim
+        self-heals via the next delete or the grace-based reclaim."""
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        m = Memory(key="ifa-relerr", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="DeleteItem",
+        )
+        original = storage.table.delete_item
+
+        def _fail_claim_delete(**kwargs: object) -> object:
+            if str(kwargs["Key"]["PK"]).startswith("KEYCLAIM#"):
+                raise throttled
+            return original(**kwargs)
+
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.delete_item.side_effect = _fail_claim_delete
+
+        assert storage.delete_memory(m.memory_id) is True
+        assert storage.get_memory_by_key("ifa-relerr") is None
+
     def test_delete_memories_by_tag_releases_claims(self, storage):
         m = Memory(key="ifa-tagged", value="v", tags=["t592"], owner_client_id="c1")
         assert storage.put_memory_if_absent(m) is True
