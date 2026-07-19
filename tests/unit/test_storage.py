@@ -2520,6 +2520,33 @@ class TestInviteStorage:
     def test_delete_nonexistent_returns_false(self, storage):
         assert storage.delete_invite("no-such-invite") is False
 
+    def test_claim_invite_consumes_once(self, storage):
+        inv = self._invite()
+        storage.put_invite(inv)
+        assert storage.claim_invite(inv.invite_id) is True
+        assert storage.get_invite(inv.invite_id) is None
+        # A second claim loses — the conditional delete fails.
+        assert storage.claim_invite(inv.invite_id) is False
+
+    def test_claim_invite_missing_returns_false(self, storage):
+        assert storage.claim_invite("no-such-invite") is False
+
+    def test_claim_invite_reraises_unexpected_client_error(self, storage):
+        """Non-ConditionalCheck ClientErrors must propagate."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "DeleteItem",
+        )
+        with (
+            patch.object(storage.table, "delete_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.claim_invite("any-invite")
+
     def test_list_pending_invites_for_email_filters_by_email(self, storage):
         a = self._invite(email="a@example.com")
         b = self._invite(email="b@example.com")
@@ -2598,6 +2625,72 @@ class TestInviteStorage:
         with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
             invites = storage.list_pending_invites_for_workspace("ws-1")
         assert {i.invite_id for i in invites} == {inv1.invite_id, inv2.invite_id}
+        assert mock_scan.call_count == 2
+
+
+class TestIterMemoriesForExport:
+    """Single-scan union backing the GDPR export (#495)."""
+
+    def test_unions_authored_and_workspace_memories(self, storage):
+        mine_shared = Memory(
+            key="mine-shared",
+            value="v",
+            owner_client_id="c1",
+            owner_user_id="u1",
+            workspace_id="ws-shared",
+        )
+        theirs_personal = Memory(
+            key="theirs-personal",
+            value="v",
+            owner_client_id="c2",
+            owner_user_id="u2",
+            workspace_id="ws-personal",
+        )
+        theirs_shared = Memory(
+            key="theirs-shared",
+            value="v",
+            owner_client_id="c2",
+            owner_user_id="u2",
+            workspace_id="ws-shared",
+        )
+        legacy_mine = Memory(key="legacy", value="v", owner_client_id="c1", owner_user_id="u1")
+        for m in (mine_shared, theirs_personal, theirs_shared, legacy_mine):
+            storage.put_memory(m)
+        keys = {m.key for m in storage.iter_memories_for_export("u1", ["ws-personal"])}
+        assert keys == {"mine-shared", "theirs-personal", "legacy"}
+
+    def test_authored_in_personal_workspace_yields_once(self, storage):
+        both = Memory(
+            key="both", value="v", owner_client_id="c1", owner_user_id="u1", workspace_id="ws-p"
+        )
+        storage.put_memory(both)
+        results = list(storage.iter_memories_for_export("u1", ["ws-p"]))
+        assert [m.key for m in results] == ["both"]
+
+    def test_empty_workspace_list_returns_only_authored(self, storage):
+        mine = Memory(key="mine", value="v", owner_client_id="c1", owner_user_id="u1")
+        theirs = Memory(
+            key="theirs", value="v", owner_client_id="c2", owner_user_id="u2", workspace_id="ws-x"
+        )
+        storage.put_memory(mine)
+        storage.put_memory(theirs)
+        keys = [m.key for m in storage.iter_memories_for_export("u1", [])]
+        assert keys == ["mine"]
+
+    def test_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path."""
+        from unittest.mock import patch
+
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", owner_user_id="u1")
+        page1 = {
+            "Items": [m1.to_dynamo_meta()],
+            "LastEvaluatedKey": {"PK": f"MEMORY#{m1.memory_id}", "SK": "META"},
+        }
+        page2 = {"Items": [m2.to_dynamo_meta()]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            memories = list(storage.iter_memories_for_export("u1", []))
+        assert {m.key for m in memories} == {"m1", "m2"}
         assert mock_scan.call_count == 2
 
 

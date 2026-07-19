@@ -52,11 +52,13 @@ Go to the **Clients** tab in the management UI and click **Delete** on the clien
 
 Sign into the management UI and go to **Settings → Delete account**. This permanently deletes all your data.
 
+If you are the sole owner of a shared workspace, deletion is blocked until you transfer ownership to another member or delete that workspace — otherwise its remaining members would be left with an ownerless workspace.
+
 If you can't access your account, contact support.
 
 ### How do I export my data?
 
-Sign into the management UI and click **Settings → Export my data**. You'll download a JSON file with your profile, all memories, OAuth clients, and the last 90 days of activity. The same data is available programmatically via `GET /api/account/export` (Bearer auth required). Rate-limited to one export per 5 minutes.
+Sign into the management UI and click **Settings → Export my data**. You'll download a JSON file with your profile, workspace memberships, your memories, OAuth clients, and the last 90 days of activity. The export covers your personal workspace in full plus memories you personally authored in shared workspaces — other members' writes belong to them and are excluded. The same data is available programmatically via `GET /api/account/export` (Bearer auth required). Rate-limited to one export per 5 minutes.
 
 ### Can I use Hive with multiple devices?
 

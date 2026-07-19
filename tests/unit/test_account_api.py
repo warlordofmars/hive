@@ -39,6 +39,8 @@ def _create_table() -> None:
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
             {"AttributeName": "GSI4PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5SK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -61,6 +63,14 @@ def _create_table() -> None:
                 "IndexName": "UserEmailIndex",
                 "KeySchema": [
                     {"AttributeName": "GSI4PK", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "WorkspaceMemberIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -182,6 +192,69 @@ class TestDeleteAccount:
         assert resp.status_code in (401, 403)
 
 
+class TestDeleteAccountSoleOwnerGuard:
+    """#495 — deletion blocks while the user is sole owner of a shared workspace."""
+
+    @staticmethod
+    def _make_workspace(storage, *, name, owner_user_id, is_personal=False):
+        from hive.models import Workspace, WorkspaceRole
+
+        ws = Workspace(name=name, owner_user_id=owner_user_id, is_personal=is_personal)
+        storage.put_workspace(ws)
+        storage.add_workspace_member(
+            workspace_id=ws.workspace_id, user_id=owner_user_id, role=WorkspaceRole.owner
+        )
+        return ws
+
+    def test_blocks_when_sole_owner_of_shared_workspace(self, client):
+        tc, storage = client
+        ws = self._make_workspace(storage, name="Team Alpha", owner_user_id=_USER_ID)
+
+        resp = tc.request("DELETE", "/api/account", json={"confirm": True})
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert "sole owner" in detail["message"]
+        assert detail["workspaces"] == [{"workspace_id": ws.workspace_id, "name": "Team Alpha"}]
+        # Nothing was deleted
+        assert storage.get_user_by_id(_USER_ID) is not None
+        memories, _ = storage.list_all_memories(owner_user_id=_USER_ID, limit=10)
+        assert len(memories) == 1
+
+    def test_allows_when_shared_workspace_has_another_owner(self, client):
+        from hive.models import WorkspaceRole
+
+        tc, storage = client
+        ws = self._make_workspace(storage, name="Team Beta", owner_user_id=_USER_ID)
+        storage.add_workspace_member(
+            workspace_id=ws.workspace_id, user_id="co-owner-user", role=WorkspaceRole.owner
+        )
+
+        resp = tc.request("DELETE", "/api/account", json={"confirm": True})
+        assert resp.status_code == 204
+        assert storage.get_user_by_id(_USER_ID) is None
+
+    def test_allows_when_only_personal_workspace_owned(self, client):
+        tc, storage = client
+        self._make_workspace(storage, name="Personal", owner_user_id=_USER_ID, is_personal=True)
+
+        resp = tc.request("DELETE", "/api/account", json={"confirm": True})
+        assert resp.status_code == 204
+        assert storage.get_user_by_id(_USER_ID) is None
+
+    def test_allows_when_member_but_not_owner_of_shared_workspace(self, client):
+        from hive.models import WorkspaceRole
+
+        tc, storage = client
+        ws = self._make_workspace(storage, name="Team Gamma", owner_user_id="another-user")
+        storage.add_workspace_member(
+            workspace_id=ws.workspace_id, user_id=_USER_ID, role=WorkspaceRole.member
+        )
+
+        resp = tc.request("DELETE", "/api/account", json={"confirm": True})
+        assert resp.status_code == 204
+        assert storage.get_user_by_id(_USER_ID) is None
+
+
 class TestExportAccount:
     def test_returns_json_bundle_with_all_sections(self, client):
         import json
@@ -211,6 +284,7 @@ class TestExportAccount:
         assert set(body.keys()) == {
             "exported_at",
             "user",
+            "workspaces",
             "memories",
             "clients",
             "activity_log",
@@ -313,6 +387,7 @@ class TestExportAccount:
 
         resp = tc.get("/api/account/export")
         body = json.loads(resp.content)
+        assert body["workspaces"] == []
         assert body["memories"] == []
         assert body["clients"] == []
         assert body["activity_log"] == []
@@ -344,6 +419,193 @@ class TestExportAccount:
         assert {c1.client_id, c2.client_id}.issubset(ids)
         event_client_ids = [e["client_id"] for e in body["activity_log"]]
         assert len(event_client_ids) >= 2
+
+
+class TestExportWorkspaces:
+    """#495 — workspace-aware export shape.
+
+    Personal workspace in full + personally-authored memories in shared
+    workspaces; other members' writes excluded.
+    """
+
+    @staticmethod
+    def _make_workspace(storage, *, name, owner_user_id, is_personal=False, members=()):
+        from hive.models import Workspace, WorkspaceRole
+
+        ws = Workspace(name=name, owner_user_id=owner_user_id, is_personal=is_personal)
+        storage.put_workspace(ws)
+        storage.add_workspace_member(
+            workspace_id=ws.workspace_id, user_id=owner_user_id, role=WorkspaceRole.owner
+        )
+        for user_id, role in members:
+            storage.add_workspace_member(workspace_id=ws.workspace_id, user_id=user_id, role=role)
+        return ws
+
+    @staticmethod
+    def _put_memory(storage, *, key, owner_user_id, workspace_id=None):
+        from hive.models import Memory
+
+        storage.put_memory(
+            Memory(
+                key=key,
+                value=f"value-{key}",
+                owner_client_id=owner_user_id,
+                owner_user_id=owner_user_id,
+                workspace_id=workspace_id,
+            )
+        )
+
+    def test_workspaces_section_lists_memberships_with_role(self, client):
+        import json
+
+        from hive.models import WorkspaceRole
+
+        tc, storage = client
+        personal = self._make_workspace(
+            storage, name="Personal", owner_user_id=_USER_ID, is_personal=True
+        )
+        shared = self._make_workspace(
+            storage,
+            name="Team",
+            owner_user_id="other-user",
+            members=[(_USER_ID, WorkspaceRole.member)],
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        by_id = {w["workspace_id"]: w for w in body["workspaces"]}
+        assert set(by_id) == {personal.workspace_id, shared.workspace_id}
+        assert by_id[personal.workspace_id]["is_personal"] is True
+        assert by_id[personal.workspace_id]["role"] == "owner"
+        assert by_id[personal.workspace_id]["name"] == "Personal"
+        assert by_id[shared.workspace_id]["is_personal"] is False
+        assert by_id[shared.workspace_id]["role"] == "member"
+        assert by_id[shared.workspace_id]["joined_at"] is not None
+        assert by_id[shared.workspace_id]["created_at"] is not None
+
+    def test_personal_workspace_exported_in_full(self, client):
+        import json
+
+        tc, storage = client
+        personal = self._make_workspace(
+            storage, name="Personal", owner_user_id=_USER_ID, is_personal=True
+        )
+        # A row stamped to the personal workspace whose owner_user_id is
+        # stale — pass 2 (workspace-in-full) must still include it.
+        self._put_memory(
+            storage,
+            key="stale-owner",
+            owner_user_id="stale-user",
+            workspace_id=personal.workspace_id,
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        keys = [m["key"] for m in body["memories"]]
+        assert "stale-owner" in keys
+
+    def test_authored_memory_in_shared_workspace_included_with_workspace_id(self, client):
+        import json
+
+        from hive.models import WorkspaceRole
+
+        tc, storage = client
+        shared = self._make_workspace(
+            storage,
+            name="Team",
+            owner_user_id="other-user",
+            members=[(_USER_ID, WorkspaceRole.member)],
+        )
+        self._put_memory(
+            storage, key="my-shared-note", owner_user_id=_USER_ID, workspace_id=shared.workspace_id
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        mem = next(m for m in body["memories"] if m["key"] == "my-shared-note")
+        assert mem["workspace_id"] == shared.workspace_id
+
+    def test_other_members_writes_in_shared_workspace_excluded(self, client):
+        import json
+
+        from hive.models import WorkspaceRole
+
+        tc, storage = client
+        shared = self._make_workspace(
+            storage,
+            name="Team",
+            owner_user_id="other-user",
+            members=[(_USER_ID, WorkspaceRole.member)],
+        )
+        self._put_memory(
+            storage,
+            key="their-note",
+            owner_user_id="other-user",
+            workspace_id=shared.workspace_id,
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        keys = [m["key"] for m in body["memories"]]
+        assert "their-note" not in keys
+
+    def test_authored_personal_memory_not_duplicated(self, client):
+        import json
+
+        tc, storage = client
+        personal = self._make_workspace(
+            storage, name="Personal", owner_user_id=_USER_ID, is_personal=True
+        )
+        # Authored by the user AND in the personal workspace — matched by
+        # both passes, must appear exactly once.
+        self._put_memory(
+            storage, key="both-passes", owner_user_id=_USER_ID, workspace_id=personal.workspace_id
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        keys = [m["key"] for m in body["memories"]]
+        assert keys.count("both-passes") == 1
+
+    def test_another_users_personal_workspace_not_exported_in_full(self, client):
+        import json
+
+        from hive.models import WorkspaceRole
+
+        tc, storage = client
+        # Anomalous state: user is a member of someone else's personal
+        # workspace. Its other memories must not be swept in by pass 2.
+        others_personal = self._make_workspace(
+            storage,
+            name="Their Personal",
+            owner_user_id="other-user",
+            is_personal=True,
+            members=[(_USER_ID, WorkspaceRole.member)],
+        )
+        self._put_memory(
+            storage,
+            key="their-personal-note",
+            owner_user_id="other-user",
+            workspace_id=others_personal.workspace_id,
+        )
+
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        keys = [m["key"] for m in body["memories"]]
+        assert "their-personal-note" not in keys
+
+    def test_workspace_skipped_when_membership_vanishes_mid_export(self, client, monkeypatch):
+        import json
+
+        tc, storage = client
+        self._make_workspace(storage, name="Personal", owner_user_id=_USER_ID, is_personal=True)
+
+        monkeypatch.setattr(
+            type(storage), "get_workspace_member", lambda self, ws_id, user_id: None
+        )
+        resp = tc.get("/api/account/export")
+        body = json.loads(resp.content)
+        assert body["workspaces"] == []
 
 
 # ---------------------------------------------------------------------------
