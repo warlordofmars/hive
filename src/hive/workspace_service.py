@@ -139,8 +139,12 @@ def send_invite(
 
     Raises :class:`WorkspaceNotFoundError` when the workspace does not
     exist, so invites (and audit records) cannot be minted for deleted or
-    mistyped workspace ids.
+    mistyped workspace ids, and :class:`ValueError` when ``expires_at``
+    is naive — a naive timestamp would persist as-is and make
+    ``Invite.is_expired`` raise ``TypeError`` at redemption time.
     """
+    if expires_at.tzinfo is None:
+        raise ValueError("expires_at must be timezone-aware")
     if storage.get_workspace(workspace_id) is None:
         raise WorkspaceNotFoundError(f"Workspace '{workspace_id}' not found.")
     invite = Invite(

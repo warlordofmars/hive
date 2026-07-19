@@ -156,6 +156,19 @@ class TestDeleteWorkspace:
 
 
 class TestSendInvite:
+    def test_naive_expires_at_raises_without_invite_or_audit(self, storage):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        with pytest.raises(ValueError, match="timezone-aware"):
+            workspace_service.send_invite(
+                storage,
+                workspace_id=ws.workspace_id,
+                email="naive@example.com",
+                role=WorkspaceRole.member,
+                invited_by_user_id="u1",
+                expires_at=datetime(2027, 1, 1, 12, 0, 0),
+            )
+        assert _audit_events(storage, EventType.workspace_invite_sent) == []
+
     def test_missing_workspace_raises_without_invite_or_audit(self, storage):
         with pytest.raises(workspace_service.WorkspaceNotFoundError):
             workspace_service.send_invite(

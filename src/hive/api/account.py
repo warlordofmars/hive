@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from hive.api._auth import require_mgmt_user
-from hive.models import ActivityEvent, EventType, Memory
+from hive.models import ActivityEvent, EventType
 from hive.quota import _exempt_users, get_memory_limit, get_storage_bytes_limit
 from hive.storage import HiveStorage
 from hive.workspace_service import list_sole_owned_shared_workspaces
@@ -168,27 +168,13 @@ async def export_account(
     # #495 — workspace-aware export scope. The user's personal workspace is
     # exported in full; from shared workspaces only memories the user
     # personally authored are included (other members' writes are their
-    # data, not this user's).
+    # data, not this user's). ``iter_memories_for_export`` unions both
+    # criteria in a single table scan (OR filter) so the export cost does
+    # not double with a second pass.
     workspaces = storage.list_workspaces_for_user(user_id)
     personal_ws_ids = [
         w.workspace_id for w in workspaces if w.is_personal and w.owner_user_id == user_id
     ]
-
-    def _iter_export_memories() -> Iterator[Memory]:
-        seen: set[str] = set()
-        # Pass 1 — everything the user personally authored: personal
-        # workspace, shared workspaces, and legacy pre-workspace rows.
-        for memory in storage.iter_all_memories(owner_user_id=user_id):
-            seen.add(memory.memory_id)
-            yield memory
-        # Pass 2 — the personal workspace in full: catches rows stamped to
-        # the personal workspace whose owner_user_id is absent or stale.
-        for ws_id in personal_ws_ids:
-            for memory in storage.iter_all_memories(workspace_id=ws_id):
-                if memory.memory_id in seen:
-                    continue
-                seen.add(memory.memory_id)
-                yield memory
 
     def _stream() -> Iterator[str]:
         yield "{"
@@ -224,7 +210,7 @@ async def export_account(
                 }
             )
         yield '],"memories":['
-        for i, memory in enumerate(_iter_export_memories()):
+        for i, memory in enumerate(storage.iter_memories_for_export(user_id, personal_ws_ids)):
             if i:
                 yield ","
             yield json.dumps(

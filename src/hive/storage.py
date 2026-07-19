@@ -723,6 +723,45 @@ class HiveStorage:
                 if start_key is None:
                     break
 
+    def iter_memories_for_export(
+        self, owner_user_id: str, workspace_ids: list[str]
+    ) -> Iterator[Memory]:
+        """Yield memories the user authored anywhere plus every memory in
+        the given (personal) workspaces, in a single table scan.
+
+        Backs the GDPR export (#495): one pass with a server-side OR
+        filter instead of one scan per criterion. This is a generator —
+        use for streaming exports only.
+        """
+        filter_expr = f"{_SK_PK_PREFIX_EXPR} AND (owner_user_id = :uid"
+        expr_vals: dict[str, Any] = {
+            ":sk": "META",
+            _PK_PREFIX_KEY: "MEMORY#",
+            ":uid": owner_user_id,
+        }
+        if workspace_ids:
+            placeholders = []
+            for i, ws_id in enumerate(workspace_ids):
+                key = f":wsid{i}"
+                expr_vals[key] = ws_id
+                placeholders.append(key)
+            filter_expr += f" OR workspace_id IN ({', '.join(placeholders)})"
+        filter_expr += ")"
+        start_key: dict[str, Any] | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": filter_expr,
+                "ExpressionAttributeValues": expr_vals,
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                yield Memory.from_dynamo(item)
+            start_key = resp.get("LastEvaluatedKey")
+            if start_key is None:
+                break
+
     # ------------------------------------------------------------------
     # OAuth Client management
     # ------------------------------------------------------------------

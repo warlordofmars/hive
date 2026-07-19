@@ -2628,6 +2628,72 @@ class TestInviteStorage:
         assert mock_scan.call_count == 2
 
 
+class TestIterMemoriesForExport:
+    """Single-scan union backing the GDPR export (#495)."""
+
+    def test_unions_authored_and_workspace_memories(self, storage):
+        mine_shared = Memory(
+            key="mine-shared",
+            value="v",
+            owner_client_id="c1",
+            owner_user_id="u1",
+            workspace_id="ws-shared",
+        )
+        theirs_personal = Memory(
+            key="theirs-personal",
+            value="v",
+            owner_client_id="c2",
+            owner_user_id="u2",
+            workspace_id="ws-personal",
+        )
+        theirs_shared = Memory(
+            key="theirs-shared",
+            value="v",
+            owner_client_id="c2",
+            owner_user_id="u2",
+            workspace_id="ws-shared",
+        )
+        legacy_mine = Memory(key="legacy", value="v", owner_client_id="c1", owner_user_id="u1")
+        for m in (mine_shared, theirs_personal, theirs_shared, legacy_mine):
+            storage.put_memory(m)
+        keys = {m.key for m in storage.iter_memories_for_export("u1", ["ws-personal"])}
+        assert keys == {"mine-shared", "theirs-personal", "legacy"}
+
+    def test_authored_in_personal_workspace_yields_once(self, storage):
+        both = Memory(
+            key="both", value="v", owner_client_id="c1", owner_user_id="u1", workspace_id="ws-p"
+        )
+        storage.put_memory(both)
+        results = list(storage.iter_memories_for_export("u1", ["ws-p"]))
+        assert [m.key for m in results] == ["both"]
+
+    def test_empty_workspace_list_returns_only_authored(self, storage):
+        mine = Memory(key="mine", value="v", owner_client_id="c1", owner_user_id="u1")
+        theirs = Memory(
+            key="theirs", value="v", owner_client_id="c2", owner_user_id="u2", workspace_id="ws-x"
+        )
+        storage.put_memory(mine)
+        storage.put_memory(theirs)
+        keys = [m.key for m in storage.iter_memories_for_export("u1", [])]
+        assert keys == ["mine"]
+
+    def test_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path."""
+        from unittest.mock import patch
+
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", owner_user_id="u1")
+        page1 = {
+            "Items": [m1.to_dynamo_meta()],
+            "LastEvaluatedKey": {"PK": f"MEMORY#{m1.memory_id}", "SK": "META"},
+        }
+        page2 = {"Items": [m2.to_dynamo_meta()]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            memories = list(storage.iter_memories_for_export("u1", []))
+        assert {m.key for m in memories} == {"m1", "m2"}
+        assert mock_scan.call_count == 2
+
+
 class TestWorkspaceIdFiltering:
     """Covers the new workspace_id filter on existing list / count methods."""
 
