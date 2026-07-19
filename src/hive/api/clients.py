@@ -165,9 +165,11 @@ async def delete_client(
 
     # Second sweep: catch tokens minted by grants in flight during the
     # first scan. Deleting the record stops new grants from
-    # authenticating, so this narrows the race window to a grant that
-    # loaded the client before the delete and persists its token after
-    # this scan — such stragglers still expire via their short TTLs.
+    # authenticating, so the residual race is a grant that loaded the
+    # client before the delete and persists its token after this scan.
+    # A straggler access token lives at most its 1-hour TTL; a straggler
+    # refresh token cannot be redeemed at all — /oauth/token re-resolves
+    # the client record, which is gone.
     revoked_tokens += storage.delete_tokens_for_clients({client_id})
 
     storage.log_event(
