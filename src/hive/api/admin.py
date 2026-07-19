@@ -16,7 +16,10 @@ import boto3
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from hive.api._auth import require_admin
+from hive.logging_config import get_logger
 from hive.metrics import emit_metric
+
+logger = get_logger("hive.api.admin")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -215,8 +218,21 @@ def _cost_cache_ttl_seconds() -> int:
 
     Read at call time so tests (and deployed envs) can override via
     ``HIVE_COST_CACHE_TTL_SECONDS`` without re-importing the module.
+    A malformed value falls back to the default rather than turning
+    every /admin/costs request into a 500 over a config typo.
     """
-    return int(os.environ.get("HIVE_COST_CACHE_TTL_SECONDS", str(_COST_CACHE_TTL_DEFAULT)))
+    raw = os.environ.get("HIVE_COST_CACHE_TTL_SECONDS")
+    if raw is None:
+        return _COST_CACHE_TTL_DEFAULT
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "invalid HIVE_COST_CACHE_TTL_SECONDS=%r — using default %d",
+            raw,
+            _COST_CACHE_TTL_DEFAULT,
+        )
+        return _COST_CACHE_TTL_DEFAULT
 
 
 def _cost_query_hash(query_params: dict[str, Any]) -> str:

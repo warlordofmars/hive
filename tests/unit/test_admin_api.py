@@ -374,6 +374,23 @@ class TestAdminCosts:
         item = self._cache_items()[0]
         assert int(item["ttl"]) == pytest.approx(time_mod.time() + 123, abs=60)
 
+    def test_malformed_ttl_env_var_falls_back_to_default(self, admin_tc, cost_storage, monkeypatch):
+        """A config typo in HIVE_COST_CACHE_TTL_SECONDS must not 500 the endpoint."""
+        import time as time_mod
+
+        monkeypatch.setenv("HIVE_COST_CACHE_TTL_SECONDS", "six-hours-please")
+        with patch("hive.api.admin._ce_client") as mock_ce_factory:
+            mock_ce = MagicMock()
+            self._mock_ce(mock_ce)
+            mock_ce_factory.return_value = mock_ce
+
+            resp = admin_tc.get("/api/admin/costs")
+
+        assert resp.status_code == 200
+        item = self._cache_items()[0]
+        # Falls back to the 21600 s default rather than raising ValueError
+        assert int(item["ttl"]) == pytest.approx(time_mod.time() + 21600, abs=60)
+
     def test_cache_expires_after_ttl(self, admin_tc, cost_storage):
         import time as time_mod
 

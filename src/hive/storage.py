@@ -1621,17 +1621,26 @@ class HiveStorage:
         """
         try:
             resp = self.table.get_item(Key={"PK": f"COST_CACHE#{query_hash}", "SK": "META"})
-            item = resp.get("Item")
-            if not item:
-                return None
+        except Exception:
+            # Infrastructure failure — keep the stack trace, it's actionable.
+            logger.warning("cost_cache_read_failed query_hash=%s", query_hash, exc_info=True)
+            return None
+        item = resp.get("Item")
+        if not item:
+            return None
+        try:
             if int(item["ttl"]) <= int(_now().timestamp()):
                 return None
             payload = json.loads(item["response"])
             if not isinstance(payload, dict):
                 raise ValueError("cached cost payload is not a JSON object")
             return payload
-        except Exception:
-            logger.warning("cost_cache_read_failed query_hash=%s", query_hash, exc_info=True)
+        except Exception as exc:
+            # Content-shape problem (missing ttl/response, bad JSON, wrong
+            # type) — an expected miss, not an incident: log without a
+            # traceback to keep dashboard-load noise and log cost down. The
+            # entry self-heals when the fall-through CE call writes back.
+            logger.warning("cost_cache_entry_invalid query_hash=%s error=%s", query_hash, exc)
             return None
 
     def put_cost_cache(
