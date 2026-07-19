@@ -6,8 +6,9 @@ Single-table design — all entities share one table.
 Table name is read from the HIVE_TABLE_NAME environment variable.
 
 GSIs:
-  TagIndex    — GSI2PK (TAG#{tag}), GSI2SK (memory_id)  → list_memories(tag)
-  ClientIndex — GSI3PK (CLIENT#{client_id})              → client lookups
+  TagIndex        — GSI2PK (TAG#{tag}), GSI2SK (memory_id) → list_memories(tag)
+  ClientIndex     — GSI3PK (CLIENT#{client_id})            → client lookups
+  ApiKeyHashIndex — key_hash (sparse, APIKEY# items only)  → API key auth lookups
 """
 
 from __future__ import annotations
@@ -1853,7 +1854,39 @@ class HiveStorage:
         return ApiKey.from_dynamo(item) if item else None
 
     def get_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
-        """Look up an API key by its SHA-256 hash (full table scan — keys are rare)."""
+        """Look up an API key by its SHA-256 hash via the ApiKeyHashIndex GSI (#589).
+
+        The index is sparse — keyed directly on the top-level ``key_hash``
+        attribute, which only APIKEY# items carry — so a single-partition
+        query replaces the previous full table scan on every API-key-
+        authenticated request.
+
+        If the query fails because the index is unavailable (still
+        backfilling after deployment, or absent on a table that predates
+        it), the lookup degrades gracefully to the legacy scan. The
+        fallback is kept permanently as resilience, not as a transitional
+        shim — auth must not hard-fail on index availability.
+        """
+        try:
+            resp = self.table.query(
+                IndexName="ApiKeyHashIndex",
+                KeyConditionExpression=Key("key_hash").eq(key_hash),
+                FilterExpression=Attr("SK").eq("META") & Attr("PK").begins_with("APIKEY#"),
+            )
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code not in ("ValidationException", "ResourceNotFoundException"):
+                raise
+            logger.warning(
+                "ApiKeyHashIndex unavailable (%s) — falling back to table scan for API key lookup",
+                code,
+            )
+            return self._scan_api_key_by_hash(key_hash)
+        items = resp.get("Items", [])
+        return ApiKey.from_dynamo(items[0]) if items else None
+
+    def _scan_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
+        """Legacy full-table-scan API key lookup — fallback for ApiKeyHashIndex."""
         resp = self.table.scan(
             FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
             ExpressionAttributeValues={

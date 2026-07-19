@@ -140,6 +140,19 @@ class HiveStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
+        # GSI 6 — ApiKeyHashIndex: look up API keys by SHA-256 hash (#589).
+        # Sparse index keyed directly on the existing top-level ``key_hash``
+        # attribute (only APIKEY# items carry it) rather than a new GSI6PK
+        # composite — the asynchronous GSI backfill therefore projects every
+        # existing API key item automatically and no data migration is needed.
+        # storage.get_api_key_by_hash falls back to the legacy table scan
+        # while the index is still backfilling (or otherwise unavailable).
+        table.add_global_secondary_index(
+            index_name="ApiKeyHashIndex",
+            partition_key=dynamodb.Attribute(name="key_hash", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
         # ----------------------------------------------------------------
         # SSM Parameters
         # ----------------------------------------------------------------

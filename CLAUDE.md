@@ -166,6 +166,12 @@ hive/
     `GSI5SK=WORKSPACE#{workspace_id}` (workspaces a user belongs to).
     Unit/integration test fixtures that create the table must include this
     GSI — the auth flows now resolve Personal workspaces through it
+  - `ApiKeyHashIndex` — sparse GSI keyed directly on the top-level
+    `key_hash` attribute (only `APIKEY#` items carry it) — API key auth
+    lookups (#589). `get_api_key_by_hash` falls back to the legacy table
+    scan if the index is unavailable (e.g. still backfilling), so table
+    fixtures without this GSI still work — but include it to exercise
+    the fast path
 
 ## Management UI
 
