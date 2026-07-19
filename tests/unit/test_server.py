@@ -4234,6 +4234,70 @@ class TestWorkspaceEnforcement:
             await remember_if_absent(key="foreign-key", value="squat", ctx=_make_ctx(jwt))
         assert storage.get_memory_by_key("foreign-key").value == "foreign-secret"
 
+    async def test_remember_if_absent_race_loser_foreign_winner_denied(
+        self, workspace_env, monkeypatch
+    ):
+        """Losing the conditional key-claim write (#592) to a concurrent
+        creator in ANOTHER workspace reads as in-use, not as the plain
+        already-exists success — the workspace guard applies to the winner's
+        memory on the conditional-failure path too (#491)."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.models import Memory
+        from hive.server import remember_if_absent
+        from hive.storage import HiveStorage
+
+        _, _, jwt = workspace_env
+        foreign_winner = Memory(
+            key="race-key",
+            value="winner-in-ws-b",
+            tags=[],
+            owner_client_id="client-b",
+            owner_user_id="user-b",
+            workspace_id="ws-b",
+        )
+        calls = {"n": 0}
+
+        def fake_get(self, key):
+            # First call: the pre-write read-check sees "absent". Second call:
+            # the post-conditional-failure re-read sees the race winner.
+            calls["n"] += 1
+            return None if calls["n"] == 1 else foreign_winner
+
+        monkeypatch.setattr(HiveStorage, "get_memory_by_key", fake_get)
+        monkeypatch.setattr(HiveStorage, "put_memory_if_absent", lambda self, m: False)
+        with pytest.raises(ToolError, match="Key 'race-key' is already in use"):
+            await remember_if_absent(key="race-key", value="mine", ctx=_make_ctx(jwt))
+
+    async def test_remember_if_absent_race_loser_same_workspace_skips(
+        self, workspace_env, monkeypatch
+    ):
+        """Losing the conditional write to a same-workspace concurrent creator
+        keeps #592's plain already-exists response."""
+        from hive.models import Memory
+        from hive.server import remember_if_absent
+        from hive.storage import HiveStorage
+
+        _, _, jwt = workspace_env
+        same_ws_winner = Memory(
+            key="race-key-2",
+            value="winner-in-ws-a",
+            tags=[],
+            owner_client_id="client-a2",
+            owner_user_id="user-a",
+            workspace_id="ws-a",
+        )
+        calls = {"n": 0}
+
+        def fake_get(self, key):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else same_ws_winner
+
+        monkeypatch.setattr(HiveStorage, "get_memory_by_key", fake_get)
+        monkeypatch.setattr(HiveStorage, "put_memory_if_absent", lambda self, m: False)
+        result = await remember_if_absent(key="race-key-2", value="mine", ctx=_make_ctx(jwt))
+        assert _text(result) == "Memory 'race-key-2' already exists — not overwritten."
+
     async def test_remember_blob_cross_workspace_key_denied(self, workspace_env):
         import base64
 
