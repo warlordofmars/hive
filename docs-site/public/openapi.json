@@ -849,7 +849,7 @@
   "paths": {
     "/api/account": {
       "delete": {
-        "description": "Permanently delete all data for the authenticated user: memories, OAuth clients, and the user record itself. Requires `confirm: true` in the request body. The deletion is recorded in an immutable audit log. This action cannot be undone.",
+        "description": "Permanently delete all data for the authenticated user: memories, OAuth clients, and the user record itself. Requires `confirm: true` in the request body. Blocked with 409 while the user is the sole owner of any shared workspace \u2014 transfer ownership or delete those workspaces first. The deletion is recorded in an immutable audit log. This action cannot be undone.",
         "operationId": "delete_account_api_account_delete",
         "requestBody": {
           "content": {
@@ -873,6 +873,9 @@
           },
           "404": {
             "description": "User not found"
+          },
+          "409": {
+            "description": "User is the sole owner of one or more shared workspaces"
           },
           "422": {
             "content": {
@@ -898,7 +901,7 @@
     },
     "/api/account/export": {
       "get": {
-        "description": "Stream a JSON document containing the authenticated user's profile, all their memories, OAuth clients, and recent activity log entries (90-day window, matching the retention policy). Satisfies GDPR Article 20 and CCPA \u00a71798.100 portability rights. Rate-limited to one export per 5 minutes per user.",
+        "description": "Stream a JSON document containing the authenticated user's profile, workspace memberships, memories, OAuth clients, and recent activity log entries (90-day window, matching the retention policy). The memories section covers the user's personal workspace in full plus memories the user personally authored in shared workspaces \u2014 other members' writes are excluded. Satisfies GDPR Article 20 and CCPA \u00a71798.100 portability rights. Rate-limited to one export per 5 minutes per user.",
         "operationId": "export_account_api_account_export_get",
         "responses": {
           "200": {
