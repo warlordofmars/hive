@@ -1938,8 +1938,10 @@ class TestRelateMemories:
             await relate_memories("source", ctx=ctx)
 
         assert mock_vs.search.call_args.args[0] == "unique search phrase"
-        # top_k+1 requested so the source-memory drop still leaves headroom.
-        assert mock_vs.search.call_args.kwargs["top_k"] == 6
+        # Widened candidate pool (#493): min(max(top_k*3, 10), 50) + 1 so the
+        # source-memory drop and the workspace post-filter both have headroom.
+        # Default top_k=5 → pool of 16.
+        assert mock_vs.search.call_args.kwargs["top_k"] == 16
 
     async def test_missing_key_raises_tool_error(self, server_env):
         from fastmcp.exceptions import ToolError
@@ -4587,6 +4589,9 @@ class TestWorkspaceQueryScoping:
         assert [item["key"] for item in body["items"]] == ["own-key"]
         assert mock_vs.search.call_args.kwargs["workspace_id"] == "ws-a"
         assert mock_vs.search.call_args.kwargs["workspace_scoped"] is True
+        # A widened candidate pool (not top_k+1) so unstamped foreign vectors
+        # can't starve the results via service-side truncation.
+        assert mock_vs.search.call_args.kwargs["top_k"] == 11
 
     async def test_pack_context_excludes_foreign_workspace(self, workspace_env):
         from unittest.mock import patch

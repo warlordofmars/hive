@@ -1857,12 +1857,17 @@ async def relate_memories(
     owner_user_id = _require_owner_user_id(storage, client_id)
     # Workspace scoping (#493): filter foreign-workspace vectors at query time.
     workspace_id, _ = _caller_workspace_scope(storage)
+    # Request a wider pool than top_k (mirroring search_memories) so that
+    # pre-#493 vectors without workspace metadata — which pass the query
+    # filter's `$exists: false` arm but may be dropped by the authoritative
+    # DynamoDB check below — can't dominate a service-side truncation and
+    # starve the result set. The +1 keeps headroom for dropping the source.
+    candidate_pool = min(max(top_k * 3, 10), 50) + 1
     try:
-        # Fetch top_k+1 so that dropping the source still leaves up to top_k.
         pairs = _vector_store().search(
             query_value,
             owner_user_id,
-            top_k=top_k + 1,
+            top_k=candidate_pool,
             workspace_id=workspace_id,
             workspace_scoped=True,
         )
