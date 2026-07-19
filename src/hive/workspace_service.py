@@ -206,6 +206,15 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
         # Lost the race with a concurrent acceptor — the invite was
         # consumed between the read and the claim.
         raise InviteError(f"Invite '{invite_id}' not found or expired.")
+    if storage.get_workspace(invite.workspace_id) is None:
+        # Workspace deleted between the claim and the membership write —
+        # re-check so no MEMBER row is created for a dead workspace (it
+        # would orphan a WorkspaceMemberIndex entry). Best-effort per this
+        # module's non-transactional design; the invite stays consumed,
+        # which is fine — there is nothing left to redeem into.
+        raise WorkspaceNotFoundError(
+            f"Workspace '{invite.workspace_id}' no longer exists; invite cannot be accepted."
+        )
     member = storage.add_workspace_member(
         workspace_id=invite.workspace_id,
         user_id=user_id,

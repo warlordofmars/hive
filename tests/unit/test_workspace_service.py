@@ -293,6 +293,35 @@ class TestAcceptInvite:
         assert storage.get_invite(invite.invite_id) is None
         assert _audit_events(storage, EventType.workspace_invite_accepted) == []
 
+    def test_workspace_deleted_after_claim_raises_without_membership_or_audit(
+        self, storage, monkeypatch
+    ):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="late@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        real_claim = HiveStorage.claim_invite
+
+        def _claim_then_delete(self, invite_id):
+            # Simulate the workspace being deleted concurrently, right
+            # after the invite claim succeeds.
+            result = real_claim(self, invite_id)
+            storage.delete_workspace(ws.workspace_id)
+            return result
+
+        monkeypatch.setattr(HiveStorage, "claim_invite", _claim_then_delete)
+        with pytest.raises(workspace_service.WorkspaceNotFoundError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        # No orphaned MEMBER row; the invite is consumed; no audit event.
+        assert storage.list_workspace_members(ws.workspace_id) == []
+        assert storage.get_invite(invite.invite_id) is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
     def test_workspace_deleted_after_invite_raises_without_membership_or_audit(self, storage):
         ws = workspace_service.create_workspace(storage, name="Doomed", owner_user_id="u1")
         invite = workspace_service.send_invite(
