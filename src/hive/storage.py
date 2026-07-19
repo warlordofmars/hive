@@ -115,6 +115,24 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_claim_timestamp(raw: Any) -> datetime:
+    """Parse a KEYCLAIM item's ``created_at`` defensively.
+
+    Claims are only ever written with an aware-UTC isoformat, but a
+    malformed item must degrade to "reclaimable" (epoch — maximally old)
+    rather than crash the reclaim path and leave its key permanently
+    blocked by an unreclaimable claim. Naive datetimes are assumed UTC so
+    the subtraction against the aware ``_now()`` can never raise.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def _encode_cursor(last_evaluated_key: dict[str, Any]) -> str:
     """Encode a DynamoDB LastEvaluatedKey as an opaque base64 cursor."""
     return base64.urlsafe_b64encode(json.dumps(last_evaluated_key).encode()).decode()
@@ -420,9 +438,7 @@ class HiveStorage:
             if meta is not None and not Memory.from_dynamo(meta).is_expired:
                 return False  # a live memory holds the key
             if meta is None:
-                claimed_at = datetime.fromisoformat(
-                    str(holder.get("created_at", "1970-01-01T00:00:00+00:00"))
-                )
+                claimed_at = _parse_claim_timestamp(holder.get("created_at"))
                 if (_now() - claimed_at).total_seconds() < _KEYCLAIM_GRACE_SECONDS:
                     return False  # likely an in-flight create — don't steal it
             try:

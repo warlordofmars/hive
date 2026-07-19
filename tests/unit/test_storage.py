@@ -612,6 +612,43 @@ class TestPutMemoryIfAbsent:
         m = Memory(key="ifa-nodate", value="v", owner_client_id="c1")
         assert storage.put_memory_if_absent(m) is True
 
+    def test_orphaned_claim_with_invalid_created_at_is_reclaimed(self, storage):
+        """A claim whose created_at is not parseable ISO-8601 degrades to
+        maximally old (reclaimable) instead of crashing the reclaim path and
+        leaving the key permanently blocked."""
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-badts",
+                "SK": "META",
+                "key": "ifa-badts",
+                "memory_id": "gone",
+                "created_at": "not-a-timestamp",
+            }
+        )
+        m = Memory(key="ifa-badts", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+    def test_orphaned_claim_with_naive_created_at_is_assumed_utc(self, storage):
+        """A timezone-naive created_at is assumed UTC — the aware-vs-naive
+        subtraction must never raise, and a recent naive timestamp still
+        counts as within the in-flight grace period."""
+        from datetime import datetime, timedelta, timezone
+
+        naive_recent = (
+            (datetime.now(timezone.utc) - timedelta(seconds=5)).replace(tzinfo=None).isoformat()
+        )
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-naive",
+                "SK": "META",
+                "key": "ifa-naive",
+                "memory_id": "being-written",
+                "created_at": naive_recent,
+            }
+        )
+        m = Memory(key="ifa-naive", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is False
+
     def test_reclaim_reads_are_strongly_consistent(self, storage):
         """Staleness must never be decided from an eventually-consistent
         replica — a lagging read could miss a just-committed memory and
