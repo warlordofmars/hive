@@ -329,6 +329,10 @@ class TestMcpQuotaIntegration:
             existing_memory.tags = []
             # Set a real int so delta = len("new-value") - 100 < 0; no storage check.
             existing_memory.size_bytes = 100
+            # Legacy row (pre-workspace-migration) so the #491 workspace guard
+            # passes through — a bare MagicMock attribute would read as a
+            # foreign workspace and deny the update.
+            existing_memory.workspace_id = None
             instance = MockStorage.return_value
             instance.get_memory_by_key.return_value = existing_memory
             # Response-meta builder reads count_memories; return a real int.
