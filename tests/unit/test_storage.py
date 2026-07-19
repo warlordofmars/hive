@@ -612,6 +612,27 @@ class TestPutMemoryIfAbsent:
         m = Memory(key="ifa-nodate", value="v", owner_client_id="c1")
         assert storage.put_memory_if_absent(m) is True
 
+    def test_orphaned_claim_without_memory_id_is_reclaimed(self, storage):
+        """A malformed claim missing memory_id degrades to stale (its key
+        self-heals) instead of raising KeyError in the reclaim path; the
+        conditional delete requires the attribute still absent so a claim
+        that changed hands is never cleared."""
+        from datetime import timedelta
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-noid",
+                "SK": "META",
+                "key": "ifa-noid",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        m = Memory(key="ifa-noid", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert self._claim_item(storage, "ifa-noid")["memory_id"] == m.memory_id
+
     def test_orphaned_claim_with_invalid_created_at_is_reclaimed(self, storage):
         """A claim whose created_at is not parseable ISO-8601 degrades to
         maximally old (reclaimable) instead of crashing the reclaim path and

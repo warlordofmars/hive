@@ -429,12 +429,17 @@ class HiveStorage:
             )
         ).get("Item")
         if holder is not None:
-            meta = (
-                self.table.get_item(
-                    Key={"PK": f"MEMORY#{holder['memory_id']}", "SK": "META"},
-                    ConsistentRead=True,
-                )
-            ).get("Item")
+            # Defensive .get — a malformed claim (no memory_id) must degrade
+            # to "stale" rather than crash and leave its key blocked.
+            holder_memory_id = holder.get("memory_id")
+            meta = None
+            if holder_memory_id is not None:
+                meta = (
+                    self.table.get_item(
+                        Key={"PK": f"MEMORY#{holder_memory_id}", "SK": "META"},
+                        ConsistentRead=True,
+                    )
+                ).get("Item")
             if meta is not None and not Memory.from_dynamo(meta).is_expired:
                 return False  # a live memory holds the key
             if meta is None:
@@ -444,7 +449,14 @@ class HiveStorage:
             try:
                 self.table.delete_item(
                     Key={"PK": f"KEYCLAIM#{memory.key}", "SK": "META"},
-                    ConditionExpression=Attr("memory_id").eq(holder["memory_id"]),
+                    # Delete only the claim we observed: match its memory_id,
+                    # or require the attribute still absent for a malformed
+                    # claim, so one that changed hands is never cleared.
+                    ConditionExpression=(
+                        Attr("memory_id").eq(holder_memory_id)
+                        if holder_memory_id is not None
+                        else Attr("memory_id").not_exists()
+                    ),
                 )
             except ClientError as exc:
                 if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
