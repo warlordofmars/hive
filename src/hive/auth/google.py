@@ -26,7 +26,7 @@ from urllib.parse import urlencode
 import httpx
 from jose import jwt as jose_jwt
 
-from hive.auth.secret_cache import ttl_cached
+from hive.auth.secret_cache import SecretConfigError, ttl_cached
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -61,18 +61,31 @@ def _no_allowed_emails() -> frozenset[str]:
     return frozenset()
 
 
+def _parse_allowlist(raw: str, source: str) -> frozenset[str]:
+    """Parse an allowlist JSON array, failing closed on malformed input.
+
+    A config typo must raise (SecretConfigError propagates through the TTL
+    cache untouched) rather than silently degrade to an empty allow-all list.
+    """
+    try:
+        return frozenset(json.loads(raw))
+    except (ValueError, TypeError) as exc:
+        raise SecretConfigError(f"Malformed allowlist JSON in {source}: {exc}") from exc
+
+
 @ttl_cached(fallback=_no_allowed_emails)
 def _allowed_emails() -> frozenset[str]:
     """Return the email allowlist (empty = allow all).
 
     TTL-cached (#585) so SSM rotations take effect in a warm Lambda; a failed
     refresh serves the previous allowlist (fail-static) rather than silently
-    falling open on an SSM blip.
+    falling open on an SSM blip.  Only *transient* fetch failures use the
+    fallback / stale value — malformed allowlist JSON fails closed.
     """
     if val := os.environ.get("ALLOWED_EMAILS"):
-        return frozenset(json.loads(val))
+        return _parse_allowlist(val, source="ALLOWED_EMAILS env var")
     raw = _ssm_param(os.environ.get("ALLOWED_EMAILS_PARAM", "/hive/allowed-emails"))
-    return frozenset(json.loads(raw))
+    return _parse_allowlist(raw, source="allowed-emails SSM parameter")
 
 
 def google_authorization_url(state: str, callback_uri: str) -> str:

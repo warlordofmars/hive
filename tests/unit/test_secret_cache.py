@@ -11,6 +11,7 @@ import pytest
 from hive.auth.secret_cache import (
     DEFAULT_TTL_SECONDS,
     TTL_ENV_VAR,
+    SecretConfigError,
     _ttl_seconds,
     ttl_cached,
 )
@@ -51,11 +52,28 @@ class TestTtlSeconds:
 
     @pytest.mark.parametrize("raw", ["not-a-number", "nan", "inf", "-inf", "-5"])
     def test_invalid_env_falls_back_to_default(self, monkeypatch, raw):
+        from hive.auth import secret_cache
+
+        monkeypatch.setattr(secret_cache, "_last_invalid_ttl", None)
         monkeypatch.setenv(TTL_ENV_VAR, raw)
         with patch("hive.auth.secret_cache.logger") as mock_logger:
             assert _ttl_seconds() == DEFAULT_TTL_SECONDS
         mock_logger.warning.assert_called_once()
         assert "Invalid" in mock_logger.warning.call_args[0][0]
+
+    def test_invalid_env_warns_once_per_distinct_value(self, monkeypatch):
+        """A misconfigured TTL must not spam the log on every secret access."""
+        from hive.auth import secret_cache
+
+        monkeypatch.setattr(secret_cache, "_last_invalid_ttl", None)
+        monkeypatch.setenv(TTL_ENV_VAR, "bogus")
+        with patch("hive.auth.secret_cache.logger") as mock_logger:
+            assert _ttl_seconds() == DEFAULT_TTL_SECONDS
+            assert _ttl_seconds() == DEFAULT_TTL_SECONDS
+            assert mock_logger.warning.call_count == 1
+            monkeypatch.setenv(TTL_ENV_VAR, "-1")  # a *new* invalid value warns again
+            assert _ttl_seconds() == DEFAULT_TTL_SECONDS
+            assert mock_logger.warning.call_count == 2
 
     def test_zero_is_a_valid_ttl(self, monkeypatch):
         monkeypatch.setenv(TTL_ENV_VAR, "0")
@@ -142,6 +160,27 @@ class TestTtlCached:
         cached.cache_clear()
         assert cached() == "v2"
         assert fetch.call_count == 2
+
+    def test_config_error_bypasses_fallback(self, monkeypatch):
+        """SecretConfigError fails closed: never masked by the fallback."""
+        monkeypatch.delenv(TTL_ENV_VAR, raising=False)
+        fetch = MagicMock(side_effect=SecretConfigError("bad config"))
+        fallback = MagicMock(return_value="open")
+        cached = ttl_cached(fallback=fallback)(fetch)
+
+        with pytest.raises(SecretConfigError, match="bad config"):
+            cached()
+        fallback.assert_not_called()
+
+    def test_config_error_bypasses_stale_serve(self, monkeypatch):
+        """SecretConfigError fails closed even when a stale value exists."""
+        monkeypatch.setenv(TTL_ENV_VAR, "0")
+        fetch = MagicMock(side_effect=["v1", SecretConfigError("bad config")])
+        cached = ttl_cached()(fetch)
+
+        assert cached() == "v1"
+        with pytest.raises(SecretConfigError, match="bad config"):
+            cached()
 
     def test_wrapper_preserves_function_metadata(self):
         def my_secret() -> str:
@@ -273,3 +312,23 @@ class TestAllowedEmailsRotation:
         ):
             assert g._allowed_emails() == frozenset({"kept@example.com"})
             assert g._allowed_emails() == frozenset({"kept@example.com"})
+
+    def test_malformed_env_json_fails_closed(self, monkeypatch):
+        """A typo in ALLOWED_EMAILS must raise, not silently allow all."""
+        from hive.auth import google as g
+
+        monkeypatch.setenv("ALLOWED_EMAILS", "not-json[")
+        with pytest.raises(SecretConfigError, match="ALLOWED_EMAILS env var"):
+            g._allowed_emails()
+
+    def test_malformed_ssm_json_fails_closed(self):
+        """Malformed allowlist JSON in SSM must raise, not silently allow all."""
+        from hive.auth import google as g
+
+        env = {k: v for k, v in os.environ.items() if k != "ALLOWED_EMAILS"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("boto3.client", return_value=_ssm_mock("{broken")),
+            pytest.raises(SecretConfigError, match="SSM parameter"),
+        ):
+            g._allowed_emails()

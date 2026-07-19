@@ -14,6 +14,11 @@ logged — an SSM blip must never take down token issuance or validation.
 The optional ``fallback`` is used only when the *first* fetch fails (no
 cached value exists yet); without a fallback the exception propagates.
 This preserves each call site's original first-fetch failure behaviour.
+
+:class:`SecretConfigError` is the exception to fail-static: it marks a
+non-transient misconfiguration (e.g. malformed allowlist JSON) and always
+propagates — a config typo must fail closed, never be silently masked by a
+fallback or a stale value.
 """
 
 from __future__ import annotations
@@ -35,13 +40,29 @@ TTL_ENV_VAR = "HIVE_SECRET_CACHE_TTL_SECONDS"
 T = TypeVar("T")
 
 
+class SecretConfigError(Exception):
+    """A non-transient secret misconfiguration (e.g. malformed JSON).
+
+    Never masked by the cache's fallback or stale-serving — always
+    propagates so a config typo fails closed instead of silently falling
+    open.
+    """
+
+
+# Last invalid TTL value already warned about — dedupes the warning so a
+# misconfigured env var doesn't spam the log on every cached secret access.
+_last_invalid_ttl: str | None = None
+
+
 def _ttl_seconds() -> float:
     """Return the cache TTL, honouring the env override (default 300s).
 
     Only finite, non-negative values are accepted — NaN would disable
     caching entirely (comparisons are always False) and negative or
     non-numeric values are misconfigurations; all fall back to the default.
+    Each distinct invalid value is warned about once, not on every call.
     """
+    global _last_invalid_ttl
     raw = os.environ.get(TTL_ENV_VAR)
     if not raw:
         return DEFAULT_TTL_SECONDS
@@ -50,7 +71,11 @@ def _ttl_seconds() -> float:
     except ValueError:
         ttl = math.nan
     if not (math.isfinite(ttl) and ttl >= 0):
-        logger.warning("Invalid %s=%r; using default %ss", TTL_ENV_VAR, raw, DEFAULT_TTL_SECONDS)
+        if raw != _last_invalid_ttl:
+            _last_invalid_ttl = raw
+            logger.warning(
+                "Invalid %s=%r; using default %ss", TTL_ENV_VAR, raw, DEFAULT_TTL_SECONDS
+            )
         return DEFAULT_TTL_SECONDS
     return ttl
 
@@ -81,6 +106,10 @@ class _TtlCache(Generic[T]):
                 return self._value
             try:
                 value = self._fetch()
+            except SecretConfigError:
+                # Non-transient misconfiguration: fail closed — never mask
+                # with the fallback or a stale value.
+                raise
             except Exception:
                 if self._has_value:
                     # Fail-static: serve the previous value rather than let an
