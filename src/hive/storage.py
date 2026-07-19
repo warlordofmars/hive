@@ -1895,9 +1895,17 @@ class HiveStorage:
             code = exc.response["Error"]["Code"]
             if code not in ("ValidationException", "ResourceNotFoundException"):
                 raise
+            # The full error message is logged so an unexpected fallback
+            # cause (e.g. a genuine query bug rather than a backfilling
+            # index) is immediately diagnosable. The code is deliberately
+            # not narrowed by message substring — DynamoDB, DynamoDB Local
+            # and moto phrase these messages differently, and the fallback
+            # direction is fail-safe (a scan, the pre-GSI behaviour).
             logger.warning(
-                "ApiKeyHashIndex unavailable (%s) — falling back to table scan for API key lookup",
+                "ApiKeyHashIndex unavailable (%s: %s) — falling back to table scan "
+                "for API key lookup",
                 code,
+                exc.response["Error"].get("Message", ""),
             )
             return self._scan_api_key_by_hash(key_hash)
 
