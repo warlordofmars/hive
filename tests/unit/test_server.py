@@ -4280,6 +4280,32 @@ class TestWorkspaceEnforcement:
         with pytest.raises(ToolError, match="No memory found for key 'own-key-2'"):
             await recall(key="own-key-2", ctx=_make_ctx(jwt))
 
+    async def test_recall_rechecks_workspace_on_recreated_key(self, workspace_env, monkeypatch):
+        """TOCTOU guard: if the key mapping changes between the guarded lookup
+        and record_recall's own lookup (delete + recreate in another
+        workspace), the re-resolved row is checked again — the foreign value
+        must never be returned."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.models import Memory
+        from hive.server import recall, remember
+        from hive.storage import HiveStorage
+
+        _, _, jwt = workspace_env
+        await remember(key="raced-key", value="mine", ctx=_make_ctx(jwt))
+
+        foreign = Memory(
+            key="raced-key",
+            value="foreign-after-race",
+            tags=[],
+            owner_client_id="client-b",
+            owner_user_id="user-b",
+            workspace_id="ws-b",
+        )
+        monkeypatch.setattr(HiveStorage, "record_recall", lambda self, key: foreign)
+        with pytest.raises(ToolError, match="No memory found for key 'raced-key'"):
+            await recall(key="raced-key", ctx=_make_ctx(jwt))
+
 
 @pytest.mark.asyncio
 class TestWorkspaceStamping:

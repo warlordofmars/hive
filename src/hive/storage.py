@@ -1490,12 +1490,18 @@ class HiveStorage:
 
         Checks the deterministic ``personal-{user_id}`` id first (workspaces
         auto-created by the auth flows, #491) with a strongly-consistent
-        ``get_item``, then falls back to the ``WorkspaceMemberIndex`` GSI for
-        Personal workspaces created with random ids by the #490 migration.
+        ``get_item`` — first-login provisioning reads its own write moments
+        later, so the default eventually-consistent read could transiently
+        miss it. Falls back to the ``WorkspaceMemberIndex`` GSI for Personal
+        workspaces created with random ids by the #490 migration.
         """
-        workspace = self.get_workspace(f"personal-{user_id}")
-        if workspace is not None:
-            return workspace
+        resp = self.table.get_item(
+            Key={"PK": f"WORKSPACE#personal-{user_id}", "SK": "META"},
+            ConsistentRead=True,
+        )
+        item = resp.get("Item")
+        if item:
+            return Workspace.from_dynamo(item)
         for workspace in self.list_workspaces_for_user(user_id):
             if workspace.is_personal and workspace.owner_user_id == user_id:
                 return workspace

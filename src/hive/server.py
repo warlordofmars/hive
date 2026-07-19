@@ -950,6 +950,12 @@ async def recall(
         # returns the updated Memory (None if it was deleted or expired between
         # the lookup above and the update).
         memory = storage.record_recall(key)
+        if memory is not None:
+            # Re-check the re-resolved row: record_recall performs its own
+            # KeyIndex lookup, and the key mapping can change between the two
+            # calls (delete + recreate in another workspace). Never return a
+            # value the first check didn't cover.
+            _check_workspace_access(storage, memory, f"No memory found for key '{key}'.")
     if memory is None:
         logger.warning(
             "Memory not found for key '%s'",
