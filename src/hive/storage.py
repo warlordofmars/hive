@@ -1234,6 +1234,27 @@ class HiveStorage:
         self.table.delete_item(Key={"PK": f"INVITE#{invite_id}", "SK": "META"})
         return True
 
+    def claim_invite(self, invite_id: str) -> bool:
+        """Atomically consume an invite via a conditional delete.
+
+        Returns True when this caller performed the delete, False when the
+        invite was already gone (never existed, TTL-expired out, or
+        concurrently redeemed). DynamoDB serialises the conditional
+        deletes, so exactly one of N concurrent claimants gets True —
+        mirrors the conditional-write pattern used for auth-code
+        redemption.
+        """
+        try:
+            self.table.delete_item(
+                Key={"PK": f"INVITE#{invite_id}", "SK": "META"},
+                ConditionExpression="attribute_exists(PK)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
     def list_pending_invites_for_email(self, email: str) -> list[Invite]:
         """Return every non-expired invite targeting the given email.
 

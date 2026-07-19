@@ -2520,6 +2520,33 @@ class TestInviteStorage:
     def test_delete_nonexistent_returns_false(self, storage):
         assert storage.delete_invite("no-such-invite") is False
 
+    def test_claim_invite_consumes_once(self, storage):
+        inv = self._invite()
+        storage.put_invite(inv)
+        assert storage.claim_invite(inv.invite_id) is True
+        assert storage.get_invite(inv.invite_id) is None
+        # A second claim loses — the conditional delete fails.
+        assert storage.claim_invite(inv.invite_id) is False
+
+    def test_claim_invite_missing_returns_false(self, storage):
+        assert storage.claim_invite("no-such-invite") is False
+
+    def test_claim_invite_reraises_unexpected_client_error(self, storage):
+        """Non-ConditionalCheck ClientErrors must propagate."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "DeleteItem",
+        )
+        with (
+            patch.object(storage.table, "delete_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.claim_invite("any-invite")
+
     def test_list_pending_invites_for_email_filters_by_email(self, storage):
         a = self._invite(email="a@example.com")
         b = self._invite(email="b@example.com")

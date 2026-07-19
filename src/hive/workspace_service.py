@@ -166,7 +166,7 @@ def send_invite(
 
 
 def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> WorkspaceMember:
-    """Redeem an invite: add the membership, consume the invite, audit it.
+    """Redeem an invite: consume the invite, add the membership, audit it.
 
     Raises :class:`InviteError` when the invite is missing (never existed,
     already redeemed, or TTL-expired out of the table) or past its
@@ -175,6 +175,11 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
     would create an orphaned MEMBER row pointing at a non-existent
     workspace. Matching the invite email to the accepting user is the
     caller's responsibility — it knows the authenticated user's email.
+
+    Redemption is single-use: the invite is consumed with an atomic
+    conditional delete (``claim_invite``) *before* the membership is
+    written, so of N concurrent acceptors exactly one adds the member and
+    emits the audit event — the rest get :class:`InviteError`.
     """
     invite = storage.get_invite(invite_id)
     if invite is None or invite.is_expired:
@@ -183,12 +188,15 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
         raise WorkspaceNotFoundError(
             f"Workspace '{invite.workspace_id}' no longer exists; invite cannot be accepted."
         )
+    if not storage.claim_invite(invite_id):
+        # Lost the race with a concurrent acceptor — the invite was
+        # consumed between the read and the claim.
+        raise InviteError(f"Invite '{invite_id}' not found or expired.")
     member = storage.add_workspace_member(
         workspace_id=invite.workspace_id,
         user_id=user_id,
         role=invite.role,
     )
-    storage.delete_invite(invite_id)
     _audit(
         storage,
         EventType.workspace_invite_accepted,

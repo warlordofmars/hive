@@ -239,6 +239,26 @@ class TestAcceptInvite:
         assert storage.get_workspace_member(ws.workspace_id, "u2") is None
         assert _audit_events(storage, EventType.workspace_invite_accepted) == []
 
+    def test_concurrent_redemption_loser_raises_without_membership_or_audit(
+        self, storage, monkeypatch
+    ):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="racer@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        # Simulate losing the claim race: the invite was consumed by a
+        # concurrent acceptor between the read and the conditional delete.
+        monkeypatch.setattr(HiveStorage, "claim_invite", lambda self, invite_id: False)
+        with pytest.raises(workspace_service.InviteError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        assert storage.get_workspace_member(ws.workspace_id, "u2") is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
     def test_workspace_deleted_after_invite_raises_without_membership_or_audit(self, storage):
         ws = workspace_service.create_workspace(storage, name="Doomed", owner_user_id="u1")
         invite = workspace_service.send_invite(
