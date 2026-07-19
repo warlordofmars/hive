@@ -55,6 +55,7 @@ _UID_FILTER = " AND owner_user_id = :uid"
 _WSID_FILTER = " AND workspace_id = :wsid"
 _PK_PREFIX_KEY = ":prefix"
 _SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
+_APIKEY_PK_PREFIX = "APIKEY#"
 
 # Version retention
 _VERSION_RETENTION_DAYS = int(os.environ.get("HIVE_VERSION_RETENTION_DAYS", "30"))
@@ -1877,7 +1878,7 @@ class HiveStorage:
         query_kwargs: dict[str, Any] = {
             "IndexName": "ApiKeyHashIndex",
             "KeyConditionExpression": Key("key_hash").eq(key_hash),
-            "FilterExpression": Attr("SK").eq("META") & Attr("PK").begins_with("APIKEY#"),
+            "FilterExpression": Attr("SK").eq("META") & Attr("PK").begins_with(_APIKEY_PK_PREFIX),
             "Limit": 1,
         }
         try:
@@ -1905,7 +1906,7 @@ class HiveStorage:
         resp = self.table.scan(
             FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
             ExpressionAttributeValues={
-                _PK_PREFIX_KEY: "APIKEY#",
+                _PK_PREFIX_KEY: _APIKEY_PK_PREFIX,
                 ":sk": "META",
                 ":hash": key_hash,
             },
@@ -1917,7 +1918,7 @@ class HiveStorage:
         resp = self.table.scan(
             FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
             ExpressionAttributeValues={
-                _PK_PREFIX_KEY: "APIKEY#",
+                _PK_PREFIX_KEY: _APIKEY_PK_PREFIX,
                 ":sk": "META",
                 ":uid": owner_user_id,
             },
