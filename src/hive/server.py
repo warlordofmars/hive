@@ -277,6 +277,19 @@ def _check_workspace_access(storage: HiveStorage, memory: Memory, error: str) ->
         raise ToolError(error)
 
 
+def _workspace_visible(memory: Memory, workspace_id: str | None) -> bool:
+    """Query-path workspace visibility predicate (#493).
+
+    Mirrors ``_check_workspace_access`` for aggregate reads (list / search /
+    summarise / pack): memories without a ``workspace_id`` (pre-migration
+    rows) stay visible until the idempotent post-deploy migration stamps
+    them; stamped memories are visible only within the caller's resolved
+    workspace. A ``None`` caller workspace (unresolvable scope) fails closed
+    to unstamped memories only.
+    """
+    return memory.workspace_id is None or memory.workspace_id == workspace_id
+
+
 def _log(storage: HiveStorage, event: ActivityEvent) -> None:
     """Record the event in both the user-visible activity log and the
     immutable compliance audit log (#395).
@@ -1169,7 +1182,16 @@ async def forget_all(
         raise ToolError(
             "Client is not associated with a user account; per-user memory scoping is required."
         )
-    deleted = storage.delete_memories_by_tag(tag, owner_user_id=client.owner_user_id)
+    # Workspace boundary (#493): bulk deletion honours the same compat rules
+    # as the keyed `forget` guard — memories stamped with a foreign workspace
+    # survive, unstamped (pre-migration) rows remain deletable by their owner.
+    workspace_id, _ = _caller_workspace_scope(storage)
+    deleted = storage.delete_memories_by_tag(
+        tag,
+        owner_user_id=client.owner_user_id,
+        workspace_id=workspace_id,
+        workspace_scoped=True,
+    )
     _log(
         storage,
         ActivityEvent(
@@ -1407,10 +1429,18 @@ async def list_memories(
             "Client is not associated with a user account; per-user memory scoping is required."
         )
     owner_user_id = client.owner_user_id
+    # Workspace scoping (#493): aggregate reads only surface memories in the
+    # caller's resolved workspace (plus unstamped pre-migration rows).
+    workspace_id, _ = _caller_workspace_scope(storage)
 
     limit = max(1, min(limit, 500))
     memories, next_cursor = storage.list_memories_by_tag(
-        tag, limit=limit, cursor=cursor, owner_user_id=owner_user_id
+        tag,
+        limit=limit,
+        cursor=cursor,
+        owner_user_id=owner_user_id,
+        workspace_id=workspace_id,
+        workspace_scoped=True,
     )
     if not include_redacted:
         memories = [m for m in memories if not m.is_redacted]
@@ -1482,7 +1512,10 @@ async def list_tags(ctx: Context | None = None) -> dict[str, Any]:
         raise ToolError(
             "Client is not associated with a user account; per-user memory scoping is required."
         )
-    tags = storage.list_distinct_tags(client.owner_user_id)
+    # Workspace scoping (#493): only tags carried by memories visible in the
+    # caller's resolved workspace (plus unstamped pre-migration entries).
+    workspace_id, _ = _caller_workspace_scope(storage)
+    tags = storage.list_distinct_tags(client.owner_user_id, workspace_id, workspace_scoped=True)
     duration_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Listed %d distinct tags",
@@ -1533,9 +1566,18 @@ async def summarize_context(
             "Client is not associated with a user account; per-user memory scoping is required."
         )
     owner_user_id = client.owner_user_id
+    # Workspace scoping (#493): a summary must never synthesise from another
+    # workspace's memories.
+    workspace_id, _ = _caller_workspace_scope(storage)
 
     await _report_progress(ctx, 0, 2, f"Retrieving memories for '{topic}'...")
-    memories, _ = storage.list_memories_by_tag(topic, limit=500, owner_user_id=owner_user_id)
+    memories, _ = storage.list_memories_by_tag(
+        topic,
+        limit=500,
+        owner_user_id=owner_user_id,
+        workspace_id=workspace_id,
+        workspace_scoped=True,
+    )
     # Freshest first, so both the sampling prompt and the listed fallback lead
     # with the most recent memories (#658).
     memories.sort(key=lambda m: m.updated_at, reverse=True)
@@ -1660,9 +1702,14 @@ async def search_memories(
     search_top_k = 50 if required_tags else min(max(top_k * 3, 10), 50)
 
     owner_user_id = _require_owner_user_id(storage, client_id)
+    # Workspace scoping (#493): filter foreign-workspace vectors at query
+    # time so they never crowd the candidate pool.
+    workspace_id, _ = _caller_workspace_scope(storage)
     await _report_progress(ctx, 0, 3, f"Running vector search for '{query}'...")
     try:
-        pairs = _vector_store().search(query, owner_user_id, top_k=search_top_k)
+        pairs = _vector_store().search(
+            query, owner_user_id, top_k=search_top_k, workspace_id=workspace_id
+        )
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
     except Exception:
@@ -1673,6 +1720,11 @@ async def search_memories(
         ctx, 1, 3, f"Vector search returned {len(pairs)} candidates; hydrating..."
     )
     hydrated = storage.hydrate_memory_ids(pairs)
+    # Authoritative workspace check against the DynamoDB rows, applied BEFORE
+    # ranking/limits: pre-#493 vectors carry no workspace metadata, so the
+    # query-time filter alone can't exclude a memory the migration stamped
+    # into a foreign workspace (#493).
+    hydrated = [(m, sem) for m, sem in hydrated if _workspace_visible(m, workspace_id)]
 
     # Score each hydrated memory. sem_map lets us pair each Memory with its
     # original cosine similarity; absent memories (hydrate dropped expired
@@ -1799,17 +1851,25 @@ async def relate_memories(
             )
 
     owner_user_id = _require_owner_user_id(storage, client_id)
+    # Workspace scoping (#493): filter foreign-workspace vectors at query time.
+    workspace_id, _ = _caller_workspace_scope(storage)
     try:
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
-        pairs = _vector_store().search(query_value, owner_user_id, top_k=top_k + 1)
+        pairs = _vector_store().search(
+            query_value, owner_user_id, top_k=top_k + 1, workspace_id=workspace_id
+        )
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
     except Exception:
         logger.warning("Vector search failed (non-fatal)", exc_info=True)
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
 
-    pairs = [(mid, score) for mid, score in pairs if mid != memory.memory_id][:top_k]
+    pairs = [(mid, score) for mid, score in pairs if mid != memory.memory_id]
     results = storage.hydrate_memory_ids(pairs)
+    # Authoritative workspace check before the top_k truncation, so a
+    # foreign-workspace candidate (pre-#493 vector without workspace
+    # metadata) can neither surface nor crowd out a visible result (#493).
+    results = [(m, score) for m, score in results if _workspace_visible(m, workspace_id)][:top_k]
 
     _log(
         storage,
@@ -2028,8 +2088,12 @@ async def pack_context(
     )
 
     owner_user_id = _require_owner_user_id(storage, client_id)
+    # Workspace scoping (#493): filter foreign-workspace vectors at query time.
+    workspace_id, _ = _caller_workspace_scope(storage)
     try:
-        pairs = _vector_store().search(topic, owner_user_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL)
+        pairs = _vector_store().search(
+            topic, owner_user_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL, workspace_id=workspace_id
+        )
     except VectorIndexNotFoundError:
         return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
     except Exception:
@@ -2037,6 +2101,9 @@ async def pack_context(
         return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
 
     hydrated = storage.hydrate_memory_ids(pairs)
+    # Authoritative workspace check before scoring/packing — a packed context
+    # block must never include another workspace's memories (#493).
+    hydrated = [(m, sem) for m, sem in hydrated if _workspace_visible(m, workspace_id)]
 
     # Score every candidate through the standard blend pipeline so the
     # `relevance+recency` mode matches search_memories exactly.

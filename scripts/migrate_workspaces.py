@@ -65,6 +65,8 @@ class MigrationStats:
     memories_seen: int = 0
     memories_migrated: int = 0
     memories_skipped: int = 0
+    user_tags_stamped: int = 0
+    user_tags_skipped: int = 0
     clients_seen: int = 0
     clients_migrated: int = 0
     clients_skipped: int = 0
@@ -78,6 +80,8 @@ class MigrationStats:
             f"memories_seen={self.memories_seen} "
             f"memories_migrated={self.memories_migrated} "
             f"memories_skipped={self.memories_skipped} "
+            f"user_tags_stamped={self.user_tags_stamped} "
+            f"user_tags_skipped={self.user_tags_skipped} "
             f"clients_seen={self.clients_seen} "
             f"clients_migrated={self.clients_migrated} "
             f"clients_skipped={self.clients_skipped} "
@@ -109,9 +113,7 @@ def _find_personal_workspace(
             return ws
     # Slow-path: scan for orphaned WORKSPACE META (partial prior run).
     scan_kwargs: dict[str, Any] = {
-        "FilterExpression": (
-            "SK = :sk AND begins_with(PK, :prefix) AND owner_user_id = :uid"
-        ),
+        "FilterExpression": ("SK = :sk AND begins_with(PK, :prefix) AND owner_user_id = :uid"),
         "ExpressionAttributeValues": {
             ":sk": "META",
             ":prefix": "WORKSPACE#",
@@ -245,6 +247,52 @@ def migrate_memories(
         stats.memories_migrated += 1
 
 
+def migrate_user_tags(
+    storage: HiveStorage,
+    stats: MigrationStats,
+    *,
+    dry_run: bool,
+) -> None:
+    """Stamp every USERTAG item with the ``workspace_id`` of its memory (#493).
+
+    ``list_tags`` filters on the ``workspace_id`` attribute of USERTAG items
+    (PK=USERTAG#{user_id}, SK=TAG#{tag}#MEMORY#{id}); items written before
+    the workspace cutover carry none, so their tag names stay visible in all
+    of the owner's workspaces until stamped. Runs after ``migrate_memories``
+    so each memory's META ``workspace_id`` (the source of truth) is already
+    populated. Idempotent: already-stamped items and rows whose memory is
+    still unstamped are skipped.
+    """
+    for memory in storage.iter_all_memories():
+        if memory.workspace_id is None or memory.owner_user_id is None:
+            continue
+        for tag in memory.tags:
+            if dry_run:
+                stats.user_tags_stamped += 1
+                continue
+            try:
+                storage.table.update_item(
+                    Key={
+                        "PK": f"USERTAG#{memory.owner_user_id}",
+                        "SK": f"TAG#{tag}#MEMORY#{memory.memory_id}",
+                    },
+                    UpdateExpression="SET workspace_id = :wsid",
+                    ExpressionAttributeValues={":wsid": memory.workspace_id},
+                    ConditionExpression=(
+                        "attribute_exists(PK) AND attribute_exists(SK)"
+                        " AND attribute_not_exists(workspace_id)"
+                    ),
+                )
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    # Already stamped, or the USERTAG row is missing (memory
+                    # deleted mid-migration) — both are safe to skip.
+                    stats.user_tags_skipped += 1
+                    continue
+                raise
+            stats.user_tags_stamped += 1
+
+
 def migrate_clients(
     storage: HiveStorage,
     user_to_workspace: dict[str, str],
@@ -314,6 +362,7 @@ def run(*, dry_run: bool = False, storage: HiveStorage | None = None) -> Migrati
 
     user_to_workspace = migrate_users(store, stats, dry_run=dry_run)
     migrate_memories(store, user_to_workspace, stats, dry_run=dry_run)
+    migrate_user_tags(store, stats, dry_run=dry_run)
     migrate_clients(store, user_to_workspace, stats, dry_run=dry_run)
 
     if dry_run:

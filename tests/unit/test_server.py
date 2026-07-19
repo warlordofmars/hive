@@ -4443,6 +4443,184 @@ class TestWorkspaceStamping:
         assert _text(await recall(key="legacy-resolved", ctx=ctx)) == "v"
 
 
+@pytest.mark.asyncio
+class TestWorkspaceQueryScoping:
+    """Aggregate read paths are scoped to the caller's workspace (#493).
+
+    The strict case: the foreign memory shares the caller's ``owner_user_id``
+    (same account, different workspace) so only the workspace boundary — not
+    the account boundary — can keep it out of list / tags / search /
+    summarise / pack results.
+    """
+
+    def _seed_sibling_and_legacy(self, storage):
+        """Insert a same-account foreign-workspace memory and an unstamped
+        legacy memory alongside the ws-a caller from ``workspace_env``."""
+        from hive.models import Memory
+
+        sibling = Memory(
+            key="sibling-key",
+            value="sibling-secret",
+            tags=["shared", "ws-b-tag"],
+            owner_client_id="client-b2",
+            owner_user_id="user-a",
+            workspace_id="ws-b",
+        )
+        legacy = Memory(
+            key="legacy-key",
+            value="legacy-value",
+            tags=["shared", "legacy-tag"],
+            owner_client_id="client-old",
+            owner_user_id="user-a",
+        )
+        storage.put_memory(sibling)
+        storage.put_memory(legacy)
+        return sibling, legacy
+
+    async def test_list_memories_excludes_foreign_workspace(self, workspace_env):
+        from hive.server import list_memories, remember
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("own-key", "own-value", ["shared"], ctx=ctx)
+        self._seed_sibling_and_legacy(storage)
+
+        result = await list_memories(tag="shared", ctx=ctx)
+        keys = {m["key"] for m in _body(result)["items"]}
+        # Unstamped legacy rows stay visible (compat); ws-b rows never do.
+        assert keys == {"own-key", "legacy-key"}
+
+    async def test_list_tags_excludes_foreign_workspace_tags(self, workspace_env):
+        from hive.server import list_tags, remember
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("own-key", "own-value", ["own-tag"], ctx=ctx)
+        self._seed_sibling_and_legacy(storage)
+
+        tags = _body(await list_tags(ctx=ctx))["tags"]
+        assert "own-tag" in tags
+        assert "legacy-tag" in tags
+        assert "ws-b-tag" not in tags
+        # "shared" is carried by the visible legacy row too, so it stays.
+        assert "shared" in tags
+
+    async def test_summarize_context_excludes_foreign_workspace(self, workspace_env):
+        from hive.server import remember, summarize_context
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("own-key", "own-value", ["shared"], ctx=ctx)
+        self._seed_sibling_and_legacy(storage)
+
+        text = _text(await summarize_context(topic="shared", ctx=ctx))
+        assert "own-value" in text
+        assert "legacy-value" in text
+        assert "sibling-secret" not in text
+
+    async def test_search_memories_excludes_foreign_workspace(self, workspace_env):
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("own-key", "own-value", [], ctx=ctx)
+        sibling, legacy = self._seed_sibling_and_legacy(storage)
+        own = storage.get_memory_by_key("own-key")
+
+        mock_vs = _make_mock_vector_store(
+            [(sibling.memory_id, 0.99), (own.memory_id, 0.5), (legacy.memory_id, 0.4)]
+        )
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("secret", ctx=ctx)
+
+        keys = {item["key"] for item in _body(result)["items"]}
+        assert keys == {"own-key", "legacy-key"}
+        # The workspace claim is pushed down to the S3 Vectors query filter.
+        assert mock_vs.search.call_args.kwargs["workspace_id"] == "ws-a"
+
+    async def test_search_foreign_hits_cannot_crowd_out_results(self, workspace_env):
+        """The workspace filter applies before ranking/limits — a top-scoring
+        foreign candidate must not consume the only top_k slot."""
+        from unittest.mock import patch
+
+        from hive.server import remember, search_memories
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("own-key", "own-value", [], ctx=ctx)
+        sibling, _ = self._seed_sibling_and_legacy(storage)
+        own = storage.get_memory_by_key("own-key")
+
+        mock_vs = _make_mock_vector_store([(sibling.memory_id, 0.99), (own.memory_id, 0.1)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await search_memories("secret", top_k=1, ctx=ctx)
+
+        body = _body(result)
+        assert body["count"] == 1
+        assert body["items"][0]["key"] == "own-key"
+
+    async def test_relate_memories_excludes_foreign_workspace(self, workspace_env):
+        from unittest.mock import patch
+
+        from hive.server import relate_memories, remember
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("src-key", "source value", [], ctx=ctx)
+        await remember("own-key", "own-value", [], ctx=ctx)
+        sibling, _ = self._seed_sibling_and_legacy(storage)
+        src = storage.get_memory_by_key("src-key")
+        own = storage.get_memory_by_key("own-key")
+
+        # Foreign candidate outranks the visible one; with top_k=1 it would
+        # crowd out own-key if the filter ran after truncation.
+        mock_vs = _make_mock_vector_store(
+            [(src.memory_id, 1.0), (sibling.memory_id, 0.9), (own.memory_id, 0.5)]
+        )
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            result = await relate_memories(key="src-key", top_k=1, ctx=ctx)
+
+        body = _body(result)
+        assert [item["key"] for item in body["items"]] == ["own-key"]
+        assert mock_vs.search.call_args.kwargs["workspace_id"] == "ws-a"
+
+    async def test_pack_context_excludes_foreign_workspace(self, workspace_env):
+        from unittest.mock import patch
+
+        from hive.server import pack_context, remember
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("own-key", "own-value", [], ctx=ctx)
+        sibling, _ = self._seed_sibling_and_legacy(storage)
+        own = storage.get_memory_by_key("own-key")
+
+        mock_vs = _make_mock_vector_store([(sibling.memory_id, 0.99), (own.memory_id, 0.5)])
+        with patch("hive.server._vector_store", return_value=mock_vs):
+            rendered = _text(await pack_context("secret", ctx=ctx))
+
+        assert "own-value" in rendered
+        assert "sibling-secret" not in rendered
+        assert mock_vs.search.call_args.kwargs["workspace_id"] == "ws-a"
+
+    async def test_forget_all_spares_foreign_workspace(self, workspace_env):
+        from hive.server import forget_all, remember
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember("own-key", "own-value", ["shared"], ctx=ctx)
+        sibling, legacy = self._seed_sibling_and_legacy(storage)
+
+        result = await forget_all(tag="shared", ctx=ctx)
+        assert "Deleted 2 memories" in _text(result)
+        assert storage.get_memory_by_key("own-key") is None
+        assert storage.get_memory_by_id(legacy.memory_id) is None
+        # The same-account foreign-workspace memory survives the bulk delete.
+        assert storage.get_memory_by_id(sibling.memory_id) is not None
+
+
 class TestWorkspaceScopeHelpers:
     def test_caller_scope_without_token_context_is_none(self, server_env):
         from unittest.mock import MagicMock as _MM

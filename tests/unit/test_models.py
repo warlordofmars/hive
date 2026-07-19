@@ -82,6 +82,27 @@ class TestMemory:
             assert item["owner_client_id"] == "c1"
             assert item["owner_user_id"] == "user-1"
 
+    def test_to_dynamo_user_tag_items_stamps_workspace_id(self):
+        # Workspace scoping (#493): list_distinct_tags filters on the USERTAG
+        # item's workspace_id attribute, so it must round-trip through here.
+        m = Memory(
+            key="k",
+            value="v",
+            tags=["t"],
+            owner_client_id="c1",
+            owner_user_id="user-1",
+            workspace_id="ws-1",
+        )
+        (item,) = m.to_dynamo_user_tag_items()
+        assert item["workspace_id"] == "ws-1"
+
+    def test_to_dynamo_user_tag_items_omits_workspace_id_when_unstamped(self):
+        # Pre-migration rows carry no workspace attribute — the absence is
+        # what keeps them visible in every workspace of the owner.
+        m = Memory(key="k", value="v", tags=["t"], owner_client_id="c1", owner_user_id="user-1")
+        (item,) = m.to_dynamo_user_tag_items()
+        assert "workspace_id" not in item
+
     def test_to_dynamo_user_tag_items_no_tags(self):
         m = Memory(key="k", value="v", owner_client_id="c1", owner_user_id="user-1")
         assert m.to_dynamo_user_tag_items() == []

@@ -165,16 +165,21 @@ class Memory(BaseModel):
             raise ValueError("owner_user_id required to build USERTAG items")
         items = []
         for tag in self.tags:
-            items.append(
-                {
-                    "PK": f"USERTAG#{self.owner_user_id}",
-                    "SK": f"TAG#{tag}#MEMORY#{self.memory_id}",
-                    "memory_id": self.memory_id,
-                    "key": self.key,
-                    "owner_client_id": self.owner_client_id,
-                    "owner_user_id": self.owner_user_id,
-                }
-            )
+            item = {
+                "PK": f"USERTAG#{self.owner_user_id}",
+                "SK": f"TAG#{tag}#MEMORY#{self.memory_id}",
+                "memory_id": self.memory_id,
+                "key": self.key,
+                "owner_client_id": self.owner_client_id,
+                "owner_user_id": self.owner_user_id,
+            }
+            # Workspace scoping (#493): stamp tag entries so list_distinct_tags
+            # can filter by workspace without hydrating each memory. Unstamped
+            # entries (pre-migration) stay visible in every workspace of the
+            # owner, matching the memory-level compat rules.
+            if self.workspace_id is not None:
+                item["workspace_id"] = self.workspace_id
+            items.append(item)
         return items
 
     @classmethod

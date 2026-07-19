@@ -135,6 +135,7 @@ class TestHelpers:
             workspaces_created=1,
             memories_seen=2,
             memories_migrated=2,
+            user_tags_stamped=4,
             clients_seen=1,
             clients_migrated=1,
             tokens_revoked=3,
@@ -143,6 +144,7 @@ class TestHelpers:
         assert "users_seen=1" in text
         assert "workspaces_created=1" in text
         assert "memories_migrated=2" in text
+        assert "user_tags_stamped=4" in text
         assert "clients_migrated=1" in text
         assert "tokens_revoked=3" in text
 
@@ -256,6 +258,106 @@ class TestMemoryMigration:
             stats = run(storage=storage)
         assert stats.memories_skipped == 1
         assert stats.memories_migrated == 0
+
+
+class TestUserTagMigration:
+    """USERTAG items gain the workspace stamp that list_tags filters on (#493)."""
+
+    def _user_tag_item(self, storage, mem: Memory, tag: str) -> dict | None:
+        resp = storage.table.get_item(
+            Key={
+                "PK": f"USERTAG#{mem.owner_user_id}",
+                "SK": f"TAG#{tag}#MEMORY#{mem.memory_id}",
+            }
+        )
+        return resp.get("Item")
+
+    def _seed_tagged_memory(self, storage, owner_user_id: str, tags: list[str]) -> Memory:
+        mem = Memory(
+            key="tagged",
+            value="v",
+            tags=tags,
+            owner_client_id="client-1",
+            owner_user_id=owner_user_id,
+        )
+        storage.put_memory(mem)
+        return mem
+
+    def test_stamps_workspace_id_on_user_tag_items(self, storage):
+        alice = _seed_user(storage)
+        mem = self._seed_tagged_memory(storage, alice.user_id, ["t1", "t2"])
+        stats = run(storage=storage)
+        assert stats.user_tags_stamped == 2
+        ws = storage.list_workspaces_for_user(alice.user_id)[0]
+        for tag in ("t1", "t2"):
+            item = self._user_tag_item(storage, mem, tag)
+            assert item["workspace_id"] == ws.workspace_id
+
+    def test_rerun_skips_already_stamped_user_tags(self, storage):
+        alice = _seed_user(storage)
+        self._seed_tagged_memory(storage, alice.user_id, ["t1"])
+        run(storage=storage)
+        stats2 = run(storage=storage)
+        assert stats2.user_tags_stamped == 0
+        assert stats2.user_tags_skipped == 1
+
+    def test_skips_user_tags_when_memory_meta_stays_unstamped(self, storage):
+        # A memory referencing an unknown user never gets a META stamp, so its
+        # USERTAG rows must stay unstamped too (no workspace to map to).
+        mem = self._seed_tagged_memory(storage, "ghost-user", ["t1"])
+        stats = run(storage=storage)
+        assert stats.user_tags_stamped == 0
+        assert stats.user_tags_skipped == 0
+        assert "workspace_id" not in self._user_tag_item(storage, mem, "t1")
+
+    def test_missing_user_tag_row_is_skipped(self, storage):
+        alice = _seed_user(storage)
+        mem = self._seed_tagged_memory(storage, alice.user_id, ["t1"])
+        # Simulate a USERTAG row lost before the migration (memory deleted
+        # mid-run): the conditional update fails and is counted as a skip.
+        storage.table.delete_item(
+            Key={
+                "PK": f"USERTAG#{alice.user_id}",
+                "SK": f"TAG#t1#MEMORY#{mem.memory_id}",
+            }
+        )
+        stats = run(storage=storage)
+        assert stats.user_tags_stamped == 0
+        assert stats.user_tags_skipped == 1
+
+    def test_unexpected_client_error_propagates(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        alice = _seed_user(storage)
+        self._seed_tagged_memory(storage, alice.user_id, ["t1"])
+        # First run stamps the META so the second run's only update_item call
+        # comes from the user-tag phase.
+        run(storage=storage)
+        error = ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "boom"}},
+            "UpdateItem",
+        )
+        with (
+            patch.object(storage.table, "update_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            run(storage=storage)
+
+    def test_dry_run_counts_user_tags_without_writing(self, storage):
+        alice = _seed_user(storage)
+        mem = self._seed_tagged_memory(storage, alice.user_id, ["t1"])
+        # Pre-stamp the META only (as a completed memory phase would have),
+        # leaving the USERTAG row unstamped.
+        storage.table.update_item(
+            Key={"PK": f"MEMORY#{mem.memory_id}", "SK": "META"},
+            UpdateExpression="SET workspace_id = :wsid",
+            ExpressionAttributeValues={":wsid": "ws-pre"},
+        )
+        stats = run(dry_run=True, storage=storage)
+        assert stats.user_tags_stamped == 1
+        assert "workspace_id" not in self._user_tag_item(storage, mem, "t1")
 
 
 class TestClientMigration:
