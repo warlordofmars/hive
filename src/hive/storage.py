@@ -1902,28 +1902,47 @@ class HiveStorage:
             return self._scan_api_key_by_hash(key_hash)
 
     def _scan_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
-        """Legacy full-table-scan API key lookup — fallback for ApiKeyHashIndex."""
-        resp = self.table.scan(
-            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
-            ExpressionAttributeValues={
+        """Legacy full-table-scan API key lookup — fallback for ApiKeyHashIndex.
+
+        Paginates on ``LastEvaluatedKey``: a filtered Scan can return an
+        empty page while matching items remain in later pages, and this is
+        the resilience path for API key auth — it must not false-negative.
+        """
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
+            "ExpressionAttributeValues": {
                 _PK_PREFIX_KEY: _APIKEY_PK_PREFIX,
                 ":sk": "META",
                 ":hash": key_hash,
             },
-        )
-        items = resp.get("Items", [])
-        return ApiKey.from_dynamo(items[0]) if items else None
+        }
+        while True:
+            resp = self.table.scan(**scan_kwargs)
+            items = resp.get("Items", [])
+            if items:
+                return ApiKey.from_dynamo(items[0])
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                return None
+            scan_kwargs["ExclusiveStartKey"] = last_key
 
     def list_api_keys_for_user(self, owner_user_id: str) -> list[ApiKey]:
-        resp = self.table.scan(
-            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
-            ExpressionAttributeValues={
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
+            "ExpressionAttributeValues": {
                 _PK_PREFIX_KEY: _APIKEY_PK_PREFIX,
                 ":sk": "META",
                 ":uid": owner_user_id,
             },
-        )
-        return [ApiKey.from_dynamo(item) for item in resp.get("Items", [])]
+        }
+        keys: list[ApiKey] = []
+        while True:
+            resp = self.table.scan(**scan_kwargs)
+            keys.extend(ApiKey.from_dynamo(item) for item in resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                return keys
+            scan_kwargs["ExclusiveStartKey"] = last_key
 
     def delete_api_key(self, key_id: str) -> bool:
         resp = self.table.get_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})

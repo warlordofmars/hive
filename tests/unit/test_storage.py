@@ -2632,6 +2632,37 @@ class TestApiKeyStorage:
         assert found is not None
         assert found.key_id == k.key_id
 
+    def test_scan_fallback_follows_last_evaluated_key(self, storage):
+        """The fallback scan pages past empty filtered pages — it must not false-negative."""
+        from unittest.mock import patch
+
+        k = self._key("u1", "scanpage")
+        pages = [
+            {"Items": [], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
+            {"Items": [k.to_dynamo()]},
+        ]
+        with patch.object(storage.table, "scan", side_effect=pages) as mock_scan:
+            found = storage._scan_api_key_by_hash("hash-scanpage")
+        assert found is not None
+        assert found.key_id == k.key_id
+        assert mock_scan.call_count == 2
+        assert mock_scan.call_args_list[1].kwargs["ExclusiveStartKey"] == {"PK": "x", "SK": "y"}
+
+    def test_list_for_user_follows_last_evaluated_key(self, storage):
+        """list_api_keys_for_user aggregates keys across scan pages."""
+        from unittest.mock import patch
+
+        k1 = self._key("u9", "page1")
+        k2 = self._key("u9", "page2")
+        pages = [
+            {"Items": [k1.to_dynamo()], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
+            {"Items": [k2.to_dynamo()]},
+        ]
+        with patch.object(storage.table, "scan", side_effect=pages) as mock_scan:
+            result = storage.list_api_keys_for_user("u9")
+        assert {k.name for k in result} == {"page1", "page2"}
+        assert mock_scan.call_count == 2
+
     def test_get_by_hash_reraises_unrelated_errors(self, storage):
         """Only index-unavailable errors degrade to a scan — others propagate."""
         from unittest.mock import patch
