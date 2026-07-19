@@ -766,6 +766,20 @@ class TestAcceptInvite:
         resp = ctx.client.post(f"/api/invites/{invite.invite_id}/accept")
         assert resp.status_code == 404
 
+    def test_membership_appearing_mid_accept_409(self, ctx, monkeypatch):
+        from hive.workspace_service import AlreadyMemberError
+
+        invite_id = self._invite(ctx)
+
+        def _raise(*a, **k):
+            raise AlreadyMemberError("already a member")
+
+        # Membership appeared between the endpoint's pre-check and the
+        # service's conditional membership write.
+        monkeypatch.setattr("hive.workspace_service.accept_invite", _raise)
+        ctx.login(_OUTSIDER)
+        assert ctx.client.post(f"/api/invites/{invite_id}/accept").status_code == 409
+
     def test_invite_claimed_concurrently_404(self, ctx, monkeypatch):
         from hive.workspace_service import InviteError
 

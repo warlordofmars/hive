@@ -272,6 +272,27 @@ class TestAcceptInvite:
         assert storage.get_workspace_member(ws.workspace_id, "u2") is None
         assert _audit_events(storage, EventType.workspace_invite_accepted) == []
 
+    def test_existing_membership_raises_already_member_without_role_change(self, storage):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="already@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        # Membership gained through another path before redemption — e.g.
+        # a second invite accepted concurrently.
+        storage.add_workspace_member(ws.workspace_id, "u2", WorkspaceRole.admin)
+        with pytest.raises(workspace_service.AlreadyMemberError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        # The existing (higher) role is untouched, the invite is consumed,
+        # and no audit event is written since no mutation happened.
+        assert storage.get_workspace_member(ws.workspace_id, "u2").role is WorkspaceRole.admin
+        assert storage.get_invite(invite.invite_id) is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
     def test_workspace_deleted_after_invite_raises_without_membership_or_audit(self, storage):
         ws = workspace_service.create_workspace(storage, name="Doomed", owner_user_id="u1")
         invite = workspace_service.send_invite(

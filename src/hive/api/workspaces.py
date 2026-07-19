@@ -34,7 +34,7 @@ from hive import workspace_service
 from hive.api._auth import require_mgmt_user
 from hive.models import Workspace, WorkspaceMember, WorkspaceRole
 from hive.storage import HiveStorage
-from hive.workspace_service import InviteError, WorkspaceNotFoundError
+from hive.workspace_service import AlreadyMemberError, InviteError, WorkspaceNotFoundError
 
 router = APIRouter(tags=["workspaces"])
 
@@ -545,6 +545,12 @@ async def create_invite(
         raise HTTPException(
             status_code=409, detail=f"'{body.email}' is already a member of this workspace"
         )
+    # Best-effort duplicate suppression: the pending-invite listing is a
+    # filtered scan (acceptable at invite volume — see the storage-layer
+    # docstring) and the check-then-write is not atomic. A duplicate that
+    # slips through a concurrent race is harmless: invites are single-use
+    # and TTL out, and redemption's conditional membership write means a
+    # second accept cannot alter an existing member's role.
     if any(
         invite.email.lower() == body.email
         for invite in storage.list_pending_invites_for_workspace(workspace_id)
@@ -612,14 +618,22 @@ async def accept_invite(
             status_code=404, detail="The workspace for this invite no longer exists"
         )
     if storage.get_workspace_member(invite.workspace_id, user_id) is not None:
-        # Leave the invite unconsumed — accepting would overwrite the caller's
-        # existing (possibly higher) role via the membership put.
+        # Friendly pre-check: reject without consuming the invite. The
+        # atomic backstop is the service's conditional membership write —
+        # a membership appearing after this check raises AlreadyMemberError
+        # below rather than being overwritten with the invited role.
         raise HTTPException(status_code=409, detail="You are already a member of this workspace")
     try:
         joined = workspace_service.accept_invite(storage, invite_id=invite_id, user_id=user_id)
     except InviteError as exc:
         # Consumed or TTL-expired between the read and the atomic claim.
         raise HTTPException(status_code=404, detail="Invite not found or expired") from exc
+    except AlreadyMemberError as exc:
+        # Membership appeared between the pre-check and the claim; the
+        # existing row (and role) is untouched.
+        raise HTTPException(
+            status_code=409, detail="You are already a member of this workspace"
+        ) from exc
     except WorkspaceNotFoundError as exc:
         raise HTTPException(
             status_code=404, detail="The workspace for this invite no longer exists"

@@ -43,6 +43,10 @@ class InviteError(Exception):
     """Raised when accepting an invite that is missing or expired."""
 
 
+class AlreadyMemberError(Exception):
+    """Raised when an invite is redeemed by someone who is already a member."""
+
+
 class WorkspaceNotFoundError(Exception):
     """Raised when an invite targets a workspace that does not exist."""
 
@@ -184,6 +188,12 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
     conditional delete (``claim_invite``) *before* the membership is
     written, so of N concurrent acceptors exactly one adds the member and
     emits the audit event — the rest get :class:`InviteError`.
+
+    The membership write is likewise conditional (``overwrite=False``): if
+    the user gained a membership through another path after the claim, the
+    existing row — and whatever role it carries — is left untouched and
+    :class:`AlreadyMemberError` is raised (the invite stays consumed, and
+    no audit event is written since no mutation happened).
     """
     invite = storage.get_invite(invite_id)
     if invite is None or invite.is_expired:
@@ -200,7 +210,12 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
         workspace_id=invite.workspace_id,
         user_id=user_id,
         role=invite.role,
+        overwrite=False,
     )
+    if member is None:
+        raise AlreadyMemberError(
+            f"User '{user_id}' is already a member of workspace '{invite.workspace_id}'."
+        )
     _audit(
         storage,
         EventType.workspace_invite_accepted,

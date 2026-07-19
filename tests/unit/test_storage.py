@@ -2932,6 +2932,34 @@ class TestWorkspaceMemberStorage:
         member = storage.add_workspace_member("ws-1", "u1")
         assert member.role is WorkspaceRole.member
 
+    def test_add_member_no_overwrite_inserts_when_absent(self, storage):
+        member = storage.add_workspace_member("ws-1", "u1", WorkspaceRole.admin, overwrite=False)
+        assert member is not None
+        assert member.role is WorkspaceRole.admin
+        assert storage.get_workspace_member("ws-1", "u1").role is WorkspaceRole.admin
+
+    def test_add_member_no_overwrite_preserves_existing_row(self, storage):
+        storage.add_workspace_member("ws-1", "u1", WorkspaceRole.owner)
+        result = storage.add_workspace_member("ws-1", "u1", WorkspaceRole.member, overwrite=False)
+        assert result is None
+        # The existing (higher) role is untouched.
+        assert storage.get_workspace_member("ws-1", "u1").role is WorkspaceRole.owner
+
+    def test_add_member_no_overwrite_reraises_non_conditional_errors(self, storage):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "PutItem",
+        )
+        with (
+            patch.object(storage.table, "put_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.add_workspace_member("ws-1", "u1", overwrite=False)
+
     def test_list_members(self, storage):
         ws_id = "ws-1"
         storage.add_workspace_member(ws_id, "u1", WorkspaceRole.owner)
