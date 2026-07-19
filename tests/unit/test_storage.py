@@ -3380,6 +3380,27 @@ class TestPersonalWorkspace:
             first.workspace_id
         ]
 
+    def test_ensure_repairs_missing_owner_membership(self, storage):
+        """A Personal workspace META without its owner MEMBER row (partial
+        prior write) is repaired on the next ensure call rather than left to
+        break membership-dependent auth flows."""
+        user = self._user(user_id="partial-user")
+        storage.put_workspace(
+            Workspace(
+                workspace_id=f"personal-{user.user_id}",
+                name="pw@example.com's Personal",
+                owner_user_id=user.user_id,
+                is_personal=True,
+            )
+        )
+        assert storage.get_workspace_member(f"personal-{user.user_id}", user.user_id) is None
+
+        workspace = storage.ensure_personal_workspace(user)
+        assert workspace.workspace_id == f"personal-{user.user_id}"
+        member = storage.get_workspace_member(workspace.workspace_id, user.user_id)
+        assert member is not None
+        assert member.role is WorkspaceRole.owner
+
     def test_get_finds_migration_era_random_id_workspace(self, storage):
         """Personal workspaces created by the #490 migration have random ids —
         they must be found via the WorkspaceMemberIndex fallback and never

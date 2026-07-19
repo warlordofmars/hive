@@ -257,12 +257,14 @@ def _caller_workspace_scope(storage: HiveStorage) -> tuple[str | None, str | Non
 def _check_workspace_access(storage: HiveStorage, memory: Memory, error: str) -> None:
     """Enforce the caller's workspace claim against a memory's workspace (#491).
 
-    Memories without a ``workspace_id`` (pre-migration rows) pass through —
-    the existing owner-based checks still govern them until the migration
-    stamps them.  Workspace-stamped memories are only accessible when the
-    caller's resolved workspace matches; anything else raises ``error``
-    (phrased by the call site to match its not-found/denied semantics so
-    cross-workspace probing learns nothing new).
+    Memories without a ``workspace_id`` (pre-migration rows) pass through
+    unchecked — keyed tools carry no other per-memory ownership check, so
+    such rows remain reachable by key exactly as before this guard, until
+    the idempotent post-deploy migration stamps them.  Workspace-stamped
+    memories are only accessible when the caller's resolved workspace
+    matches; anything else raises ``error`` (phrased by the call site to
+    match its not-found/denied semantics so cross-workspace probing learns
+    nothing new).
     """
     if memory.workspace_id is None:
         return

@@ -1508,18 +1508,24 @@ class HiveStorage:
         ``personal-{user_id}`` so concurrent first-logins converge on the same
         item (both puts are idempotent overwrites of the same keys) instead of
         racing the eventually-consistent GSI lookup into duplicates.
+
+        The owner MEMBER row is verified on every call, not just at creation —
+        a crash between the two writes (or a partial manual fix) must not
+        leave a Personal workspace whose owner has no membership, since role
+        resolution and the workspace-token endpoint depend on that row.
+        Mirrors the MEMBER-row repair in ``scripts/migrate_workspaces.py``.
         """
         workspace = self.get_personal_workspace(user.user_id)
-        if workspace is not None:
-            return workspace
-        workspace = Workspace(
-            workspace_id=f"personal-{user.user_id}",
-            name=f"{user.email}'s Personal",
-            owner_user_id=user.user_id,
-            is_personal=True,
-        )
-        self.put_workspace(workspace)
-        self.add_workspace_member(workspace.workspace_id, user.user_id, WorkspaceRole.owner)
+        if workspace is None:
+            workspace = Workspace(
+                workspace_id=f"personal-{user.user_id}",
+                name=f"{user.email}'s Personal",
+                owner_user_id=user.user_id,
+                is_personal=True,
+            )
+            self.put_workspace(workspace)
+        if self.get_workspace_member(workspace.workspace_id, user.user_id) is None:
+            self.add_workspace_member(workspace.workspace_id, user.user_id, WorkspaceRole.owner)
         return workspace
 
     # ------------------------------------------------------------------
