@@ -9,13 +9,13 @@ every request — but we still persist tokens for revocation support.
 
 from __future__ import annotations
 
-import functools
 import os
 import secrets
 from typing import Any
 
 from jose import JWTError, jwt
 
+from hive.auth.secret_cache import ttl_cached
 from hive.models import Token
 from hive.storage import HiveStorage
 
@@ -26,7 +26,12 @@ JWT_ALGORITHM = "HS256"
 ISSUER = os.environ.get("HIVE_ISSUER", "https://hive.example.com").rstrip("/")
 
 
-@functools.lru_cache(maxsize=1)
+def _random_jwt_secret() -> str:
+    """First-fetch fallback: a random secret (single-process local dev only)."""
+    return secrets.token_hex(32)
+
+
+@ttl_cached(fallback=_random_jwt_secret)
 def _jwt_secret() -> str:
     """Return the JWT signing secret.
 
@@ -34,18 +39,19 @@ def _jwt_secret() -> str:
     1. HIVE_JWT_SECRET env var (tests / local dev)
     2. SSM Parameter /hive/jwt-secret (Lambda runtime)
     3. Random fallback (single-process local dev only)
+
+    TTL-cached (#585) so SSM rotations take effect in a warm Lambda; a failed
+    refresh serves the previous value (fail-static) rather than minting a
+    random secret that would invalidate every outstanding token.
     """
     if secret := os.environ.get("HIVE_JWT_SECRET"):
         return secret
-    try:
-        import boto3
+    import boto3
 
-        param_name = os.environ.get("HIVE_JWT_SECRET_PARAM", "/hive/jwt-secret")
-        ssm = boto3.client("ssm")
-        resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
-        return resp["Parameter"]["Value"]
-    except Exception:
-        return secrets.token_hex(32)
+    param_name = os.environ.get("HIVE_JWT_SECRET_PARAM", "/hive/jwt-secret")
+    ssm = boto3.client("ssm")
+    resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
+    return str(resp["Parameter"]["Value"])
 
 
 def issue_jwt(token: Token) -> str:
@@ -76,25 +82,30 @@ def decode_jwt(token_str: str) -> dict[str, Any]:
     return jwt.decode(token_str, _jwt_secret(), algorithms=[JWT_ALGORITHM], issuer=ISSUER)
 
 
-@functools.lru_cache(maxsize=1)
+def _origin_verify_unavailable() -> str | None:
+    """First-fetch fallback: disable the origin check when SSM is unreachable."""
+    return None
+
+
+@ttl_cached(fallback=_origin_verify_unavailable)
 def _origin_verify_secret() -> str | None:
     """Return the expected X-Origin-Verify header value, or None if not configured.
 
     None disables the check (local dev / non-prod without WAF).
+
+    TTL-cached (#585) so SSM rotations take effect in a warm Lambda; a failed
+    refresh serves the previous value (fail-static).
     """
     if secret := os.environ.get("HIVE_ORIGIN_VERIFY_SECRET"):
         return secret
     param_name = os.environ.get("HIVE_ORIGIN_VERIFY_PARAM")
     if not param_name:
         return None
-    try:
-        import boto3
+    import boto3
 
-        ssm = boto3.client("ssm")
-        resp = ssm.get_parameter(Name=param_name, WithDecryption=False)
-        return resp["Parameter"]["Value"]
-    except Exception:
-        return None
+    ssm = boto3.client("ssm")
+    resp = ssm.get_parameter(Name=param_name, WithDecryption=False)
+    return str(resp["Parameter"]["Value"])
 
 
 MGMT_JWT_TTL_SECONDS = 28800  # 8 hours
