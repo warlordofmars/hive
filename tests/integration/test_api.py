@@ -182,3 +182,47 @@ class TestMemoryEndpoints:
         assert resp2.json()["value"] == "v2"
         assert resp2.json()["tags"] == ["b"]
         assert resp2.json()["memory_id"] == mid  # same item updated, not a new one
+
+
+class TestCostCache:
+    """COST_CACHE# cache read/write against DynamoDB Local (#578)."""
+
+    @pytest.fixture()
+    def storage(self, client):
+        from hive.storage import HiveStorage
+
+        # `client` guarantees the table exists before storage is used.
+        return HiveStorage(
+            table_name="hive-integration-test",
+            region="us-east-1",
+            endpoint_url=DYNAMO_ENDPOINT,
+            aws_access_key_id="local",
+            aws_secret_access_key="local",
+        )
+
+    def test_roundtrip(self, storage):
+        payload = {
+            "environment": "local",
+            "currency": "USD",
+            "monthly": [
+                {"period": "2026-06-01", "total": 12.34, "by_service": {"AWS Lambda": 12.34}}
+            ],
+            "daily": [{"date": "2026-07-01", "total": 0.42}],
+        }
+        storage.put_cost_cache("itest-hash", {"Granularity": "MONTHLY"}, payload, ttl_seconds=300)
+
+        assert storage.get_cost_cache("itest-hash") == payload
+
+    def test_expired_entry_is_a_miss(self, storage):
+        storage.put_cost_cache("itest-expired", {}, {"stale": True}, ttl_seconds=-5)
+
+        assert storage.get_cost_cache("itest-expired") is None
+
+    def test_missing_entry_is_a_miss(self, storage):
+        assert storage.get_cost_cache("itest-never-written") is None
+
+    def test_overwrite_refreshes_entry(self, storage):
+        storage.put_cost_cache("itest-overwrite", {}, {"v": 1}, ttl_seconds=300)
+        storage.put_cost_cache("itest-overwrite", {}, {"v": 2}, ttl_seconds=300)
+
+        assert storage.get_cost_cache("itest-overwrite") == {"v": 2}
