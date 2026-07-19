@@ -250,6 +250,17 @@
             "default": "none",
             "title": "Token Endpoint Auth Method",
             "type": "string"
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id"
           }
         },
         "required": [
@@ -831,6 +842,44 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "WorkspaceTokenRequest": {
+        "description": "Request body for re-issuing a management JWT scoped to a workspace (#491).",
+        "properties": {
+          "workspace_id": {
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceTokenRequest",
+        "type": "object"
+      },
+      "WorkspaceTokenResponse": {
+        "description": "A freshly issued workspace-scoped management JWT (#491).",
+        "properties": {
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "workspace_id": {
+            "title": "Workspace Id",
+            "type": "string"
+          },
+          "workspace_role": {
+            "title": "Workspace Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "workspace_id",
+          "workspace_role"
+        ],
+        "title": "WorkspaceTokenResponse",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -978,6 +1027,62 @@
           }
         ],
         "summary": "Personal usage analytics",
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/account/workspace-token": {
+      "post": {
+        "description": "Issue a fresh management JWT carrying `workspace_id` and `workspace_role` claims for the requested workspace (#491). The caller must be a member of that workspace; the role claim is stamped from their membership record. The UI calls this when the user switches workspace and replaces its stored token with the result.",
+        "operationId": "issue_workspace_token_api_account_workspace_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceTokenResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Not a member of the workspace"
+          },
+          "404": {
+            "description": "User or workspace not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Re-issue the management token scoped to a workspace",
         "tags": [
           "account"
         ]
