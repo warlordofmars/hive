@@ -4539,6 +4539,7 @@ class TestWorkspaceQueryScoping:
         assert keys == {"own-key", "legacy-key"}
         # The workspace claim is pushed down to the S3 Vectors query filter.
         assert mock_vs.search.call_args.kwargs["workspace_id"] == "ws-a"
+        assert mock_vs.search.call_args.kwargs["workspace_scoped"] is True
 
     async def test_search_foreign_hits_cannot_crowd_out_results(self, workspace_env):
         """The workspace filter applies before ranking/limits — a top-scoring
@@ -4585,6 +4586,7 @@ class TestWorkspaceQueryScoping:
         body = _body(result)
         assert [item["key"] for item in body["items"]] == ["own-key"]
         assert mock_vs.search.call_args.kwargs["workspace_id"] == "ws-a"
+        assert mock_vs.search.call_args.kwargs["workspace_scoped"] is True
 
     async def test_pack_context_excludes_foreign_workspace(self, workspace_env):
         from unittest.mock import patch
@@ -4604,6 +4606,7 @@ class TestWorkspaceQueryScoping:
         assert "own-value" in rendered
         assert "sibling-secret" not in rendered
         assert mock_vs.search.call_args.kwargs["workspace_id"] == "ws-a"
+        assert mock_vs.search.call_args.kwargs["workspace_scoped"] is True
 
     async def test_forget_all_spares_foreign_workspace(self, workspace_env):
         from hive.server import forget_all, remember

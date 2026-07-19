@@ -114,6 +114,7 @@ def setup():
         BillingMode="PAY_PER_REQUEST",
     )
 
+    old_table = os.environ.get("HIVE_TABLE_NAME")
     os.environ["HIVE_TABLE_NAME"] = _TABLE
     from hive.storage import HiveStorage
 
@@ -141,7 +142,14 @@ def setup():
         )
         storage.put_token(token)
         jwts[ws] = issue_jwt(token)
-    return storage, jwts["ws-int-a"], jwts["ws-int-b"]
+    yield storage, jwts["ws-int-a"], jwts["ws-int-b"]
+
+    # Restore the env var so later integration modules in the same process
+    # keep their expected table binding.
+    if old_table is not None:
+        os.environ["HIVE_TABLE_NAME"] = old_table
+    else:
+        os.environ.pop("HIVE_TABLE_NAME", None)
 
 
 @pytest.mark.asyncio

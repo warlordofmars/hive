@@ -259,14 +259,14 @@ class TestSearch:
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=_make_bedrock_client())
         assert vs.search("q", "u") == []
 
-    def test_workspace_id_adds_metadata_filter(self):
+    def test_workspace_scoped_adds_metadata_filter(self):
         # Workspace scoping (#493): foreign-workspace vectors are excluded at
         # query time; the `$exists: false` arm keeps pre-#493 vectors (no
         # workspace metadata) reachable for the caller-side compat check.
         s3v = _make_s3v_client()
         s3v.query_vectors.return_value = {"vectors": []}
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=_make_bedrock_client())
-        vs.search("q", "u", workspace_id="ws-1")
+        vs.search("q", "u", workspace_id="ws-1", workspace_scoped=True)
         assert s3v.query_vectors.call_args.kwargs["filter"] == {
             "$or": [
                 {"workspace_id": "ws-1"},
@@ -274,7 +274,17 @@ class TestSearch:
             ]
         }
 
-    def test_no_workspace_id_omits_filter(self):
+    def test_workspace_scoped_none_workspace_fails_closed_to_unstamped(self):
+        # An unresolvable caller (workspace_id=None) must not fall back to an
+        # unfiltered account-wide query — only unstamped vectors may match.
+        s3v = _make_s3v_client()
+        s3v.query_vectors.return_value = {"vectors": []}
+        vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=_make_bedrock_client())
+        vs.search("q", "u", workspace_id=None, workspace_scoped=True)
+        assert s3v.query_vectors.call_args.kwargs["filter"] == {"workspace_id": {"$exists": False}}
+
+    def test_unscoped_default_omits_filter(self):
+        # Legacy account-wide search (management API) is unchanged.
         s3v = _make_s3v_client()
         s3v.query_vectors.return_value = {"vectors": []}
         vs = VectorStore(bucket_name="b", _s3v_client=s3v, _bedrock_client=_make_bedrock_client())

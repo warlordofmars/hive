@@ -21,11 +21,16 @@ Your account
 
 ## Scope comes from the token
 
-Every access token Hive issues carries a `workspace_id` claim. When an MCP
-client registers (via Dynamic Client Registration) it is bound to a
-workspace — either explicitly at registration time or automatically to your
-Personal workspace when you sign in — and every token minted for that client
-carries the binding.
+Access tokens minted since the workspace rollout carry a `workspace_id`
+claim. When an MCP client registers (via Dynamic Client Registration) it is
+bound to a workspace — either explicitly at registration time or
+automatically to your Personal workspace when you sign in — and tokens
+minted for that client carry the binding.
+
+Older tokens and API keys issued before the rollout carry no claim; Hive
+resolves their scope from the issuing client's workspace binding, falling
+back to the owner's Personal workspace, so existing credentials keep
+working without re-authentication.
 
 Tool calls never take a workspace parameter. To operate in a different
 workspace, an agent registers a client bound to that workspace and swaps

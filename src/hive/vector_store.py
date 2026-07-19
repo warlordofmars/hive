@@ -177,6 +177,7 @@ class VectorStore:
         top_k: int = 20,
         *,
         workspace_id: str | None = None,
+        workspace_scoped: bool = False,
     ) -> list[tuple[str, float]]:
         """Return ``(memory_id, score)`` pairs ranked by cosine similarity.
 
@@ -184,15 +185,18 @@ class VectorStore:
         scoped to the ``owner_user_id`` account index, so results span every DCR
         client of that account (consistent with list_memories, #666).
 
-        When ``workspace_id`` is given, an S3 Vectors metadata filter restricts
-        matches to vectors stamped with that workspace *or* carrying no
-        ``workspace_id`` metadata at all (#493). The ``$exists: false`` arm
-        keeps pre-#493 vectors (written before workspace stamping) reachable;
-        callers must still post-filter hydrated results against the
-        authoritative DynamoDB ``workspace_id`` — and do so before any
-        ranking/limit truncation — because a pre-#493 vector may belong to a
-        memory that the migration has since stamped into a foreign workspace.
-        ``None`` disables the filter (legacy account-wide search).
+        ``workspace_scoped=True`` applies an S3 Vectors metadata filter using
+        the workspace compat rules (#493), mirroring the storage API: matches
+        are restricted to vectors stamped with ``workspace_id`` *or* carrying
+        no ``workspace_id`` metadata at all, and a ``None`` ``workspace_id``
+        (unresolvable caller) fails closed to unstamped vectors only. The
+        ``$exists: false`` arm keeps pre-#493 vectors (written before
+        workspace stamping) reachable; callers must still post-filter hydrated
+        results against the authoritative DynamoDB ``workspace_id`` — and do
+        so before any ranking/limit truncation — because a pre-#493 vector may
+        belong to a memory that the migration has since stamped into a foreign
+        workspace. The default (``False``) disables the filter entirely
+        (legacy account-wide search); ``workspace_id`` is ignored then.
 
         Raises ``VectorIndexNotFoundError`` when the account has never written a
         memory (index does not exist yet).
@@ -205,13 +209,12 @@ class VectorStore:
             "returnDistance": True,
             "returnMetadata": False,
         }
-        if workspace_id is not None:
-            query_kwargs["filter"] = {
-                "$or": [
-                    {"workspace_id": workspace_id},
-                    {"workspace_id": {"$exists": False}},
-                ]
-            }
+        if workspace_scoped:
+            no_stamp = {"workspace_id": {"$exists": False}}
+            if workspace_id is not None:
+                query_kwargs["filter"] = {"$or": [{"workspace_id": workspace_id}, no_stamp]}
+            else:
+                query_kwargs["filter"] = no_stamp
         try:
             embedding = self._embed(query)
             resp = self._s3v.query_vectors(

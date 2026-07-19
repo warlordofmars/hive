@@ -1708,7 +1708,11 @@ async def search_memories(
     await _report_progress(ctx, 0, 3, f"Running vector search for '{query}'...")
     try:
         pairs = _vector_store().search(
-            query, owner_user_id, top_k=search_top_k, workspace_id=workspace_id
+            query,
+            owner_user_id,
+            top_k=search_top_k,
+            workspace_id=workspace_id,
+            workspace_scoped=True,
         )
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "query": query}, storage, client_id)
@@ -1856,7 +1860,11 @@ async def relate_memories(
     try:
         # Fetch top_k+1 so that dropping the source still leaves up to top_k.
         pairs = _vector_store().search(
-            query_value, owner_user_id, top_k=top_k + 1, workspace_id=workspace_id
+            query_value,
+            owner_user_id,
+            top_k=top_k + 1,
+            workspace_id=workspace_id,
+            workspace_scoped=True,
         )
     except VectorIndexNotFoundError:
         return _tool_result({"items": [], "count": 0, "key": key}, storage, client_id)
@@ -2092,7 +2100,11 @@ async def pack_context(
     workspace_id, _ = _caller_workspace_scope(storage)
     try:
         pairs = _vector_store().search(
-            topic, owner_user_id, top_k=_PACK_CONTEXT_CANDIDATE_POOL, workspace_id=workspace_id
+            topic,
+            owner_user_id,
+            top_k=_PACK_CONTEXT_CANDIDATE_POOL,
+            workspace_id=workspace_id,
+            workspace_scoped=True,
         )
     except VectorIndexNotFoundError:
         return _tool_result(_render_empty_within_budget(topic, budget), storage, client_id)
