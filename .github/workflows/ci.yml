@@ -81,7 +81,12 @@ jobs:
 
       - name: pip-audit
         # CVE-2026-3219 affects pip 26.0.1 itself (no fix available yet)
-        run: uv run pip-audit --skip-editable --ignore-vuln CVE-2026-3219
+        # PYSEC-2026-1325 affects ecdsa (transitive via python-jose);
+        # no fixed release available yet
+        run: >-
+          uv run pip-audit --skip-editable
+          --ignore-vuln CVE-2026-3219
+          --ignore-vuln PYSEC-2026-1325
 
       - name: npm audit
         working-directory: ui
