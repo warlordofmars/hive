@@ -226,3 +226,74 @@ class TestCostCache:
         storage.put_cost_cache("itest-overwrite", {}, {"v": 2}, ttl_seconds=300)
 
         assert storage.get_cost_cache("itest-overwrite") == {"v": 2}
+
+
+class TestAccountDeletionRevokesTokens:
+    """#588 — delete_user_data must revoke every token issued to the user's clients."""
+
+    @pytest.fixture()
+    def storage(self, client):
+        from hive.storage import HiveStorage
+
+        # `client` guarantees the table exists before storage is used.
+        return HiveStorage(
+            table_name="hive-integration-test",
+            region="us-east-1",
+            endpoint_url=DYNAMO_ENDPOINT,
+            aws_access_key_id="local",
+            aws_secret_access_key="local",
+        )
+
+    @staticmethod
+    def _make_user_with_client(storage, user_id: str):
+        from hive.models import OAuthClient, User
+
+        storage.put_user(
+            User(user_id=user_id, email=f"{user_id}@example.com", display_name=user_id)
+        )
+        oauth_client = OAuthClient(client_name=f"{user_id}-client", owner_user_id=user_id)
+        storage.put_client(oauth_client)
+        return oauth_client
+
+    @staticmethod
+    def _issue_token(storage, client_id: str, token_type=None, ttl_seconds: int = 3600):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import Token, TokenType
+
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client_id,
+            scope="memories:read",
+            token_type=token_type or TokenType.access,
+            issued_at=now,
+            expires_at=now + timedelta(seconds=ttl_seconds),
+        )
+        storage.put_token(token)
+        return token
+
+    def test_deleted_users_tokens_are_gone_other_users_survive(self, storage):
+        from hive.models import TokenType
+
+        client_a = self._make_user_with_client(storage, "itest-588-user-a")
+        client_b = self._make_user_with_client(storage, "itest-588-user-b")
+
+        a_access = self._issue_token(storage, client_a.client_id)
+        a_refresh = self._issue_token(
+            storage, client_a.client_id, token_type=TokenType.refresh, ttl_seconds=86400 * 30
+        )
+        b_access = self._issue_token(storage, client_b.client_id)
+
+        counts = storage.delete_user_data("itest-588-user-a")
+
+        assert counts["deleted_clients"] == 1
+        assert counts["deleted_tokens"] == 2
+        # Both the access and refresh tokens for the deleted user are gone
+        assert storage.get_token(a_access.jti) is None
+        assert storage.get_token(a_refresh.jti) is None
+        assert storage.get_client(client_a.client_id) is None
+        assert storage.get_user_by_id("itest-588-user-a") is None
+        # The other user's client and token survive
+        assert storage.get_token(b_access.jti) is not None
+        assert storage.get_client(client_b.client_id) is not None
+        assert storage.get_user_by_id("itest-588-user-b") is not None
