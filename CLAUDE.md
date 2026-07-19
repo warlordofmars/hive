@@ -172,6 +172,12 @@ hive/
     scan if the index is unavailable (e.g. still backfilling), so table
     fixtures without this GSI still work — but include it to exercise
     the fast path
+  - `ApiKeyOwnerIndex` — GSI keyed on the top-level `owner_user_id`
+    attribute with the table `PK` as sort key — lists a user's API keys
+    (#596). *Not* sparse (memories / clients / workspaces / USERTAG items
+    also carry `owner_user_id`); the `begins_with(PK, "APIKEY#")` sort-key
+    condition narrows queries to API key items. `list_api_keys_for_user`
+    falls back to the legacy table scan if the index is unavailable
 
 ## Management UI
 
