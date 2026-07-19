@@ -104,9 +104,10 @@ class TestAdminMetricsE2E:
     @pytest.mark.skipif(
         os.environ.get("HIVE_SYNTHETIC_TRAFFIC_ENABLED") != "1",
         reason=(
-            "synthetic-traffic schedule is disabled until prod release (#641); "
-            "the 7d window is legitimately empty — set HIVE_SYNTHETIC_TRAFFIC_ENABLED=1 "
-            "in the e2e CI step when re-enabling the cron (#706)"
+            "#641 disabled the synthetic-traffic cron until prod release, so the 7d "
+            "window is legitimately empty (skip added by #706); the future PR that "
+            "re-enables the cron must also set HIVE_SYNTHETIC_TRAFFIC_ENABLED=1 in "
+            "the e2e CI step"
         ),
     )
     async def test_metrics_has_data_after_synthetic_traffic(self, live_admin_token):
