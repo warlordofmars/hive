@@ -3401,6 +3401,28 @@ class TestPersonalWorkspace:
         assert member is not None
         assert member.role is WorkspaceRole.owner
 
+    def test_ensure_repairs_non_owner_membership_role(self, storage):
+        """Personal-workspace invariant: the owner's MEMBER row always carries
+        role=owner — a drifted role is repaired (preserving joined_at) so the
+        login and workspace-token paths stamp consistent claims."""
+        user = self._user(user_id="drifted-role-user")
+        workspace = storage.ensure_personal_workspace(user)
+        storage.add_workspace_member(workspace.workspace_id, user.user_id, WorkspaceRole.member)
+
+        storage.ensure_personal_workspace(user)
+        member = storage.get_workspace_member(workspace.workspace_id, user.user_id)
+        assert member.role is WorkspaceRole.owner
+
+    def test_get_workspace_member_uses_consistent_read(self, storage):
+        """Wire-level pin: membership reads gate auth decisions moments after
+        the MEMBER write, so the lookup must be strongly consistent — a
+        refactor must not silently drop the flag."""
+        from unittest.mock import patch
+
+        with patch.object(storage.table, "get_item", return_value={}) as get_item:
+            assert storage.get_workspace_member("ws-x", "u-x") is None
+        assert get_item.call_args.kwargs["ConsistentRead"] is True
+
     def test_get_finds_migration_era_random_id_workspace(self, storage):
         """Personal workspaces created by the #490 migration have random ids —
         they must be found via the WorkspaceMemberIndex fallback and never

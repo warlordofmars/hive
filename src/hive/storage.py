@@ -1406,8 +1406,18 @@ class HiveStorage:
         return member
 
     def get_workspace_member(self, workspace_id: str, user_id: str) -> WorkspaceMember | None:
+        """Fetch a (workspace, user) membership row.
+
+        Strongly consistent (#491): membership gates auth decisions — the
+        OAuth-callback membership check, token-issuance role stamping, and
+        the workspace-token endpoint — which often run moments after the
+        MEMBER row was written (first-login provisioning). An eventually-
+        consistent read could transiently miss that write and fail a
+        legitimate login closed.
+        """
         resp = self.table.get_item(
-            Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{user_id}"}
+            Key={"PK": f"WORKSPACE#{workspace_id}", "SK": f"MEMBER#{user_id}"},
+            ConsistentRead=True,
         )
         item = resp.get("Item")
         return WorkspaceMember.from_dynamo(item) if item else None
@@ -1526,6 +1536,9 @@ class HiveStorage:
         leave a Personal workspace whose owner has no membership, since role
         resolution and the workspace-token endpoint depend on that row.
         Mirrors the MEMBER-row repair in ``scripts/migrate_workspaces.py``.
+        The owner's role is likewise pinned to ``owner`` — a Personal
+        workspace whose owner carries any other role would stamp inconsistent
+        ``workspace_role`` claims across the login and workspace-token paths.
         """
         workspace = self.get_personal_workspace(user.user_id)
         if workspace is None:
@@ -1536,8 +1549,15 @@ class HiveStorage:
                 is_personal=True,
             )
             self.put_workspace(workspace)
-        if self.get_workspace_member(workspace.workspace_id, user.user_id) is None:
+        member = self.get_workspace_member(workspace.workspace_id, user.user_id)
+        if member is None:
             self.add_workspace_member(workspace.workspace_id, user.user_id, WorkspaceRole.owner)
+        elif member.role is not WorkspaceRole.owner:
+            # Personal-workspace invariant: its owner is always role=owner.
+            # update (not add) preserves the original joined_at.
+            self.update_workspace_member_role(
+                workspace.workspace_id, user.user_id, WorkspaceRole.owner
+            )
         return workspace
 
     # ------------------------------------------------------------------
