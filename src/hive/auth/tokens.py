@@ -49,8 +49,13 @@ def _jwt_secret() -> str:
 
 
 def issue_jwt(token: Token) -> str:
-    """Encode a Token record as a signed JWT."""
-    payload = {
+    """Encode a Token record as a signed JWT.
+
+    Workspace claims (#491) are included only when the token carries them —
+    legacy tokens minted before the workspace cutover stay claim-free and are
+    resolved via :func:`resolve_workspace_scope` at validation time.
+    """
+    payload: dict[str, Any] = {
         "iss": ISSUER,
         "sub": token.client_id,
         "jti": token.jti,
@@ -59,6 +64,10 @@ def issue_jwt(token: Token) -> str:
         "exp": int(token.expires_at.timestamp()),
         "token_type": token.token_type.value,
     }
+    if token.workspace_id is not None:
+        payload["workspace_id"] = token.workspace_id
+    if token.workspace_role is not None:
+        payload["workspace_role"] = token.workspace_role
     return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
@@ -91,16 +100,22 @@ def _origin_verify_secret() -> str | None:
 MGMT_JWT_TTL_SECONDS = 28800  # 8 hours
 
 
-def issue_mgmt_jwt(user: Any) -> str:
+def issue_mgmt_jwt(
+    user: Any,
+    workspace_id: str | None = None,
+    workspace_role: str | None = None,
+) -> str:
     """Issue a short-lived management session JWT for a human user.
 
     Uses typ=mgmt to distinguish from MCP access tokens so neither can be
-    replayed as the other.
+    replayed as the other.  ``workspace_id`` / ``workspace_role`` (#491) scope
+    the session to one workspace; the UI re-issues the JWT via
+    ``POST /api/account/workspace-token`` to switch.
     """
     import time
 
     now = int(time.time())
-    payload = {
+    payload: dict[str, Any] = {
         "iss": ISSUER,
         "sub": user.user_id,
         "email": user.email,
@@ -110,6 +125,10 @@ def issue_mgmt_jwt(user: Any) -> str:
         "iat": now,
         "exp": now + MGMT_JWT_TTL_SECONDS,
     }
+    if workspace_id is not None:
+        payload["workspace_id"] = workspace_id
+    if workspace_role is not None:
+        payload["workspace_role"] = workspace_role
     return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
@@ -126,6 +145,8 @@ def decode_mgmt_jwt(token_str: str) -> dict[str, Any]:
 
 
 _API_KEY_PREFIX = "hive_sk_"
+# client_id prefix of the synthetic Token minted for API-key callers below.
+_API_KEY_PREFIX_CLIENT = "apikey:"
 
 
 def validate_bearer_token(authorization_header: str | None, storage: HiveStorage) -> Token:
@@ -160,8 +181,8 @@ def validate_bearer_token(authorization_header: str | None, storage: HiveStorage
             raise ValueError("API key has been revoked or has expired")
         # Synthesize a Token so callers need no changes
         return Token(
-            jti=f"apikey:{api_key.key_id}",
-            client_id=f"apikey:{api_key.key_id}",
+            jti=f"{_API_KEY_PREFIX_CLIENT}{api_key.key_id}",
+            client_id=f"{_API_KEY_PREFIX_CLIENT}{api_key.key_id}",
             scope=api_key.scope,
             issued_at=api_key.created_at,
             expires_at=api_key.expires_at or (api_key.created_at + timedelta(days=3650)),
@@ -185,3 +206,66 @@ def validate_bearer_token(authorization_header: str | None, storage: HiveStorage
         raise ValueError("Token has been revoked or has expired")
 
     return token
+
+
+# ---------------------------------------------------------------------------
+# Workspace scope resolution (#491)
+# ---------------------------------------------------------------------------
+
+
+def resolve_client_workspace(storage: HiveStorage, client: Any) -> tuple[str | None, str | None]:
+    """Resolve the (workspace_id, workspace_role) an OAuth client is bound to.
+
+    Resolution order:
+
+    1. Explicit ``client.workspace_id`` binding (DCR-provided or stamped at
+       the OAuth callback / migration).  The role comes from the owner's
+       membership record; ``None`` when the owner is unset or no longer a
+       member — callers that mint new tokens must fail closed on that.
+    2. Legacy fallback: the owner's Personal workspace (pre-migration
+       clients).  The owner of a Personal workspace is always its ``owner``.
+    3. ``(None, None)`` when the client is unbound to both a workspace and a
+       user — pre-#648 legacy clients.
+    """
+    from hive.models import WorkspaceRole
+
+    if client.workspace_id is not None:
+        if client.owner_user_id is None:
+            return client.workspace_id, None
+        member = storage.get_workspace_member(client.workspace_id, client.owner_user_id)
+        return client.workspace_id, (member.role.value if member else None)
+    if client.owner_user_id is None:
+        return None, None
+    workspace = storage.get_personal_workspace(client.owner_user_id)
+    if workspace is None:
+        return None, None
+    return workspace.workspace_id, WorkspaceRole.owner.value
+
+
+def resolve_workspace_scope(storage: HiveStorage, token: Token) -> tuple[str | None, str | None]:
+    """Resolve the (workspace_id, workspace_role) a validated token is scoped to.
+
+    Claim-first: tokens minted after the workspace cutover (#491) carry the
+    scope directly and cost no extra lookups.  Synthetic API-key tokens
+    resolve to the key owner's Personal workspace (API keys are personal
+    credentials).  Legacy OAuth tokens (no claim) fall back to the issuing
+    client's binding via :func:`resolve_client_workspace`; a fully
+    unresolvable caller yields ``(None, None)`` and downstream enforcement
+    fails closed on any workspace-stamped resource.
+    """
+    from hive.models import WorkspaceRole
+
+    if token.workspace_id is not None:
+        return token.workspace_id, token.workspace_role
+    if token.client_id.startswith(_API_KEY_PREFIX_CLIENT):
+        api_key = storage.get_api_key_by_id(token.client_id[len(_API_KEY_PREFIX_CLIENT) :])
+        if api_key is None:
+            return None, None
+        workspace = storage.get_personal_workspace(api_key.owner_user_id)
+        if workspace is None:
+            return None, None
+        return workspace.workspace_id, WorkspaceRole.owner.value
+    client = storage.get_client(token.client_id)
+    if client is None:
+        return None, None
+    return resolve_client_workspace(storage, client)

@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from hive.auth.dcr import register_client
-from hive.auth.tokens import ISSUER, issue_jwt
+from hive.auth.tokens import ISSUER, issue_jwt, resolve_client_workspace
 from hive.metrics import emit_metric
 from hive.models import (
     ActivityEvent,
@@ -210,6 +210,20 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
         user.role = role
     user.last_login_at = now
 
+    # Workspace boundary (#491): a client registered with an explicit
+    # workspace binding (DCR ``workspace_id``) may only be authenticated by a
+    # member of that workspace.  Checked before any write so a rejected login
+    # leaves no trace; a brand-new user is by definition a member of nothing,
+    # so they are rejected here too.
+    if (
+        client.workspace_id is not None
+        and storage.get_workspace_member(client.workspace_id, user.user_id) is None
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="This client is bound to a workspace you are not a member of.",
+        )
+
     # Claim ownership atomically. The conditional write closes the
     # read-modify-write race: if two callbacks for the same unowned client run
     # concurrently, exactly one bind wins. The loser re-reads and resolves the
@@ -229,10 +243,20 @@ def _associate_user_with_client(storage: HiveStorage, client_id: str, email: str
                 detail="This client is already associated with a different user account.",
             )
         # Same account won the race; its persisted record is canonical, so
-        # don't write a duplicate user.
+        # don't write a duplicate user. The winner's request also handled the
+        # personal-workspace provisioning and workspace binding below.
         return
 
     storage.put_user(user)
+
+    # Workspaces (#491): every authenticated user has a Personal workspace
+    # (auto-created on first login), and every client ends up bound to exactly
+    # one workspace.  Clients registered without an explicit DCR binding are
+    # bound to the authenticating user's Personal workspace here —
+    # first-bind-wins, so a concurrent same-user callback is harmless.
+    workspace = storage.ensure_personal_workspace(user)
+    if client.workspace_id is None:
+        storage.bind_client_workspace(client_id, workspace.workspace_id)
 
 
 @router.get("/oauth/authorize", responses={400: {"description": "Invalid authorization request"}})
@@ -483,7 +507,26 @@ async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
             storage.mark_auth_code_used(code)
         except AuthCodeAlreadyUsed as exc:
             raise HTTPException(status_code=400, detail="Invalid or already-used code") from exc
-        access, refresh = storage.create_token_pair(client_id, auth_code.scope)
+
+        # Workspaces (#491): stamp the client's workspace binding (and the
+        # owner's role in it) onto both tokens.  Re-read the client so the
+        # binding written by the callback moments ago is visible.  A client
+        # explicitly bound to a workspace whose owner is missing or no longer
+        # a member must not receive a workspace-scoped token — fail closed.
+        # Fully legacy clients (no binding resolvable) get claim-free tokens;
+        # validation falls back to the Personal workspace downstream.
+        bound_client = storage.get_client(client_id)
+        workspace_id, workspace_role = resolve_client_workspace(
+            storage, bound_client if bound_client is not None else client
+        )
+        if workspace_id is not None and workspace_role is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Client's workspace binding is no longer valid",
+            )
+        access, refresh = storage.create_token_pair(
+            client_id, auth_code.scope, workspace_id=workspace_id, workspace_role=workspace_role
+        )
 
     elif grant_type == "refresh_token":
         if not refresh_token:
@@ -522,7 +565,16 @@ async def token(  # NOSONAR — complexity inherent in OAuth grant type dispatch
                 status_code=400,
                 detail="refresh_token scope has no overlap with client's registered scope",
             )
-        access = storage.create_access_token(client_id, effective_scope)
+        # Workspaces (#491): the refresh grant carries the workspace claims
+        # through unchanged — the refresh token's scope was fixed at issuance
+        # and agents swap tokens (not claims) to switch workspace.  Membership
+        # revocation is enforced by revoking the tokens themselves.
+        access = storage.create_access_token(
+            client_id,
+            effective_scope,
+            workspace_id=stored.workspace_id,
+            workspace_role=stored.workspace_role,
+        )
         refresh = stored
 
     else:

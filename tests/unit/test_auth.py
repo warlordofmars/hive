@@ -189,6 +189,8 @@ def _create_table(table_name: str = "hive-unit-auth") -> None:
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
             {"AttributeName": "GSI4PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5SK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -211,6 +213,14 @@ def _create_table(table_name: str = "hive-unit-auth") -> None:
                 "IndexName": "UserEmailIndex",
                 "KeySchema": [
                     {"AttributeName": "GSI4PK", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "WorkspaceMemberIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -2147,3 +2157,465 @@ class TestValidateBearerTokenApiKey:
         storage = self._storage_with_key(k)
         token = validate_bearer_token("Bearer hive_sk_noexpiry", storage)
         assert token.expires_at > datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Workspace claims + scope resolution (#491)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceJwtClaims:
+    def _token(self, **kwargs) -> Token:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        return Token(
+            client_id="client-1",
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+            **kwargs,
+        )
+
+    def test_issue_jwt_includes_workspace_claims(self):
+        token = self._token(workspace_id="ws-1", workspace_role="member")
+        claims = decode_jwt(issue_jwt(token))
+        assert claims["workspace_id"] == "ws-1"
+        assert claims["workspace_role"] == "member"
+
+    def test_issue_jwt_omits_workspace_claims_when_unset(self):
+        claims = decode_jwt(issue_jwt(self._token()))
+        assert "workspace_id" not in claims
+        assert "workspace_role" not in claims
+
+    def test_issue_mgmt_jwt_includes_workspace_claims(self):
+        from hive.auth.tokens import decode_mgmt_jwt, issue_mgmt_jwt
+        from hive.models import User
+
+        user = User(user_id="u1", email="ws@example.com", display_name="WS")
+        jwt_str = issue_mgmt_jwt(user, workspace_id="ws-1", workspace_role="owner")
+        claims = decode_mgmt_jwt(jwt_str)
+        assert claims["workspace_id"] == "ws-1"
+        assert claims["workspace_role"] == "owner"
+
+    def test_issue_mgmt_jwt_omits_workspace_claims_when_unset(self):
+        from hive.auth.tokens import decode_mgmt_jwt, issue_mgmt_jwt
+        from hive.models import User
+
+        user = User(user_id="u1", email="ws@example.com", display_name="WS")
+        claims = decode_mgmt_jwt(issue_mgmt_jwt(user))
+        assert "workspace_id" not in claims
+        assert "workspace_role" not in claims
+
+
+class TestResolveClientWorkspace:
+    def _client(self, **kwargs):
+        from hive.models import OAuthClient
+
+        return OAuthClient(client_name="c", **kwargs)
+
+    def test_explicit_binding_returns_member_role(self):
+        from hive.auth.tokens import resolve_client_workspace
+        from hive.models import WorkspaceMember, WorkspaceRole
+
+        storage = MagicMock()
+        storage.get_workspace_member.return_value = WorkspaceMember(
+            workspace_id="ws-1", user_id="u1", role=WorkspaceRole.admin
+        )
+        client = self._client(workspace_id="ws-1", owner_user_id="u1")
+        assert resolve_client_workspace(storage, client) == ("ws-1", "admin")
+        storage.get_workspace_member.assert_called_once_with("ws-1", "u1")
+
+    def test_explicit_binding_ownerless_returns_none_role(self):
+        from hive.auth.tokens import resolve_client_workspace
+
+        storage = MagicMock()
+        client = self._client(workspace_id="ws-1")
+        assert resolve_client_workspace(storage, client) == ("ws-1", None)
+        storage.get_workspace_member.assert_not_called()
+
+    def test_explicit_binding_membership_revoked_returns_none_role(self):
+        from hive.auth.tokens import resolve_client_workspace
+
+        storage = MagicMock()
+        storage.get_workspace_member.return_value = None
+        client = self._client(workspace_id="ws-1", owner_user_id="u1")
+        assert resolve_client_workspace(storage, client) == ("ws-1", None)
+
+    def test_unbound_ownerless_returns_none(self):
+        from hive.auth.tokens import resolve_client_workspace
+
+        storage = MagicMock()
+        assert resolve_client_workspace(storage, self._client()) == (None, None)
+        storage.get_personal_workspace.assert_not_called()
+
+    def test_personal_workspace_fallback(self):
+        from hive.auth.tokens import resolve_client_workspace
+        from hive.models import Workspace
+
+        storage = MagicMock()
+        storage.get_personal_workspace.return_value = Workspace(
+            workspace_id="personal-u1", name="P", owner_user_id="u1", is_personal=True
+        )
+        client = self._client(owner_user_id="u1")
+        assert resolve_client_workspace(storage, client) == ("personal-u1", "owner")
+
+    def test_personal_workspace_missing_returns_none(self):
+        from hive.auth.tokens import resolve_client_workspace
+
+        storage = MagicMock()
+        storage.get_personal_workspace.return_value = None
+        client = self._client(owner_user_id="u1")
+        assert resolve_client_workspace(storage, client) == (None, None)
+
+
+class TestResolveWorkspaceScope:
+    def _token(self, **kwargs) -> Token:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        return Token(
+            client_id=kwargs.pop("client_id", "client-1"),
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+            **kwargs,
+        )
+
+    def test_claim_passthrough_costs_no_lookups(self):
+        from hive.auth.tokens import resolve_workspace_scope
+
+        storage = MagicMock()
+        token = self._token(workspace_id="ws-9", workspace_role="member")
+        assert resolve_workspace_scope(storage, token) == ("ws-9", "member")
+        storage.get_client.assert_not_called()
+
+    def test_unknown_client_returns_none(self):
+        from hive.auth.tokens import resolve_workspace_scope
+
+        storage = MagicMock()
+        storage.get_client.return_value = None
+        assert resolve_workspace_scope(storage, self._token()) == (None, None)
+
+    def test_delegates_to_client_binding(self):
+        from hive.auth.tokens import resolve_workspace_scope
+        from hive.models import OAuthClient, WorkspaceMember, WorkspaceRole
+
+        storage = MagicMock()
+        storage.get_client.return_value = OAuthClient(
+            client_name="c", workspace_id="ws-1", owner_user_id="u1"
+        )
+        storage.get_workspace_member.return_value = WorkspaceMember(
+            workspace_id="ws-1", user_id="u1", role=WorkspaceRole.member
+        )
+        assert resolve_workspace_scope(storage, self._token()) == ("ws-1", "member")
+
+    def test_api_key_resolves_owner_personal_workspace(self):
+        from hive.auth.tokens import resolve_workspace_scope
+        from hive.models import ApiKey, Workspace
+
+        storage = MagicMock()
+        storage.get_api_key_by_id.return_value = ApiKey(
+            key_id="k1", owner_user_id="u1", name="n", key_hash="h"
+        )
+        storage.get_personal_workspace.return_value = Workspace(
+            workspace_id="personal-u1", name="P", owner_user_id="u1", is_personal=True
+        )
+        token = self._token(client_id="apikey:k1")
+        assert resolve_workspace_scope(storage, token) == ("personal-u1", "owner")
+        storage.get_api_key_by_id.assert_called_once_with("k1")
+        storage.get_client.assert_not_called()
+
+    def test_api_key_missing_returns_none(self):
+        from hive.auth.tokens import resolve_workspace_scope
+
+        storage = MagicMock()
+        storage.get_api_key_by_id.return_value = None
+        assert resolve_workspace_scope(storage, self._token(client_id="apikey:k1")) == (None, None)
+
+    def test_api_key_without_personal_workspace_returns_none(self):
+        from hive.auth.tokens import resolve_workspace_scope
+        from hive.models import ApiKey
+
+        storage = MagicMock()
+        storage.get_api_key_by_id.return_value = ApiKey(
+            key_id="k1", owner_user_id="u1", name="n", key_hash="h"
+        )
+        storage.get_personal_workspace.return_value = None
+        assert resolve_workspace_scope(storage, self._token(client_id="apikey:k1")) == (None, None)
+
+
+class TestDCRWorkspaceBinding:
+    def test_register_with_valid_workspace_binds_and_echoes(self):
+        from hive.models import Workspace
+
+        storage = MagicMock()
+        storage.get_workspace.return_value = Workspace(
+            workspace_id="ws-1", name="Team", owner_user_id="u1"
+        )
+        req = ClientRegistrationRequest(client_name="T", workspace_id="ws-1")
+        resp = register_client(req, storage)
+        assert resp.workspace_id == "ws-1"
+        assert resp.model_dump()["workspace_id"] == "ws-1"
+        stored_client = storage.put_client.call_args[0][0]
+        assert stored_client.workspace_id == "ws-1"
+
+    def test_register_with_unknown_workspace_raises(self):
+        storage = MagicMock()
+        storage.get_workspace.return_value = None
+        req = ClientRegistrationRequest(client_name="T", workspace_id="ws-missing")
+        with pytest.raises(ValueError, match="Unknown workspace_id"):
+            register_client(req, storage)
+        storage.put_client.assert_not_called()
+
+    def test_register_without_workspace_stays_unbound(self):
+        storage = MagicMock()
+        req = ClientRegistrationRequest(client_name="T")
+        resp = register_client(req, storage)
+        assert resp.workspace_id is None
+        # The response JSON omits the null binding entirely (strict clients).
+        assert "workspace_id" not in resp.model_dump()
+        storage.get_workspace.assert_not_called()
+
+
+class TestOAuthTokenWorkspaceClaims:
+    _REDIRECT = "https://app.example.com/cb"
+
+    def _make_workspace_client(
+        self,
+        storage,
+        *,
+        bind_workspace=True,
+        with_member=True,
+        member_role=None,
+        with_owner=True,
+    ):
+        from hive.models import OAuthClient, User, Workspace, WorkspaceRole
+
+        member_role = member_role or WorkspaceRole.admin
+        user = User(user_id="wsu-1", email="ws@example.com", display_name="WS")
+        storage.put_user(user)
+        workspace = Workspace(workspace_id="ws-team", name="Team", owner_user_id="wsu-1")
+        storage.put_workspace(workspace)
+        if with_member:
+            storage.add_workspace_member("ws-team", "wsu-1", member_role)
+        client = OAuthClient(
+            client_name="WS Client",
+            redirect_uris=[self._REDIRECT],
+            owner_user_id="wsu-1" if with_owner else None,
+            workspace_id="ws-team" if bind_workspace else None,
+        )
+        storage.put_client(client)
+        return client
+
+    def _redeem(self, tc, storage, client):
+        verifier, challenge = _pkce_pair()
+        auth_code = storage.create_auth_code(
+            client_id=client.client_id,
+            redirect_uri=self._REDIRECT,
+            scope=client.scope,
+            code_challenge=challenge,
+            code_challenge_method="S256",
+        )
+        return tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code.code,
+                "redirect_uri": self._REDIRECT,
+                "client_id": client.client_id,
+                "code_verifier": verifier,
+            },
+        )
+
+    def test_auth_code_grant_stamps_workspace_claims(self, oauth_client):
+        tc, storage, _ = oauth_client
+        client = self._make_workspace_client(storage)
+        resp = self._redeem(tc, storage, client)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        access_claims = decode_jwt(data["access_token"])
+        refresh_claims = decode_jwt(data["refresh_token"])
+        assert access_claims["workspace_id"] == "ws-team"
+        assert access_claims["workspace_role"] == "admin"
+        assert refresh_claims["workspace_id"] == "ws-team"
+        assert refresh_claims["workspace_role"] == "admin"
+        # The persisted Token rows carry the scope too (authoritative copy).
+        assert storage.get_token(access_claims["jti"]).workspace_id == "ws-team"
+        assert storage.get_token(refresh_claims["jti"]).workspace_role == "admin"
+
+    def test_auth_code_grant_fails_closed_when_membership_revoked(self, oauth_client):
+        tc, storage, _ = oauth_client
+        client = self._make_workspace_client(storage, with_member=False)
+        resp = self._redeem(tc, storage, client)
+        assert resp.status_code == 400
+        assert "workspace binding" in resp.json()["detail"]
+
+    def test_auth_code_grant_falls_back_to_personal_workspace(self, oauth_client):
+        from hive.models import User
+
+        tc, storage, _ = oauth_client
+        client = self._make_workspace_client(storage, bind_workspace=False, with_member=False)
+        personal = storage.ensure_personal_workspace(
+            User(user_id="wsu-1", email="ws@example.com", display_name="WS")
+        )
+        resp = self._redeem(tc, storage, client)
+        assert resp.status_code == 200, resp.text
+        claims = decode_jwt(resp.json()["access_token"])
+        assert claims["workspace_id"] == personal.workspace_id
+        assert claims["workspace_role"] == "owner"
+
+    def test_auth_code_grant_legacy_client_gets_claim_free_token(self, oauth_client):
+        tc, storage, client = oauth_client  # fixture client: no owner, no workspace
+        resp = self._redeem(tc, storage, client)
+        assert resp.status_code == 200, resp.text
+        claims = decode_jwt(resp.json()["access_token"])
+        assert "workspace_id" not in claims
+        assert storage.get_token(claims["jti"]).workspace_id is None
+
+    def test_refresh_grant_preserves_workspace_claims(self, oauth_client):
+        tc, storage, _ = oauth_client
+        client = self._make_workspace_client(storage)
+        refresh_token = self._redeem(tc, storage, client).json()["refresh_token"]
+
+        resp = tc.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client.client_id,
+                "refresh_token": refresh_token,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        access_claims = decode_jwt(data["access_token"])
+        assert access_claims["workspace_id"] == "ws-team"
+        assert access_claims["workspace_role"] == "admin"
+        # The echoed refresh token still carries the claims unchanged.
+        refresh_claims = decode_jwt(data["refresh_token"])
+        assert refresh_claims["workspace_id"] == "ws-team"
+
+
+class TestAssociateUserWorkspaceBinding:
+    _REDIRECT = "https://app.example.com/cb"
+
+    def _authorize(self, tc, client_id, email):
+        _, challenge = _pkce_pair()
+        with (
+            patch("hive.auth.oauth._BYPASS_GOOGLE_AUTH", True),
+            patch("hive.auth.google.is_email_allowed", return_value=True),
+            patch("hive.auth.google.is_admin_email", return_value=False),
+        ):
+            return tc.get(
+                "/oauth/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": client_id,
+                    "redirect_uri": self._REDIRECT,
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "test_email": email,
+                },
+                follow_redirects=False,
+            )
+
+    def test_bypass_binds_client_to_personal_workspace(self, oauth_client):
+        from hive.models import WorkspaceRole
+
+        tc, storage, client = oauth_client
+        resp = self._authorize(tc, client.client_id, "bypass-ws@example.com")
+        assert resp.status_code == 302, resp.text
+
+        user = storage.get_user_by_email("bypass-ws@example.com")
+        bound = storage.get_client(client.client_id)
+        assert bound.workspace_id == f"personal-{user.user_id}"
+        workspace = storage.get_workspace(f"personal-{user.user_id}")
+        assert workspace is not None
+        assert workspace.is_personal is True
+        member = storage.get_workspace_member(workspace.workspace_id, user.user_id)
+        assert member is not None
+        assert member.role is WorkspaceRole.owner
+
+    def test_bypass_rejects_nonmember_on_workspace_bound_client(self, oauth_client):
+        from hive.models import OAuthClient, Workspace
+
+        tc, storage, _ = oauth_client
+        storage.put_workspace(
+            Workspace(workspace_id="ws-locked", name="Locked", owner_user_id="someone-else")
+        )
+        client = OAuthClient(
+            client_name="Locked Client",
+            redirect_uris=[self._REDIRECT],
+            workspace_id="ws-locked",
+        )
+        storage.put_client(client)
+
+        resp = self._authorize(tc, client.client_id, "intruder@example.com")
+        assert resp.status_code == 403
+        assert "workspace" in resp.json()["detail"]
+        # A rejected login leaves no trace.
+        assert storage.get_user_by_email("intruder@example.com") is None
+        assert storage.get_client(client.client_id).owner_user_id is None
+
+    def test_bypass_allows_member_on_workspace_bound_client(self, oauth_client):
+        from hive.models import OAuthClient, User, Workspace, WorkspaceRole
+
+        tc, storage, _ = oauth_client
+        member_user = User(user_id="member-1", email="member@example.com", display_name="M")
+        storage.put_user(member_user)
+        storage.put_workspace(
+            Workspace(workspace_id="ws-shared", name="Shared", owner_user_id="member-1")
+        )
+        storage.add_workspace_member("ws-shared", "member-1", WorkspaceRole.member)
+        client = OAuthClient(
+            client_name="Shared Client",
+            redirect_uris=[self._REDIRECT],
+            workspace_id="ws-shared",
+        )
+        storage.put_client(client)
+
+        resp = self._authorize(tc, client.client_id, "member@example.com")
+        assert resp.status_code == 302, resp.text
+        bound = storage.get_client(client.client_id)
+        assert bound.owner_user_id == "member-1"
+        # The explicit DCR binding is preserved, not overwritten with Personal.
+        assert bound.workspace_id == "ws-shared"
+
+
+class TestMgmtLoginWorkspaceClaims:
+    @pytest.fixture()
+    def mgmt_client(self):
+        with mock_aws():
+            _create_table()
+            old = os.environ.get("HIVE_TABLE_NAME")
+            os.environ["HIVE_TABLE_NAME"] = "hive-unit-auth"
+            try:
+                from fastapi.testclient import TestClient
+
+                from hive.api.main import app
+
+                yield TestClient(app, follow_redirects=False)
+            finally:
+                if old is not None:
+                    os.environ["HIVE_TABLE_NAME"] = old
+                else:
+                    os.environ.pop("HIVE_TABLE_NAME", None)
+
+    def test_login_bypass_jwt_carries_personal_workspace_claims(self, mgmt_client):
+        import re
+
+        from hive.auth.tokens import decode_mgmt_jwt
+        from hive.storage import HiveStorage
+
+        with patch("hive.auth.mgmt_auth._BYPASS", True):
+            resp = mgmt_client.get("/auth/login?test_email=wsdev@example.com")
+        assert resp.status_code == 200
+        match = re.search(r"localStorage\.setItem\('hive_mgmt_token', '([^']+)'\)", resp.text)
+        assert match, resp.text
+        claims = decode_mgmt_jwt(match.group(1))
+
+        storage = HiveStorage(table_name="hive-unit-auth", region="us-east-1")
+        user = storage.get_user_by_email("wsdev@example.com")
+        assert claims["workspace_id"] == f"personal-{user.user_id}"
+        assert claims["workspace_role"] == "owner"
+        assert storage.get_workspace(f"personal-{user.user_id}").is_personal is True

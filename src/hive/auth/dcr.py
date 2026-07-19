@@ -53,6 +53,14 @@ def register_client(
     if unknown_scopes:
         raise ValueError(f"Unknown scope(s): {unknown_scopes}")
 
+    # Workspaces (#491): an explicit binding must reference a real workspace.
+    # Membership is enforced later, at the OAuth callback, once the
+    # authenticating user is known (DCR itself is unauthenticated per RFC
+    # 7591).  Registrations without a binding are bound to the authenticating
+    # user's Personal workspace at that same point.
+    if req.workspace_id is not None and storage.get_workspace(req.workspace_id) is None:
+        raise ValueError(f"Unknown workspace_id: {req.workspace_id!r}")
+
     # Determine client type
     is_confidential = req.token_endpoint_auth_method in {
         "client_secret_post",
@@ -70,6 +78,7 @@ def register_client(
         response_types=req.response_types,
         scope=req.scope,
         token_endpoint_auth_method=req.token_endpoint_auth_method,
+        workspace_id=req.workspace_id,
     )
 
     storage.put_client(client)

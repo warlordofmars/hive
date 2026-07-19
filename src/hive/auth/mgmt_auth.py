@@ -28,7 +28,7 @@ from hive.auth.google import (
 )
 from hive.auth.tokens import ISSUER, issue_mgmt_jwt
 from hive.logging_config import get_logger
-from hive.models import User
+from hive.models import User, WorkspaceRole
 from hive.storage import HiveStorage
 
 router = APIRouter(tags=["mgmt-auth"])
@@ -72,7 +72,7 @@ async def mgmt_login(request: Request) -> RedirectResponse:
     if _BYPASS and test_email:
         storage = HiveStorage()
         user = _upsert_user(storage, test_email, test_email.split("@")[0], test_email)
-        token = issue_mgmt_jwt(user)
+        token = _issue_workspace_scoped_mgmt_jwt(storage, user)
         return _html_redirect(token)  # type: ignore[return-value]
 
     storage = HiveStorage()
@@ -129,7 +129,7 @@ async def mgmt_callback(
     display_name: str = claims.get("name", email.split("@")[0])
 
     user = _upsert_user(storage, email, display_name, email)
-    token = issue_mgmt_jwt(user)
+    token = _issue_workspace_scoped_mgmt_jwt(storage, user)
     logger.info("Management login: %s (role=%s)", email, user.role)
     return _html_redirect(token)
 
@@ -149,3 +149,19 @@ def _upsert_user(storage: HiveStorage, email: str, display_name: str, _email: st
     user.last_login_at = now
     storage.put_user(user)
     return user
+
+
+def _issue_workspace_scoped_mgmt_jwt(storage: HiveStorage, user: User) -> str:
+    """Issue a management JWT scoped to the user's Personal workspace (#491).
+
+    Login always lands in the Personal workspace (auto-created on first
+    login); the UI switches workspace by re-issuing the JWT through
+    ``POST /api/account/workspace-token``.  The owner of a Personal workspace
+    is by construction its ``owner``.
+    """
+    workspace = storage.ensure_personal_workspace(user)
+    return issue_mgmt_jwt(
+        user,
+        workspace_id=workspace.workspace_id,
+        workspace_role=WorkspaceRole.owner.value,
+    )

@@ -870,3 +870,70 @@ class TestAccountStats:
         # 30-day window must already be at least 1 (plus the fixture's
         # pre-seeded memory).
         assert growth[0]["cumulative"] >= 1
+
+
+class TestWorkspaceToken:
+    """#491 — POST /api/account/workspace-token re-issues a workspace-scoped
+    management JWT after validating membership."""
+
+    def _seed_workspace(self, storage, *, with_member=True, role=None):
+        from hive.models import Workspace, WorkspaceRole
+
+        role = role or WorkspaceRole.admin
+        storage.put_workspace(
+            Workspace(workspace_id="ws-team", name="Team", owner_user_id="other-user")
+        )
+        if with_member:
+            storage.add_workspace_member("ws-team", _USER_ID, role)
+
+    def test_member_gets_role_stamped_token(self, client):
+        from hive.auth.tokens import decode_mgmt_jwt
+        from hive.models import WorkspaceRole
+
+        tc, storage = client
+        self._seed_workspace(storage, role=WorkspaceRole.admin)
+
+        resp = tc.post("/api/account/workspace-token", json={"workspace_id": "ws-team"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["workspace_id"] == "ws-team"
+        assert data["workspace_role"] == "admin"
+        claims = decode_mgmt_jwt(data["token"])
+        assert claims["typ"] == "mgmt"
+        assert claims["sub"] == _USER_ID
+        assert claims["workspace_id"] == "ws-team"
+        assert claims["workspace_role"] == "admin"
+
+    def test_non_member_gets_403(self, client):
+        tc, storage = client
+        self._seed_workspace(storage, with_member=False)
+        resp = tc.post("/api/account/workspace-token", json={"workspace_id": "ws-team"})
+        assert resp.status_code == 403
+        assert "not a member" in resp.json()["detail"]
+
+    def test_unknown_workspace_gets_404(self, client):
+        tc, _ = client
+        resp = tc.post("/api/account/workspace-token", json={"workspace_id": "ws-ghost"})
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Workspace not found"
+
+    def test_deleted_user_gets_404(self, client):
+        from hive.api import _auth as auth_mod
+        from hive.api.main import app
+
+        tc, storage = client
+        self._seed_workspace(storage)
+        app.dependency_overrides[auth_mod.require_mgmt_user] = lambda: {
+            "sub": "ghost-user",
+            "role": "user",
+            "email": "ghost@example.com",
+        }
+        resp = tc.post("/api/account/workspace-token", json={"workspace_id": "ws-team"})
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "User not found"
+
+    def test_requires_auth(self, unauthed_client):
+        resp = unauthed_client.post(
+            "/api/account/workspace-token", json={"workspace_id": "ws-team"}
+        )
+        assert resp.status_code in (401, 403)

@@ -267,6 +267,8 @@ def _ensure_table(ddb_client, table_name: str) -> None:
                 {"AttributeName": "GSI2SK", "AttributeType": "S"},
                 {"AttributeName": "GSI3PK", "AttributeType": "S"},
                 {"AttributeName": "GSI4PK", "AttributeType": "S"},
+                {"AttributeName": "GSI5PK", "AttributeType": "S"},
+                {"AttributeName": "GSI5SK", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
                 {
@@ -296,6 +298,14 @@ def _ensure_table(ddb_client, table_name: str) -> None:
                     "IndexName": "UserEmailIndex",
                     "KeySchema": [
                         {"AttributeName": "GSI4PK", "KeyType": "HASH"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "WorkspaceMemberIndex",
+                    "KeySchema": [
+                        {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                        {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },

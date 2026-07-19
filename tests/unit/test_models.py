@@ -546,3 +546,36 @@ class TestOAuthClientWorkspaceIdField:
         c = OAuthClient(client_name="Test")
         item = c.to_dynamo()
         assert "workspace_id" not in item
+
+
+class TestTokenWorkspaceFields:
+    """#491 — Token rows round-trip the workspace claims."""
+
+    def _token(self, **kwargs) -> Token:
+        from datetime import datetime, timedelta
+
+        now = datetime.now(timezone.utc)
+        return Token(
+            client_id="c1",
+            scope="memories:read",
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+            **kwargs,
+        )
+
+    def test_workspace_fields_round_trip(self):
+        token = self._token(workspace_id="ws-1", workspace_role="member")
+        item = token.to_dynamo()
+        assert item["workspace_id"] == "ws-1"
+        assert item["workspace_role"] == "member"
+        restored = Token.from_dynamo(item)
+        assert restored.workspace_id == "ws-1"
+        assert restored.workspace_role == "member"
+
+    def test_workspace_fields_absent_when_unset(self):
+        item = self._token().to_dynamo()
+        assert "workspace_id" not in item
+        assert "workspace_role" not in item
+        restored = Token.from_dynamo(item)
+        assert restored.workspace_id is None
+        assert restored.workspace_role is None

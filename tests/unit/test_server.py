@@ -41,6 +41,8 @@ def _create_table(table_name: str = "hive-unit-server") -> None:
             {"AttributeName": "GSI2PK", "AttributeType": "S"},
             {"AttributeName": "GSI2SK", "AttributeType": "S"},
             {"AttributeName": "GSI4PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5PK", "AttributeType": "S"},
+            {"AttributeName": "GSI5SK", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -63,6 +65,14 @@ def _create_table(table_name: str = "hive-unit-server") -> None:
                 "IndexName": "UserEmailIndex",
                 "KeySchema": [
                     {"AttributeName": "GSI4PK", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "WorkspaceMemberIndex",
+                "KeySchema": [
+                    {"AttributeName": "GSI5PK", "KeyType": "HASH"},
+                    {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -4062,3 +4072,394 @@ class TestPackContext:
             # typo "relevancy" should still get a usable response.
             result = await pack_context("content", ordering="nonsense", ctx=ctx)
         assert "1 memory" in _text(result)
+
+
+# ---------------------------------------------------------------------------
+# Workspace enforcement (#491) — every keyed tool call checks the caller's
+# workspace claim against the memory's workspace
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def workspace_env():
+    """moto-backed storage with a workspace-scoped caller and a foreign memory.
+
+    Caller: client bound to workspace ``ws-a`` with a claim-carrying token.
+    Foreign memory: key ``foreign-key`` stamped with workspace ``ws-b``.
+    """
+    with mock_aws():
+        _create_table()
+        old_table = os.environ.get("HIVE_TABLE_NAME")
+        os.environ["HIVE_TABLE_NAME"] = "hive-unit-server"
+        try:
+            from hive.auth.tokens import issue_jwt
+            from hive.models import Memory, OAuthClient, Token
+            from hive.storage import HiveStorage
+
+            storage = HiveStorage(table_name="hive-unit-server", region="us-east-1")
+            client = OAuthClient(
+                client_name="WS Client A", owner_user_id="user-a", workspace_id="ws-a"
+            )
+            storage.put_client(client)
+
+            now = datetime.now(timezone.utc)
+            token = Token(
+                client_id=client.client_id,
+                scope="memories:read memories:write",
+                issued_at=now,
+                expires_at=now + timedelta(hours=1),
+                workspace_id="ws-a",
+                workspace_role="owner",
+            )
+            storage.put_token(token)
+            jwt = issue_jwt(token)
+
+            foreign = Memory(
+                key="foreign-key",
+                value="foreign-secret",
+                tags=["foreign"],
+                owner_client_id="client-b",
+                owner_user_id="user-b",
+                workspace_id="ws-b",
+            )
+            storage.put_memory(foreign)
+
+            yield storage, client.client_id, jwt
+        finally:
+            if old_table is not None:
+                os.environ["HIVE_TABLE_NAME"] = old_table
+            else:
+                os.environ.pop("HIVE_TABLE_NAME", None)
+
+
+@pytest.mark.asyncio
+class TestWorkspaceEnforcement:
+    """Cross-workspace access to keyed tools is denied as not-found (#491)."""
+
+    async def test_recall_cross_workspace_denied_without_stat_bump(self, workspace_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import recall
+
+        storage, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="No memory found for key 'foreign-key'"):
+            await recall(key="foreign-key", ctx=_make_ctx(jwt))
+        # The denied probe must not touch the foreign memory's recall stats.
+        foreign = storage.get_memory_by_key("foreign-key")
+        assert foreign.recall_count == 0
+        assert foreign.last_accessed_at is None
+
+    async def test_forget_cross_workspace_denied(self, workspace_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import forget
+
+        storage, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="No memory found for key 'foreign-key'"):
+            await forget(key="foreign-key", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("foreign-key") is not None
+
+    async def test_redact_cross_workspace_denied(self, workspace_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import redact_memory
+
+        storage, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="No memory found for key 'foreign-key'"):
+            await redact_memory(key="foreign-key", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("foreign-key").value == "foreign-secret"
+
+    async def test_memory_history_cross_workspace_denied(self, workspace_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import memory_history
+
+        _, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="No memory found for key 'foreign-key'"):
+            await memory_history(key="foreign-key", ctx=_make_ctx(jwt))
+
+    async def test_restore_cross_workspace_denied(self, workspace_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import restore_memory
+
+        _, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="No memory found for key 'foreign-key'"):
+            await restore_memory(
+                key="foreign-key", version_timestamp="2026-01-01T00:00:00", ctx=_make_ctx(jwt)
+            )
+
+    async def test_relate_memories_cross_workspace_denied(self, workspace_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import relate_memories
+
+        _, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="No memory found for key 'foreign-key'"):
+            await relate_memories(key="foreign-key", ctx=_make_ctx(jwt))
+
+    async def test_remember_cross_workspace_key_denied(self, workspace_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        storage, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="Key 'foreign-key' is already in use"):
+            await remember(key="foreign-key", value="overwrite!", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("foreign-key").value == "foreign-secret"
+
+    async def test_remember_with_version_never_leaks_foreign_value(self, workspace_env):
+        """The workspace guard fires before the optimistic-lock conflict path,
+        which would otherwise embed the foreign memory's value in its error."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember
+
+        _, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="already in use") as excinfo:
+            await remember(
+                key="foreign-key", value="x", version="2020-01-01T00:00:00", ctx=_make_ctx(jwt)
+            )
+        assert "foreign-secret" not in str(excinfo.value)
+
+    async def test_remember_if_absent_cross_workspace_key_denied(self, workspace_env):
+        """A foreign-workspace key reads as in-use, not as a success no-op
+        that would mislead the caller into believing their workspace holds it."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_if_absent
+
+        storage, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="Key 'foreign-key' is already in use"):
+            await remember_if_absent(key="foreign-key", value="squat", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("foreign-key").value == "foreign-secret"
+
+    async def test_remember_if_absent_race_loser_foreign_winner_denied(
+        self, workspace_env, monkeypatch
+    ):
+        """Losing the conditional key-claim write (#592) to a concurrent
+        creator in ANOTHER workspace reads as in-use, not as the plain
+        already-exists success — the workspace guard applies to the winner's
+        memory on the conditional-failure path too (#491)."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.models import Memory
+        from hive.server import remember_if_absent
+        from hive.storage import HiveStorage
+
+        _, _, jwt = workspace_env
+        foreign_winner = Memory(
+            key="race-key",
+            value="winner-in-ws-b",
+            tags=[],
+            owner_client_id="client-b",
+            owner_user_id="user-b",
+            workspace_id="ws-b",
+        )
+        calls = {"n": 0}
+
+        def fake_get(self, key):
+            # First call: the pre-write read-check sees "absent". Second call:
+            # the post-conditional-failure re-read sees the race winner.
+            calls["n"] += 1
+            return None if calls["n"] == 1 else foreign_winner
+
+        monkeypatch.setattr(HiveStorage, "get_memory_by_key", fake_get)
+        monkeypatch.setattr(HiveStorage, "put_memory_if_absent", lambda self, m: False)
+        with pytest.raises(ToolError, match="Key 'race-key' is already in use"):
+            await remember_if_absent(key="race-key", value="mine", ctx=_make_ctx(jwt))
+
+    async def test_remember_if_absent_race_loser_same_workspace_skips(
+        self, workspace_env, monkeypatch
+    ):
+        """Losing the conditional write to a same-workspace concurrent creator
+        keeps #592's plain already-exists response."""
+        from hive.models import Memory
+        from hive.server import remember_if_absent
+        from hive.storage import HiveStorage
+
+        _, _, jwt = workspace_env
+        same_ws_winner = Memory(
+            key="race-key-2",
+            value="winner-in-ws-a",
+            tags=[],
+            owner_client_id="client-a2",
+            owner_user_id="user-a",
+            workspace_id="ws-a",
+        )
+        calls = {"n": 0}
+
+        def fake_get(self, key):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else same_ws_winner
+
+        monkeypatch.setattr(HiveStorage, "get_memory_by_key", fake_get)
+        monkeypatch.setattr(HiveStorage, "put_memory_if_absent", lambda self, m: False)
+        result = await remember_if_absent(key="race-key-2", value="mine", ctx=_make_ctx(jwt))
+        assert _text(result) == "Memory 'race-key-2' already exists — not overwritten."
+
+    async def test_remember_blob_cross_workspace_key_denied(self, workspace_env):
+        import base64
+
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_blob
+
+        storage, _, jwt = workspace_env
+        data = base64.b64encode(b"pixels").decode()
+        with pytest.raises(ToolError, match="Key 'foreign-key' is already in use"):
+            await remember_blob(
+                key="foreign-key", data=data, content_type="image/png", ctx=_make_ctx(jwt)
+            )
+        assert storage.get_memory_by_key("foreign-key").value == "foreign-secret"
+
+    async def test_same_workspace_access_allowed(self, workspace_env):
+        from hive.server import recall, remember
+
+        storage, _, jwt = workspace_env
+        ctx = _make_ctx(jwt)
+        await remember(key="own-key", value="mine", ctx=ctx)
+        assert storage.get_memory_by_key("own-key").workspace_id == "ws-a"
+        assert _text(await recall(key="own-key", ctx=ctx)) == "mine"
+
+    async def test_legacy_memory_without_workspace_still_accessible(self, workspace_env):
+        """Pre-migration rows (workspace_id=None) pass the guard until the
+        migration stamps them — rollout safety."""
+        from hive.models import Memory
+        from hive.server import recall
+
+        storage, _, jwt = workspace_env
+        storage.put_memory(
+            Memory(
+                key="legacy-key",
+                value="legacy-value",
+                tags=[],
+                owner_client_id="legacy-client",
+            )
+        )
+        assert _text(await recall(key="legacy-key", ctx=_make_ctx(jwt))) == "legacy-value"
+
+    async def test_recall_deleted_between_lookup_and_record_raises_not_found(
+        self, workspace_env, monkeypatch
+    ):
+        """The fetch-first guard leaves a narrow window where the memory can
+        vanish before record_recall — that still reads as not-found."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import recall, remember
+        from hive.storage import HiveStorage
+
+        _, _, jwt = workspace_env
+        await remember(key="own-key-2", value="v", ctx=_make_ctx(jwt))
+        # Memory exists and is in-workspace, but record_recall reports it gone.
+        monkeypatch.setattr(HiveStorage, "record_recall", lambda self, key: None)
+        with pytest.raises(ToolError, match="No memory found for key 'own-key-2'"):
+            await recall(key="own-key-2", ctx=_make_ctx(jwt))
+
+    async def test_recall_rechecks_workspace_on_recreated_key(self, workspace_env, monkeypatch):
+        """TOCTOU guard: if the key mapping changes between the guarded lookup
+        and record_recall's own lookup (delete + recreate in another
+        workspace), the re-resolved row is checked again — the foreign value
+        must never be returned."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.models import Memory
+        from hive.server import recall, remember
+        from hive.storage import HiveStorage
+
+        _, _, jwt = workspace_env
+        await remember(key="raced-key", value="mine", ctx=_make_ctx(jwt))
+
+        foreign = Memory(
+            key="raced-key",
+            value="foreign-after-race",
+            tags=[],
+            owner_client_id="client-b",
+            owner_user_id="user-b",
+            workspace_id="ws-b",
+        )
+        monkeypatch.setattr(HiveStorage, "record_recall", lambda self, key: foreign)
+        with pytest.raises(ToolError, match="No memory found for key 'raced-key'"):
+            await recall(key="raced-key", ctx=_make_ctx(jwt))
+
+
+@pytest.mark.asyncio
+class TestWorkspaceStamping:
+    """New memories are stamped with the caller's workspace (#491)."""
+
+    async def test_remember_stamps_workspace_from_claim(self, workspace_env):
+        from hive.server import remember
+
+        storage, _, jwt = workspace_env
+        await remember(key="stamp-1", value="v", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("stamp-1").workspace_id == "ws-a"
+
+    async def test_remember_if_absent_stamps_workspace_from_claim(self, workspace_env):
+        from hive.server import remember_if_absent
+
+        storage, _, jwt = workspace_env
+        await remember_if_absent(key="stamp-2", value="v", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("stamp-2").workspace_id == "ws-a"
+
+    async def test_remember_blob_stamps_workspace_from_claim(self, workspace_env, monkeypatch):
+        import base64
+
+        from hive.server import remember_blob
+
+        storage, _, jwt = workspace_env
+        bucket = "test-ws-blob-stamp"
+        monkeypatch.setenv("HIVE_BLOBS_BUCKET", bucket)
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
+        data = base64.b64encode(b"blob-bytes").decode()
+        await remember_blob(
+            key="stamp-3", data=data, content_type="application/pdf", ctx=_make_ctx(jwt)
+        )
+        assert storage.get_memory_by_key("stamp-3").workspace_id == "ws-a"
+
+    async def test_legacy_caller_creates_unstamped_memory(self, server_env):
+        """A legacy claim-free token whose owner has no Personal workspace yet
+        creates memories without a workspace stamp (the migration back-fills)."""
+        from hive.server import remember
+
+        storage, _, jwt = server_env
+        await remember(key="legacy-stamp", value="v", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("legacy-stamp").workspace_id is None
+
+    async def test_legacy_token_resolves_owner_personal_workspace(self, server_env):
+        """A claim-free token falls back to the owner's Personal workspace for
+        both stamping and access checks."""
+        from hive.models import User
+        from hive.server import recall, remember
+
+        storage, _, jwt = server_env
+        # server_env's client is owned by "test-user"; give them a Personal
+        # workspace so legacy resolution finds it.
+        personal = storage.ensure_personal_workspace(
+            User(user_id="test-user", email="test-user@example.com", display_name="T")
+        )
+        ctx = _make_ctx(jwt)
+        await remember(key="legacy-resolved", value="v", ctx=ctx)
+        assert storage.get_memory_by_key("legacy-resolved").workspace_id == personal.workspace_id
+        assert _text(await recall(key="legacy-resolved", ctx=ctx)) == "v"
+
+
+class TestWorkspaceScopeHelpers:
+    def test_caller_scope_without_token_context_is_none(self, server_env):
+        from unittest.mock import MagicMock as _MM
+
+        from hive.server import _caller_workspace_scope, _current_token
+
+        _current_token.set(None)
+        assert _caller_workspace_scope(_MM()) == (None, None)
+
+    def test_check_workspace_access_fails_closed_for_unresolvable_caller(self, server_env):
+        from fastmcp.exceptions import ToolError
+
+        from hive.models import Memory
+        from hive.server import _check_workspace_access, _current_token
+
+        storage, _, _ = server_env
+        _current_token.set(None)
+        stamped = Memory(key="k", value="v", owner_client_id="c", workspace_id="ws-somewhere")
+        with pytest.raises(ToolError, match="denied"):
+            _check_workspace_access(storage, stamped, "denied")
