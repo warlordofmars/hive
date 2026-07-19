@@ -868,12 +868,15 @@ class TestClients:
         self._issue_token(storage, cid)
         self._issue_token(storage, cid)
 
+        # Bracket the delete with both candidate dates so the assertion
+        # cannot flake if the event lands across a UTC midnight boundary.
+        date_before = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         assert tc.delete(f"/api/clients/{cid}").status_code == 204
+        date_after = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         events = [
             e
-            for e in storage.get_events_for_date(today)
+            for e in storage.get_events_for_dates(sorted({date_before, date_after}))
             if e.event_type.value == "client_deleted" and e.metadata.get("deleted_client_id") == cid
         ]
         assert len(events) == 1
