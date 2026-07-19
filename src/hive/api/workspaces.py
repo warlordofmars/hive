@@ -48,7 +48,17 @@ _EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 
 
 def _invite_ttl_days() -> int:
-    return int(os.environ.get("HIVE_INVITE_TTL_DAYS", _DEFAULT_INVITE_TTL_DAYS))
+    """Invite lifetime in days (``HIVE_INVITE_TTL_DAYS``, default 7).
+
+    Falls back to the default when the value is unset, non-numeric, or
+    non-positive — a zero/negative TTL would mint already-expired invites,
+    and a parse error would 500 every invite creation.
+    """
+    try:
+        days = int(os.environ.get("HIVE_INVITE_TTL_DAYS", ""))
+    except ValueError:
+        return _DEFAULT_INVITE_TTL_DAYS
+    return days if days > 0 else _DEFAULT_INVITE_TTL_DAYS
 
 
 def _storage() -> HiveStorage:
@@ -367,6 +377,10 @@ async def list_members(
 ) -> list[MemberResponse]:
     user_id: str = claims["sub"]
     _require_workspace_member(storage, workspace_id, user_id)
+    # Per-member get_user_by_id is an accepted N+1 at workspace scale —
+    # membership is invite-only and human-sized, matching the per-item read
+    # patterns elsewhere (e.g. list_workspaces_for_user). Swap to a
+    # BatchGetItem-backed lookup if workspaces ever grow beyond that.
     return [
         _member_response(storage, member) for member in storage.list_workspace_members(workspace_id)
     ]

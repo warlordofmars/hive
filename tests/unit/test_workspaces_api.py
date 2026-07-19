@@ -187,6 +187,13 @@ class TestHelpers:
         monkeypatch.setenv("HIVE_INVITE_TTL_DAYS", "1")
         assert _invite_ttl_days() == 1
 
+    @pytest.mark.parametrize("raw", ["not-a-number", "", "0", "-3"])
+    def test_invite_ttl_days_invalid_values_fall_back_to_default(self, monkeypatch, raw):
+        from hive.api.workspaces import _invite_ttl_days
+
+        monkeypatch.setenv("HIVE_INVITE_TTL_DAYS", raw)
+        assert _invite_ttl_days() == 7
+
 
 class TestCreateWorkspace:
     def test_creator_becomes_owner(self, ctx):
