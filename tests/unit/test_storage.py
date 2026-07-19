@@ -2569,6 +2569,38 @@ class TestApiKeyStorage:
         storage.table.put_item(Item={"PK": "OTHER#rogue", "SK": "META", "key_hash": "hash-rogue"})
         assert storage.get_api_key_by_hash("hash-rogue") is None
 
+    def test_get_by_hash_paginates_past_foreign_items(self, storage):
+        """A real key sharing the partition with a foreign item is still found.
+
+        Limit=1 + FilterExpression means the first page can come back empty
+        (DynamoDB applies Limit before the filter); the pagination loop must
+        keep going until it reaches the genuine API key item.
+        """
+        storage.table.put_item(Item={"PK": "OTHER#rogue", "SK": "META", "key_hash": "hash-mixed"})
+        k = ApiKey(owner_user_id="u1", name="mixed", key_hash="hash-mixed")
+        storage.put_api_key(k)
+        found = storage.get_api_key_by_hash("hash-mixed")
+        assert found is not None
+        assert found.key_id == k.key_id
+
+    def test_get_by_hash_follows_last_evaluated_key(self, storage):
+        """An empty-but-truncated page (Limit applied before the filter) keeps paging."""
+        from unittest.mock import patch
+
+        k = self._key("u1", "paged")
+        pages = [
+            {"Items": [], "LastEvaluatedKey": {"key_hash": "hash-paged"}},
+            {"Items": [k.to_dynamo()]},
+        ]
+        with patch.object(storage.table, "query", side_effect=pages) as mock_query:
+            found = storage.get_api_key_by_hash("hash-paged")
+        assert found is not None
+        assert found.key_id == k.key_id
+        assert mock_query.call_count == 2
+        assert mock_query.call_args_list[1].kwargs["ExclusiveStartKey"] == {
+            "key_hash": "hash-paged"
+        }
+
     def test_get_by_hash_falls_back_when_index_missing(self, storage_no_apikey_index):
         """A table without the GSI (legacy schema / backfilling) still resolves keys."""
         k = self._key()

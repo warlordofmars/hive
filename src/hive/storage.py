@@ -1867,16 +1867,29 @@ class HiveStorage:
         fallback is kept permanently as resilience, not as a transitional
         shim — auth must not hard-fail on index availability.
         """
+        # Limit=1 with a server-side shape filter, paginating on
+        # LastEvaluatedKey. DynamoDB applies Limit *before* the
+        # FilterExpression, so a single non-paginated call could
+        # false-negative if a foreign item ever carried the same key_hash
+        # (sparse-index invariant breach); paginating restores the exact
+        # legacy scan semantics. In the normal case — the partition holds
+        # exactly one API key item — this is a single 1-item read.
+        query_kwargs: dict[str, Any] = {
+            "IndexName": "ApiKeyHashIndex",
+            "KeyConditionExpression": Key("key_hash").eq(key_hash),
+            "FilterExpression": Attr("SK").eq("META") & Attr("PK").begins_with("APIKEY#"),
+            "Limit": 1,
+        }
         try:
-            # Limit=1: the partition holds at most one item (SHA-256 of a
-            # unique key). No server-side FilterExpression here — DynamoDB
-            # applies Limit *before* the filter, so combining them could
-            # false-negative; the item-shape check is done in Python below.
-            resp = self.table.query(
-                IndexName="ApiKeyHashIndex",
-                KeyConditionExpression=Key("key_hash").eq(key_hash),
-                Limit=1,
-            )
+            while True:
+                resp = self.table.query(**query_kwargs)
+                items = resp.get("Items", [])
+                if items:
+                    return ApiKey.from_dynamo(items[0])
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    return None
+                query_kwargs["ExclusiveStartKey"] = last_key
         except ClientError as exc:
             code = exc.response["Error"]["Code"]
             if code not in ("ValidationException", "ResourceNotFoundException"):
@@ -1886,16 +1899,6 @@ class HiveStorage:
                 code,
             )
             return self._scan_api_key_by_hash(key_hash)
-        items = resp.get("Items", [])
-        if not items:
-            return None
-        item = items[0]
-        if not str(item.get("PK", "")).startswith("APIKEY#") or item.get("SK") != "META":
-            # Defensive: the sparse-index invariant (only APIKEY#/META items
-            # carry key_hash) was violated by some other item type — treat
-            # as a miss rather than mis-deserialising a foreign item.
-            return None
-        return ApiKey.from_dynamo(item)
 
     def _scan_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
         """Legacy full-table-scan API key lookup — fallback for ApiKeyHashIndex."""
