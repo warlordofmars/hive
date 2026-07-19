@@ -14,6 +14,9 @@ DynamoDB single-table design:
   Invite items:     PK=INVITE#{invite_id}   SK=META          (TTL enabled)
   Mgmt state:       PK=MGMT_STATE#{state}   SK=META          (TTL enabled)
   API key items:    PK=APIKEY#{key_id}      SK=META
+  Key-claim items:  PK=KEYCLAIM#{key}       SK=META          (uniqueness anchor
+                    for remember_if_absent conditional writes; released on
+                    memory delete, reclaimed at conflict time when stale)
 
 GSIs:
   TagIndex:              PK=TAG#{tag}, SK=memory_id   — list_memories(tag)
@@ -692,6 +695,13 @@ class EventType(str, Enum):
     client_registered = "client_registered"
     client_deleted = "client_deleted"
     account_deleted = "account_deleted"
+    # Workspace membership mutations (#495) — compliance audit trail
+    workspace_created = "workspace_created"
+    workspace_deleted = "workspace_deleted"
+    workspace_invite_sent = "workspace_invite_sent"
+    workspace_invite_accepted = "workspace_invite_accepted"
+    workspace_member_role_changed = "workspace_member_role_changed"
+    workspace_member_removed = "workspace_member_removed"
 
 
 class ActivityEvent(BaseModel):

@@ -58,6 +58,12 @@ _SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
 # Version retention
 _VERSION_RETENTION_DAYS = int(os.environ.get("HIVE_VERSION_RETENTION_DAYS", "30"))
 
+# How old a KEYCLAIM item with no backing memory must be before an if-absent
+# create may treat it as a crashed-create orphan and take it over (#592).
+# Generous enough to cover the slowest legitimate create (S3 routing of a
+# large value + batched DynamoDB writes) plus cross-Lambda clock skew.
+_KEYCLAIM_GRACE_SECONDS = int(os.environ.get("HIVE_KEYCLAIM_GRACE_SECONDS", "60"))
+
 # Token lifetimes
 ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
 REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
@@ -107,6 +113,24 @@ class AuthCodeAlreadyUsed(Exception):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_claim_timestamp(raw: Any) -> datetime:
+    """Parse a KEYCLAIM item's ``created_at`` defensively.
+
+    Claims are only ever written with an aware-UTC isoformat, but a
+    malformed item must degrade to "reclaimable" (epoch — maximally old)
+    rather than crash the reclaim path and leave its key permanently
+    blocked by an unreclaimable claim. Naive datetimes are assumed UTC so
+    the subtraction against the aware ``_now()`` can never raise.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _encode_cursor(last_evaluated_key: dict[str, Any]) -> str:
@@ -312,6 +336,165 @@ class HiveStorage:
         # Drop the inline value — DynamoDB only keeps the pointer.
         memory.value = ""
 
+    def put_memory_if_absent(self, memory: Memory) -> bool:
+        """Atomically create a memory only if its key is not already claimed.
+
+        Key uniqueness lives on the KeyIndex GSI (``GSI1PK=KEY#{key}``), and
+        neither a GSI nor a condition on the META item (whose PK is a fresh
+        surrogate UUID) can enforce it. The atomic unit is therefore a
+        dedicated key-claim item (``PK=KEYCLAIM#{key}``, ``SK=META``) written
+        with a conditional ``PutItem`` (``attribute_not_exists(PK)``).
+        DynamoDB serialises conditional writes on the same item, so exactly
+        one of any number of concurrent callers wins the claim (#592).
+
+        A lost conditional write is not automatically "exists": the holder
+        is resolved via ``_reclaim_stale_key``, which distinguishes a claim
+        backed by a live memory (return ``False``) from a stale one — a
+        crashed create that never wrote its memory, or a memory that has
+        since expired — which is cleared and re-claimed atomically. Claim
+        lifetime is deliberately decoupled from the memory's TTL: liveness
+        is decided at conflict time against the memory item itself, so a
+        TTL later added, extended, or removed via ``remember``/the API can
+        never strand or prematurely free the claim.
+
+        Returns ``True`` when the claim and the memory write both succeed,
+        ``False`` when the key is already claimed by a live (or in-flight)
+        memory. If the memory write fails after a successful claim, the
+        claim is rolled back and the error re-raised.
+
+        Claims are released by ``delete_memory`` / ``delete_memories_by_tag``
+        so a forgotten key can be re-created. Memories created through other
+        paths (``remember``'s create branch, the management API) carry no
+        claim; callers must pair this method with a ``get_memory_by_key``
+        pre-check to preserve if-absent semantics against those.
+        """
+        if not self._try_claim_key(memory) and not self._reclaim_stale_key(memory):
+            return False
+        try:
+            self.put_memory(memory)
+        except Exception:
+            # Roll back the claim so a failed create doesn't poison the key.
+            self._release_key_claim(memory.key, memory.memory_id)
+            raise
+        return True
+
+    def _try_claim_key(self, memory: Memory) -> bool:
+        """Conditionally write the key-claim item for ``memory``.
+
+        Returns ``True`` when the claim was won, ``False`` when another
+        claim already holds the key. Any other DynamoDB error re-raises.
+        """
+        claim: dict[str, Any] = {
+            "PK": f"KEYCLAIM#{memory.key}",
+            "SK": "META",
+            "key": memory.key,
+            "memory_id": memory.memory_id,
+            "created_at": _now().isoformat(),
+        }
+        try:
+            self.table.put_item(
+                Item=claim,
+                ConditionExpression=Attr("PK").not_exists(),
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
+    def _reclaim_stale_key(self, memory: Memory) -> bool:
+        """After a lost claim, decide live-vs-stale and re-claim if stale.
+
+        A claim is *stale* when its ``memory_id`` no longer resolves to a
+        live memory: either the memory expired, or a previous create
+        crashed between writing the claim and writing the memory. The
+        latter is indistinguishable from an in-flight create, so a claim
+        with no memory is only treated as stale once it is older than
+        ``_KEYCLAIM_GRACE_SECONDS`` — younger claims are reported as
+        "exists" to protect a concurrent creator mid-write.
+
+        Both reads use ``ConsistentRead`` — deciding staleness from an
+        eventually-consistent replica could miss a just-committed memory
+        and clear a live claim. The stale claim is deleted *conditionally*
+        on its observed ``memory_id`` so a claim that changed hands in the
+        meantime is never cleared out from under its new owner; the
+        conditional put is then retried exactly once. At most one of any
+        number of concurrent reclaimers can pass the conditional delete,
+        so single-create is preserved.
+        """
+        holder = (
+            self.table.get_item(
+                Key={"PK": f"KEYCLAIM#{memory.key}", "SK": "META"},
+                ConsistentRead=True,
+            )
+        ).get("Item")
+        if holder is not None:
+            # Defensive .get — a malformed claim (no memory_id) must degrade
+            # to "stale" rather than crash and leave its key blocked.
+            holder_memory_id = holder.get("memory_id")
+            meta = None
+            if holder_memory_id is not None:
+                meta = (
+                    self.table.get_item(
+                        Key={"PK": f"MEMORY#{holder_memory_id}", "SK": "META"},
+                        ConsistentRead=True,
+                    )
+                ).get("Item")
+            if meta is not None and not Memory.from_dynamo(meta).is_expired:
+                return False  # a live memory holds the key
+            if meta is None:
+                claimed_at = _parse_claim_timestamp(holder.get("created_at"))
+                if (_now() - claimed_at).total_seconds() < _KEYCLAIM_GRACE_SECONDS:
+                    return False  # likely an in-flight create — don't steal it
+            try:
+                self.table.delete_item(
+                    Key={"PK": f"KEYCLAIM#{memory.key}", "SK": "META"},
+                    # Delete only the claim we observed: match its memory_id,
+                    # or require the attribute still absent for a malformed
+                    # claim, so one that changed hands is never cleared.
+                    ConditionExpression=(
+                        Attr("memory_id").eq(holder_memory_id)
+                        if holder_memory_id is not None
+                        else Attr("memory_id").not_exists()
+                    ),
+                )
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    return False  # another caller re-claimed the key first
+                raise
+        # Claim cleared (or vanished between the lost put and the read) —
+        # retry the conditional write exactly once.
+        return self._try_claim_key(memory)
+
+    def _release_key_claim(self, key: str, memory_id: str) -> None:
+        """Best-effort delete of ``key``'s claim, only if ``memory_id`` owns it.
+
+        The delete is conditional on the claim's ``memory_id`` matching the
+        memory being deleted: if duplicate same-key memories exist (possible
+        via the non-if-absent create paths, or historically from the
+        pre-#592 race), deleting one of them must not clear the claim that
+        belongs to the other, still-live memory. A failed condition is the
+        expected no-op for memories that never held a claim.
+
+        This conditionality cannot strand an orphaned claim: a claim whose
+        memory is gone is reclaimed by ``_reclaim_stale_key`` on the next
+        if-absent create once the grace period passes.
+
+        Other failures are logged and swallowed (mirroring
+        ``_delete_blob_if_needed``): by the time this runs the memory
+        delete has already happened, so a throttled claim cleanup must not
+        turn an otherwise-successful delete into an API/tool error.
+        """
+        try:
+            self.table.delete_item(
+                Key={"PK": f"KEYCLAIM#{key}", "SK": "META"},
+                ConditionExpression=Attr("memory_id").eq(memory_id),
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return  # no claim, or the claim belongs to another memory
+            logger.warning("Failed to release key claim for %r (non-fatal)", key, exc_info=True)
+
     def get_memory_by_id(self, memory_id: str) -> Memory | None:
         item = self._get_memory_meta(memory_id)
         if item is None:
@@ -375,6 +558,7 @@ class HiveStorage:
         self._delete_tag_items(memory)
         self.table.delete_item(Key={"PK": f"MEMORY#{memory_id}", "SK": "META"})
         self._delete_blob_if_needed(memory)
+        self._release_key_claim(memory.key, memory.memory_id)
         return True
 
     # ------------------------------------------------------------------
@@ -669,6 +853,7 @@ class HiveStorage:
                 self._delete_tag_items(memory)
                 self.table.delete_item(Key={"PK": f"MEMORY#{memory.memory_id}", "SK": "META"})
                 self._delete_blob_if_needed(memory)
+                self._release_key_claim(memory.key, memory.memory_id)
                 deleted += 1
             if cursor is None:
                 break
@@ -722,6 +907,45 @@ class HiveStorage:
                 start_key = resp.get("LastEvaluatedKey")
                 if start_key is None:
                     break
+
+    def iter_memories_for_export(
+        self, owner_user_id: str, workspace_ids: list[str]
+    ) -> Iterator[Memory]:
+        """Yield memories the user authored anywhere plus every memory in
+        the given (personal) workspaces, in a single table scan.
+
+        Backs the GDPR export (#495): one pass with a server-side OR
+        filter instead of one scan per criterion. This is a generator —
+        use for streaming exports only.
+        """
+        filter_expr = f"{_SK_PK_PREFIX_EXPR} AND (owner_user_id = :uid"
+        expr_vals: dict[str, Any] = {
+            ":sk": "META",
+            _PK_PREFIX_KEY: "MEMORY#",
+            ":uid": owner_user_id,
+        }
+        if workspace_ids:
+            placeholders = []
+            for i, ws_id in enumerate(workspace_ids):
+                key = f":wsid{i}"
+                expr_vals[key] = ws_id
+                placeholders.append(key)
+            filter_expr += f" OR workspace_id IN ({', '.join(placeholders)})"
+        filter_expr += ")"
+        start_key: dict[str, Any] | None = None
+        while True:
+            kwargs: dict[str, Any] = {
+                "FilterExpression": filter_expr,
+                "ExpressionAttributeValues": expr_vals,
+            }
+            if start_key:
+                kwargs["ExclusiveStartKey"] = start_key
+            resp = self.table.scan(**kwargs)
+            for item in resp.get("Items", []):
+                yield Memory.from_dynamo(item)
+            start_key = resp.get("LastEvaluatedKey")
+            if start_key is None:
+                break
 
     # ------------------------------------------------------------------
     # OAuth Client management
@@ -1232,6 +1456,27 @@ class HiveStorage:
         if not resp.get("Item"):
             return False
         self.table.delete_item(Key={"PK": f"INVITE#{invite_id}", "SK": "META"})
+        return True
+
+    def claim_invite(self, invite_id: str) -> bool:
+        """Atomically consume an invite via a conditional delete.
+
+        Returns True when this caller performed the delete, False when the
+        invite was already gone (never existed, TTL-expired out, or
+        concurrently redeemed). DynamoDB serialises the conditional
+        deletes, so exactly one of N concurrent claimants gets True —
+        mirrors the conditional-write pattern used for auth-code
+        redemption.
+        """
+        try:
+            self.table.delete_item(
+                Key={"PK": f"INVITE#{invite_id}", "SK": "META"},
+                ConditionExpression="attribute_exists(PK)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
         return True
 
     def list_pending_invites_for_email(self, email: str) -> list[Invite]:

@@ -466,6 +466,411 @@ class TestMemoryStorage:
 
 
 # ---------------------------------------------------------------------------
+# Atomic if-absent creation via key-claim items (#592)
+# ---------------------------------------------------------------------------
+
+
+class TestPutMemoryIfAbsent:
+    """put_memory_if_absent arbitrates concurrent same-key creates with a
+    conditional write on a KEYCLAIM item — the KeyIndex GSI can't enforce
+    uniqueness, and the META item's PK is a fresh surrogate UUID."""
+
+    @staticmethod
+    def _claim_item(storage, key):
+        resp = storage.table.get_item(Key={"PK": f"KEYCLAIM#{key}", "SK": "META"})
+        return resp.get("Item")
+
+    def test_creates_memory_and_claim_when_key_unclaimed(self, storage):
+        m = Memory(key="ifa", value="v1", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        stored = storage.get_memory_by_key("ifa")
+        assert stored is not None
+        assert stored.value == "v1"
+        claim = self._claim_item(storage, "ifa")
+        assert claim is not None
+        assert claim["memory_id"] == m.memory_id
+        # Claims never carry TTL attributes — lifetime is decoupled
+        assert "ttl" not in claim
+        assert "expires_at" not in claim
+
+    def test_second_call_returns_false_and_does_not_overwrite(self, storage):
+        first = Memory(key="ifa-dupe", value="original", owner_client_id="c1")
+        assert storage.put_memory_if_absent(first) is True
+        second = Memory(key="ifa-dupe", value="usurper", owner_client_id="c2")
+        assert storage.put_memory_if_absent(second) is False
+        stored = storage.get_memory_by_key("ifa-dupe")
+        assert stored.value == "original"
+        assert stored.memory_id == first.memory_id
+        # The loser's memory was never written
+        assert storage.get_memory_by_id(second.memory_id) is None
+
+    def test_claim_write_is_conditional(self, storage):
+        """Pin the wire-level contract: the claim put carries
+        ``attribute_not_exists(PK)`` so a refactor can't silently drop the
+        atomicity (#592). DynamoDB's server-side serialisation of
+        conditional writes is what enforces single-create."""
+        from unittest.mock import MagicMock
+
+        captured: dict[str, object] = {}
+        original = storage.table.put_item
+
+        def _spy(**kwargs: object) -> object:
+            if "ConditionExpression" in kwargs and not captured:
+                captured.update(kwargs)
+            return original(**kwargs)
+
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.put_item.side_effect = _spy
+
+        m = Memory(key="ifa-cond", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+        assert captured["Item"]["PK"] == "KEYCLAIM#ifa-cond"
+        assert captured["Item"]["SK"] == "META"
+        expr = captured["ConditionExpression"].get_expression()
+        assert expr["operator"] == "attribute_not_exists"
+        assert expr["values"][0].name == "PK"
+
+    def test_claim_lifetime_is_decoupled_from_memory_ttl(self, storage):
+        """Claims never carry expires_at/ttl — liveness is resolved against
+        the memory item at conflict time, so a TTL later added, extended,
+        or removed via remember/the API can't strand or free the claim."""
+        from datetime import datetime, timedelta, timezone
+
+        expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        m = Memory(key="ifa-ttl", value="v", owner_client_id="c1", expires_at=expires)
+        assert storage.put_memory_if_absent(m) is True
+        claim = self._claim_item(storage, "ifa-ttl")
+        assert "expires_at" not in claim
+        assert "ttl" not in claim
+
+    def test_expired_claim_is_taken_over(self, storage):
+        """A claim whose memory has expired reads as absent everywhere else,
+        so the stale-claim reclaim path lets a new create take it over."""
+        from datetime import datetime, timedelta, timezone
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        stale = Memory(key="ifa-exp", value="old", owner_client_id="c1", expires_at=past)
+        assert storage.put_memory_if_absent(stale) is True
+        fresh = Memory(key="ifa-exp", value="new", owner_client_id="c1")
+        assert storage.put_memory_if_absent(fresh) is True
+        claim = self._claim_item(storage, "ifa-exp")
+        assert claim["memory_id"] == fresh.memory_id
+
+    def test_orphaned_claim_past_grace_is_reclaimed(self, storage):
+        """A claim with no backing memory older than the grace period is a
+        crashed-create orphan — the key self-heals on the next create."""
+        from datetime import timedelta
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-orphan",
+                "SK": "META",
+                "key": "ifa-orphan",
+                "memory_id": "gone-forever",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        m = Memory(key="ifa-orphan", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert self._claim_item(storage, "ifa-orphan")["memory_id"] == m.memory_id
+        assert storage.get_memory_by_key("ifa-orphan").value == "v"
+
+    def test_orphaned_claim_within_grace_blocks(self, storage):
+        """A claim with no backing memory younger than the grace period may
+        belong to an in-flight create — it must not be stolen."""
+        from datetime import timedelta
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-inflight",
+                "SK": "META",
+                "key": "ifa-inflight",
+                "memory_id": "being-written",
+                "created_at": (_now() - timedelta(seconds=5)).isoformat(),
+            }
+        )
+        m = Memory(key="ifa-inflight", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is False
+        assert self._claim_item(storage, "ifa-inflight")["memory_id"] == "being-written"
+
+    def test_orphaned_claim_without_created_at_is_reclaimed(self, storage):
+        """A malformed claim missing created_at defaults to epoch age and is
+        immediately reclaimable rather than blocking the key forever."""
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-nodate",
+                "SK": "META",
+                "key": "ifa-nodate",
+                "memory_id": "gone",
+            }
+        )
+        m = Memory(key="ifa-nodate", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+    def test_orphaned_claim_without_memory_id_is_reclaimed(self, storage):
+        """A malformed claim missing memory_id degrades to stale (its key
+        self-heals) instead of raising KeyError in the reclaim path; the
+        conditional delete requires the attribute still absent so a claim
+        that changed hands is never cleared."""
+        from datetime import timedelta
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-noid",
+                "SK": "META",
+                "key": "ifa-noid",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        m = Memory(key="ifa-noid", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert self._claim_item(storage, "ifa-noid")["memory_id"] == m.memory_id
+
+    def test_orphaned_claim_with_invalid_created_at_is_reclaimed(self, storage):
+        """A claim whose created_at is not parseable ISO-8601 degrades to
+        maximally old (reclaimable) instead of crashing the reclaim path and
+        leaving the key permanently blocked."""
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-badts",
+                "SK": "META",
+                "key": "ifa-badts",
+                "memory_id": "gone",
+                "created_at": "not-a-timestamp",
+            }
+        )
+        m = Memory(key="ifa-badts", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+    def test_orphaned_claim_with_naive_created_at_is_assumed_utc(self, storage):
+        """A timezone-naive created_at is assumed UTC — the aware-vs-naive
+        subtraction must never raise, and a recent naive timestamp still
+        counts as within the in-flight grace period."""
+        from datetime import datetime, timedelta, timezone
+
+        naive_recent = (
+            (datetime.now(timezone.utc) - timedelta(seconds=5)).replace(tzinfo=None).isoformat()
+        )
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-naive",
+                "SK": "META",
+                "key": "ifa-naive",
+                "memory_id": "being-written",
+                "created_at": naive_recent,
+            }
+        )
+        m = Memory(key="ifa-naive", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is False
+
+    def test_reclaim_reads_are_strongly_consistent(self, storage):
+        """Staleness must never be decided from an eventually-consistent
+        replica — a lagging read could miss a just-committed memory and
+        clear a live claim."""
+        from unittest.mock import MagicMock
+
+        first = Memory(key="ifa-consist", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(first) is True
+
+        calls: list[dict[str, object]] = []
+        original = storage.table.get_item
+
+        def _spy(**kwargs: object) -> object:
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.get_item.side_effect = _spy
+
+        rival = Memory(key="ifa-consist", value="x", owner_client_id="c1")
+        assert storage.put_memory_if_absent(rival) is False
+        reclaim_reads = [
+            c for c in calls if str(c["Key"]["PK"]).startswith(("KEYCLAIM#", "MEMORY#"))
+        ]
+        assert len(reclaim_reads) >= 2
+        assert all(c.get("ConsistentRead") is True for c in reclaim_reads)
+
+    def test_reclaim_lost_conditional_delete_returns_false(self, storage):
+        """If the stale claim changes hands between the read and the
+        conditional delete, the reclaim backs off instead of clearing the
+        new owner's claim."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-handoff",
+                "SK": "META",
+                "key": "ifa-handoff",
+                "memory_id": "gone",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        lost = ClientError(
+            error_response={"Error": {"Code": "ConditionalCheckFailedException"}},
+            operation_name="DeleteItem",
+        )
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.delete_item.side_effect = lost
+        m = Memory(key="ifa-handoff", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is False
+
+    def test_reclaim_unexpected_delete_error_reraises(self, storage):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-delerr",
+                "SK": "META",
+                "key": "ifa-delerr",
+                "memory_id": "gone",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="DeleteItem",
+        )
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.delete_item.side_effect = throttled
+        m = Memory(key="ifa-delerr", value="v", owner_client_id="c1")
+        with pytest.raises(ClientError):
+            storage.put_memory_if_absent(m)
+
+    def test_reclaim_vanished_claim_retries_put(self, storage):
+        """If the claim disappears between the lost put and the resolution
+        read (e.g. a concurrent forget released it), the conditional put is
+        retried once and wins."""
+        m = Memory(key="ifa-vanished", value="v", owner_client_id="c1")
+        assert storage._reclaim_stale_key(m) is True
+        assert self._claim_item(storage, "ifa-vanished")["memory_id"] == m.memory_id
+
+    def test_live_ttl_claim_still_blocks(self, storage):
+        from datetime import datetime, timedelta, timezone
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        live = Memory(key="ifa-live", value="v", owner_client_id="c1", expires_at=future)
+        assert storage.put_memory_if_absent(live) is True
+        rival = Memory(key="ifa-live", value="x", owner_client_id="c1")
+        assert storage.put_memory_if_absent(rival) is False
+
+    def test_failed_memory_write_rolls_back_claim(self, storage):
+        from unittest.mock import patch
+
+        m = Memory(key="ifa-rollback", value="v", owner_client_id="c1")
+        with (
+            patch.object(storage.__class__, "put_memory", side_effect=ValueError("too big")),
+            pytest.raises(ValueError, match="too big"),
+        ):
+            storage.put_memory_if_absent(m)
+        assert self._claim_item(storage, "ifa-rollback") is None
+        # The key is not poisoned — a subsequent create succeeds
+        retry = Memory(key="ifa-rollback", value="v2", owner_client_id="c1")
+        assert storage.put_memory_if_absent(retry) is True
+
+    def test_unexpected_client_error_reraises(self, storage):
+        """Only ConditionalCheckFailedException maps to False — anything else
+        bubbles up so genuine AWS failures aren't masked as 'exists'."""
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="PutItem",
+        )
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.put_item.side_effect = throttled
+        m = Memory(key="ifa-throttle", value="v", owner_client_id="c1")
+        with pytest.raises(ClientError):
+            storage.put_memory_if_absent(m)
+
+    def test_delete_memory_releases_claim(self, storage):
+        m = Memory(key="ifa-del", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert storage.delete_memory(m.memory_id) is True
+        assert self._claim_item(storage, "ifa-del") is None
+        recreated = Memory(key="ifa-del", value="v2", owner_client_id="c1")
+        assert storage.put_memory_if_absent(recreated) is True
+
+    def test_delete_memory_without_claim_is_a_noop_release(self, storage):
+        m = Memory(key="ifa-noclaim", value="v", owner_client_id="c1")
+        storage.put_memory(m)  # plain create path — no claim written
+        assert self._claim_item(storage, "ifa-noclaim") is None
+        assert storage.delete_memory(m.memory_id) is True
+
+    def test_delete_of_duplicate_key_memory_preserves_other_claim(self, storage):
+        """Claim release is conditional on the owning memory_id: with
+        duplicate same-key memories (possible via non-if-absent paths or the
+        pre-#592 race), deleting one must not clear the claim that protects
+        the other, still-live memory."""
+        claimed = Memory(key="ifa-dupe-del", value="claimed", owner_client_id="c1")
+        assert storage.put_memory_if_absent(claimed) is True
+        # Simulate a duplicate created through a claim-less path
+        rogue = Memory(key="ifa-dupe-del", value="rogue", owner_client_id="c1")
+        storage.put_memory(rogue)
+
+        assert storage.delete_memory(rogue.memory_id) is True
+        # The claim still belongs to the if-absent memory
+        assert self._claim_item(storage, "ifa-dupe-del")["memory_id"] == claimed.memory_id
+
+        assert storage.delete_memory(claimed.memory_id) is True
+        assert self._claim_item(storage, "ifa-dupe-del") is None
+
+    def test_release_key_claim_failure_does_not_fail_delete(self, storage):
+        """Claim cleanup is best-effort: a throttled release must not turn a
+        successful memory delete into an error — the surviving claim
+        self-heals via the next delete or the grace-based reclaim."""
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        m = Memory(key="ifa-relerr", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="DeleteItem",
+        )
+        original = storage.table.delete_item
+
+        def _fail_claim_delete(**kwargs: object) -> object:
+            if str(kwargs["Key"]["PK"]).startswith("KEYCLAIM#"):
+                raise throttled
+            return original(**kwargs)
+
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.delete_item.side_effect = _fail_claim_delete
+
+        assert storage.delete_memory(m.memory_id) is True
+        assert storage.get_memory_by_key("ifa-relerr") is None
+
+    def test_delete_memories_by_tag_releases_claims(self, storage):
+        m = Memory(key="ifa-tagged", value="v", tags=["t592"], owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert storage.delete_memories_by_tag("t592", owner_client_id="c1") == 1
+        assert self._claim_item(storage, "ifa-tagged") is None
+        recreated = Memory(key="ifa-tagged", value="v2", tags=["t592"], owner_client_id="c1")
+        assert storage.put_memory_if_absent(recreated) is True
+
+
+# ---------------------------------------------------------------------------
 # Large-memory routing tests (#497)
 # ---------------------------------------------------------------------------
 
@@ -2520,6 +2925,33 @@ class TestInviteStorage:
     def test_delete_nonexistent_returns_false(self, storage):
         assert storage.delete_invite("no-such-invite") is False
 
+    def test_claim_invite_consumes_once(self, storage):
+        inv = self._invite()
+        storage.put_invite(inv)
+        assert storage.claim_invite(inv.invite_id) is True
+        assert storage.get_invite(inv.invite_id) is None
+        # A second claim loses — the conditional delete fails.
+        assert storage.claim_invite(inv.invite_id) is False
+
+    def test_claim_invite_missing_returns_false(self, storage):
+        assert storage.claim_invite("no-such-invite") is False
+
+    def test_claim_invite_reraises_unexpected_client_error(self, storage):
+        """Non-ConditionalCheck ClientErrors must propagate."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": ""}},
+            "DeleteItem",
+        )
+        with (
+            patch.object(storage.table, "delete_item", side_effect=error),
+            pytest.raises(ClientError),
+        ):
+            storage.claim_invite("any-invite")
+
     def test_list_pending_invites_for_email_filters_by_email(self, storage):
         a = self._invite(email="a@example.com")
         b = self._invite(email="b@example.com")
@@ -2598,6 +3030,72 @@ class TestInviteStorage:
         with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
             invites = storage.list_pending_invites_for_workspace("ws-1")
         assert {i.invite_id for i in invites} == {inv1.invite_id, inv2.invite_id}
+        assert mock_scan.call_count == 2
+
+
+class TestIterMemoriesForExport:
+    """Single-scan union backing the GDPR export (#495)."""
+
+    def test_unions_authored_and_workspace_memories(self, storage):
+        mine_shared = Memory(
+            key="mine-shared",
+            value="v",
+            owner_client_id="c1",
+            owner_user_id="u1",
+            workspace_id="ws-shared",
+        )
+        theirs_personal = Memory(
+            key="theirs-personal",
+            value="v",
+            owner_client_id="c2",
+            owner_user_id="u2",
+            workspace_id="ws-personal",
+        )
+        theirs_shared = Memory(
+            key="theirs-shared",
+            value="v",
+            owner_client_id="c2",
+            owner_user_id="u2",
+            workspace_id="ws-shared",
+        )
+        legacy_mine = Memory(key="legacy", value="v", owner_client_id="c1", owner_user_id="u1")
+        for m in (mine_shared, theirs_personal, theirs_shared, legacy_mine):
+            storage.put_memory(m)
+        keys = {m.key for m in storage.iter_memories_for_export("u1", ["ws-personal"])}
+        assert keys == {"mine-shared", "theirs-personal", "legacy"}
+
+    def test_authored_in_personal_workspace_yields_once(self, storage):
+        both = Memory(
+            key="both", value="v", owner_client_id="c1", owner_user_id="u1", workspace_id="ws-p"
+        )
+        storage.put_memory(both)
+        results = list(storage.iter_memories_for_export("u1", ["ws-p"]))
+        assert [m.key for m in results] == ["both"]
+
+    def test_empty_workspace_list_returns_only_authored(self, storage):
+        mine = Memory(key="mine", value="v", owner_client_id="c1", owner_user_id="u1")
+        theirs = Memory(
+            key="theirs", value="v", owner_client_id="c2", owner_user_id="u2", workspace_id="ws-x"
+        )
+        storage.put_memory(mine)
+        storage.put_memory(theirs)
+        keys = [m.key for m in storage.iter_memories_for_export("u1", [])]
+        assert keys == ["mine"]
+
+    def test_paginates(self, storage):
+        """Covers the LastEvaluatedKey continuation path."""
+        from unittest.mock import patch
+
+        m1 = Memory(key="m1", value="v", owner_client_id="c1", owner_user_id="u1")
+        m2 = Memory(key="m2", value="v", owner_client_id="c1", owner_user_id="u1")
+        page1 = {
+            "Items": [m1.to_dynamo_meta()],
+            "LastEvaluatedKey": {"PK": f"MEMORY#{m1.memory_id}", "SK": "META"},
+        }
+        page2 = {"Items": [m2.to_dynamo_meta()]}
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as mock_scan:
+            memories = list(storage.iter_memories_for_export("u1", []))
+        assert {m.key for m in memories} == {"m1", "m2"}
         assert mock_scan.call_count == 2
 
 
