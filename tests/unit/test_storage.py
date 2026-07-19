@@ -489,7 +489,7 @@ class TestPutMemoryIfAbsent:
         claim = self._claim_item(storage, "ifa")
         assert claim is not None
         assert claim["memory_id"] == m.memory_id
-        # No TTL on the memory → no TTL on the claim
+        # Claims never carry TTL attributes — lifetime is decoupled
         assert "ttl" not in claim
         assert "expires_at" not in claim
 
@@ -506,9 +506,9 @@ class TestPutMemoryIfAbsent:
 
     def test_claim_write_is_conditional(self, storage):
         """Pin the wire-level contract: the claim put carries
-        ``attribute_not_exists(PK) OR expires_at <= :now`` so a refactor
-        can't silently drop the atomicity (#592). DynamoDB's server-side
-        serialisation of conditional writes is what enforces single-create."""
+        ``attribute_not_exists(PK)`` so a refactor can't silently drop the
+        atomicity (#592). DynamoDB's server-side serialisation of
+        conditional writes is what enforces single-create."""
         from unittest.mock import MagicMock
 
         captured: dict[str, object] = {}
@@ -528,26 +528,25 @@ class TestPutMemoryIfAbsent:
         assert captured["Item"]["PK"] == "KEYCLAIM#ifa-cond"
         assert captured["Item"]["SK"] == "META"
         expr = captured["ConditionExpression"].get_expression()
-        assert expr["operator"] == "OR"
-        not_exists, expired = expr["values"]
-        assert not_exists.get_expression()["operator"] == "attribute_not_exists"
-        assert not_exists.get_expression()["values"][0].name == "PK"
-        assert expired.get_expression()["operator"] == "<="
-        assert expired.get_expression()["values"][0].name == "expires_at"
+        assert expr["operator"] == "attribute_not_exists"
+        assert expr["values"][0].name == "PK"
 
-    def test_claim_mirrors_memory_ttl(self, storage):
+    def test_claim_lifetime_is_decoupled_from_memory_ttl(self, storage):
+        """Claims never carry expires_at/ttl — liveness is resolved against
+        the memory item at conflict time, so a TTL later added, extended,
+        or removed via remember/the API can't strand or free the claim."""
         from datetime import datetime, timedelta, timezone
 
         expires = datetime.now(timezone.utc) + timedelta(hours=1)
         m = Memory(key="ifa-ttl", value="v", owner_client_id="c1", expires_at=expires)
         assert storage.put_memory_if_absent(m) is True
         claim = self._claim_item(storage, "ifa-ttl")
-        assert claim["expires_at"] == expires.isoformat()
-        assert claim["ttl"] == int(expires.timestamp())
+        assert "expires_at" not in claim
+        assert "ttl" not in claim
 
     def test_expired_claim_is_taken_over(self, storage):
         """A claim whose memory has expired reads as absent everywhere else,
-        so the ``expires_at <= :now`` arm lets a new create take it over."""
+        so the stale-claim reclaim path lets a new create take it over."""
         from datetime import datetime, timedelta, timezone
 
         past = datetime.now(timezone.utc) - timedelta(hours=1)
@@ -557,8 +556,152 @@ class TestPutMemoryIfAbsent:
         assert storage.put_memory_if_absent(fresh) is True
         claim = self._claim_item(storage, "ifa-exp")
         assert claim["memory_id"] == fresh.memory_id
-        # The takeover rewrites the claim wholesale — no stale expiry left
-        assert "expires_at" not in claim
+
+    def test_orphaned_claim_past_grace_is_reclaimed(self, storage):
+        """A claim with no backing memory older than the grace period is a
+        crashed-create orphan — the key self-heals on the next create."""
+        from datetime import timedelta
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-orphan",
+                "SK": "META",
+                "key": "ifa-orphan",
+                "memory_id": "gone-forever",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        m = Memory(key="ifa-orphan", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+        assert self._claim_item(storage, "ifa-orphan")["memory_id"] == m.memory_id
+        assert storage.get_memory_by_key("ifa-orphan").value == "v"
+
+    def test_orphaned_claim_within_grace_blocks(self, storage):
+        """A claim with no backing memory younger than the grace period may
+        belong to an in-flight create — it must not be stolen."""
+        from datetime import timedelta
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-inflight",
+                "SK": "META",
+                "key": "ifa-inflight",
+                "memory_id": "being-written",
+                "created_at": (_now() - timedelta(seconds=5)).isoformat(),
+            }
+        )
+        m = Memory(key="ifa-inflight", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is False
+        assert self._claim_item(storage, "ifa-inflight")["memory_id"] == "being-written"
+
+    def test_orphaned_claim_without_created_at_is_reclaimed(self, storage):
+        """A malformed claim missing created_at defaults to epoch age and is
+        immediately reclaimable rather than blocking the key forever."""
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-nodate",
+                "SK": "META",
+                "key": "ifa-nodate",
+                "memory_id": "gone",
+            }
+        )
+        m = Memory(key="ifa-nodate", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is True
+
+    def test_reclaim_reads_are_strongly_consistent(self, storage):
+        """Staleness must never be decided from an eventually-consistent
+        replica — a lagging read could miss a just-committed memory and
+        clear a live claim."""
+        from unittest.mock import MagicMock
+
+        first = Memory(key="ifa-consist", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(first) is True
+
+        calls: list[dict[str, object]] = []
+        original = storage.table.get_item
+
+        def _spy(**kwargs: object) -> object:
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.get_item.side_effect = _spy
+
+        rival = Memory(key="ifa-consist", value="x", owner_client_id="c1")
+        assert storage.put_memory_if_absent(rival) is False
+        reclaim_reads = [
+            c for c in calls if str(c["Key"]["PK"]).startswith(("KEYCLAIM#", "MEMORY#"))
+        ]
+        assert len(reclaim_reads) >= 2
+        assert all(c.get("ConsistentRead") is True for c in reclaim_reads)
+
+    def test_reclaim_lost_conditional_delete_returns_false(self, storage):
+        """If the stale claim changes hands between the read and the
+        conditional delete, the reclaim backs off instead of clearing the
+        new owner's claim."""
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-handoff",
+                "SK": "META",
+                "key": "ifa-handoff",
+                "memory_id": "gone",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        lost = ClientError(
+            error_response={"Error": {"Code": "ConditionalCheckFailedException"}},
+            operation_name="DeleteItem",
+        )
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.delete_item.side_effect = lost
+        m = Memory(key="ifa-handoff", value="v", owner_client_id="c1")
+        assert storage.put_memory_if_absent(m) is False
+
+    def test_reclaim_unexpected_delete_error_reraises(self, storage):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        from hive.storage import _now
+
+        storage.table.put_item(
+            Item={
+                "PK": "KEYCLAIM#ifa-delerr",
+                "SK": "META",
+                "key": "ifa-delerr",
+                "memory_id": "gone",
+                "created_at": (_now() - timedelta(seconds=120)).isoformat(),
+            }
+        )
+        throttled = ClientError(
+            error_response={"Error": {"Code": "ProvisionedThroughputExceededException"}},
+            operation_name="DeleteItem",
+        )
+        storage.table = MagicMock(wraps=storage.table)
+        storage.table.delete_item.side_effect = throttled
+        m = Memory(key="ifa-delerr", value="v", owner_client_id="c1")
+        with pytest.raises(ClientError):
+            storage.put_memory_if_absent(m)
+
+    def test_reclaim_vanished_claim_retries_put(self, storage):
+        """If the claim disappears between the lost put and the resolution
+        read (e.g. a concurrent forget released it), the conditional put is
+        retried once and wins."""
+        m = Memory(key="ifa-vanished", value="v", owner_client_id="c1")
+        assert storage._reclaim_stale_key(m) is True
+        assert self._claim_item(storage, "ifa-vanished")["memory_id"] == m.memory_id
 
     def test_live_ttl_claim_still_blocks(self, storage):
         from datetime import datetime, timedelta, timezone

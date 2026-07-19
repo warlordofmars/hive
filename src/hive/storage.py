@@ -58,6 +58,12 @@ _SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
 # Version retention
 _VERSION_RETENTION_DAYS = int(os.environ.get("HIVE_VERSION_RETENTION_DAYS", "30"))
 
+# How old a KEYCLAIM item with no backing memory must be before an if-absent
+# create may treat it as a crashed-create orphan and take it over (#592).
+# Generous enough to cover the slowest legitimate create (S3 routing of a
+# large value + batched DynamoDB writes) plus cross-Lambda clock skew.
+_KEYCLAIM_GRACE_SECONDS = int(os.environ.get("HIVE_KEYCLAIM_GRACE_SECONDS", "60"))
+
 # Token lifetimes
 ACCESS_TOKEN_TTL_SECONDS = 3600  # 1 hour
 REFRESH_TOKEN_TTL_SECONDS = 86400 * 30  # 30 days
@@ -319,22 +325,24 @@ class HiveStorage:
         neither a GSI nor a condition on the META item (whose PK is a fresh
         surrogate UUID) can enforce it. The atomic unit is therefore a
         dedicated key-claim item (``PK=KEYCLAIM#{key}``, ``SK=META``) written
-        with a conditional ``PutItem``::
-
-            attribute_not_exists(PK) OR expires_at <= :now
-
+        with a conditional ``PutItem`` (``attribute_not_exists(PK)``).
         DynamoDB serialises conditional writes on the same item, so exactly
-        one of any number of concurrent callers wins the claim (#592). The
-        ``OR`` arm lets a claim whose memory has expired be taken over
-        atomically — expired memories read as absent everywhere else — and
-        is itself race-safe: the winner's put replaces ``expires_at`` with
-        its own future value (or removes it), so every other taker's
-        condition evaluates false.
+        one of any number of concurrent callers wins the claim (#592).
+
+        A lost conditional write is not automatically "exists": the holder
+        is resolved via ``_reclaim_stale_key``, which distinguishes a claim
+        backed by a live memory (return ``False``) from a stale one — a
+        crashed create that never wrote its memory, or a memory that has
+        since expired — which is cleared and re-claimed atomically. Claim
+        lifetime is deliberately decoupled from the memory's TTL: liveness
+        is decided at conflict time against the memory item itself, so a
+        TTL later added, extended, or removed via ``remember``/the API can
+        never strand or prematurely free the claim.
 
         Returns ``True`` when the claim and the memory write both succeed,
-        ``False`` when the key is already claimed by a live memory. If the
-        memory write fails after a successful claim, the claim is rolled
-        back and the error re-raised.
+        ``False`` when the key is already claimed by a live (or in-flight)
+        memory. If the memory write fails after a successful claim, the
+        claim is rolled back and the error re-raised.
 
         Claims are released by ``delete_memory`` / ``delete_memories_by_tag``
         so a forgotten key can be re-created. Memories created through other
@@ -342,28 +350,8 @@ class HiveStorage:
         claim; callers must pair this method with a ``get_memory_by_key``
         pre-check to preserve if-absent semantics against those.
         """
-        now_iso = _now().isoformat()
-        claim: dict[str, Any] = {
-            "PK": f"KEYCLAIM#{memory.key}",
-            "SK": "META",
-            "key": memory.key,
-            "memory_id": memory.memory_id,
-            "created_at": now_iso,
-        }
-        if memory.expires_at is not None:
-            claim["expires_at"] = memory.expires_at.isoformat()
-            # Mirror the memory's DynamoDB TTL so the reaper prunes the claim
-            # alongside the memory item itself.
-            claim["ttl"] = int(memory.expires_at.timestamp())
-        try:
-            self.table.put_item(
-                Item=claim,
-                ConditionExpression=(Attr("PK").not_exists() | Attr("expires_at").lte(now_iso)),
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                return False
-            raise
+        if not self._try_claim_key(memory) and not self._reclaim_stale_key(memory):
+            return False
         try:
             self.put_memory(memory)
         except Exception:
@@ -371,6 +359,84 @@ class HiveStorage:
             self._release_key_claim(memory.key)
             raise
         return True
+
+    def _try_claim_key(self, memory: Memory) -> bool:
+        """Conditionally write the key-claim item for ``memory``.
+
+        Returns ``True`` when the claim was won, ``False`` when another
+        claim already holds the key. Any other DynamoDB error re-raises.
+        """
+        claim: dict[str, Any] = {
+            "PK": f"KEYCLAIM#{memory.key}",
+            "SK": "META",
+            "key": memory.key,
+            "memory_id": memory.memory_id,
+            "created_at": _now().isoformat(),
+        }
+        try:
+            self.table.put_item(
+                Item=claim,
+                ConditionExpression=Attr("PK").not_exists(),
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
+    def _reclaim_stale_key(self, memory: Memory) -> bool:
+        """After a lost claim, decide live-vs-stale and re-claim if stale.
+
+        A claim is *stale* when its ``memory_id`` no longer resolves to a
+        live memory: either the memory expired, or a previous create
+        crashed between writing the claim and writing the memory. The
+        latter is indistinguishable from an in-flight create, so a claim
+        with no memory is only treated as stale once it is older than
+        ``_KEYCLAIM_GRACE_SECONDS`` — younger claims are reported as
+        "exists" to protect a concurrent creator mid-write.
+
+        Both reads use ``ConsistentRead`` — deciding staleness from an
+        eventually-consistent replica could miss a just-committed memory
+        and clear a live claim. The stale claim is deleted *conditionally*
+        on its observed ``memory_id`` so a claim that changed hands in the
+        meantime is never cleared out from under its new owner; the
+        conditional put is then retried exactly once. At most one of any
+        number of concurrent reclaimers can pass the conditional delete,
+        so single-create is preserved.
+        """
+        holder = (
+            self.table.get_item(
+                Key={"PK": f"KEYCLAIM#{memory.key}", "SK": "META"},
+                ConsistentRead=True,
+            )
+        ).get("Item")
+        if holder is not None:
+            meta = (
+                self.table.get_item(
+                    Key={"PK": f"MEMORY#{holder['memory_id']}", "SK": "META"},
+                    ConsistentRead=True,
+                )
+            ).get("Item")
+            if meta is not None and not Memory.from_dynamo(meta).is_expired:
+                return False  # a live memory holds the key
+            if meta is None:
+                claimed_at = datetime.fromisoformat(
+                    str(holder.get("created_at", "1970-01-01T00:00:00+00:00"))
+                )
+                if (_now() - claimed_at).total_seconds() < _KEYCLAIM_GRACE_SECONDS:
+                    return False  # likely an in-flight create — don't steal it
+            try:
+                self.table.delete_item(
+                    Key={"PK": f"KEYCLAIM#{memory.key}", "SK": "META"},
+                    ConditionExpression=Attr("memory_id").eq(holder["memory_id"]),
+                )
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    return False  # another caller re-claimed the key first
+                raise
+        # Claim cleared (or vanished between the lost put and the read) —
+        # retry the conditional write exactly once.
+        return self._try_claim_key(memory)
 
     def _release_key_claim(self, key: str) -> None:
         """Delete the key-claim item for ``key`` (no-op if none exists).

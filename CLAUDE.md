@@ -143,7 +143,7 @@ hive/
   (TTL enabled, used for OAuth state parameter)
 - Key-claim items: `PK=KEYCLAIM#{key}`, `SK=META`
   (uniqueness anchor for `remember_if_absent` conditional writes;
-  released on memory delete, mirrors the memory's TTL when set)
+  released on memory delete, stale claims reclaimed at conflict time)
 - GSIs:
   - `TagIndex` — `GSI2PK=TAG#{tag}`, `GSI2SK=memory_id` (for list_memories)
   - `ClientIdIndex` — `GSI3PK=CLIENT#{client_id}` (for client lookups)
