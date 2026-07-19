@@ -1186,6 +1186,48 @@ class HiveStorage:
                 break
         return revoked
 
+    def delete_tokens_for_clients(self, client_ids: set[str]) -> int:
+        """Hard-delete every outstanding token issued to the given clients.
+
+        Used by account deletion (#588) — tokens carry short TTLs, but a
+        still-live access or refresh token must not keep working after its
+        owner's account is gone. Token items are not projected into
+        ClientIndex, so this walks the same ``TOKEN#`` scan as
+        ``revoke_all_tokens`` and deletes matches outright: validation
+        fails immediately on the missing item, and DynamoDB TTL has
+        nothing left to clean up. The scan is strongly consistent so
+        tokens minted just before the call cannot be missed, and matches
+        are deleted by their scanned ``PK`` so a malformed row without a
+        ``jti`` attribute cannot abort the sweep. The batch writer
+        transparently chunks deletes to BatchWriteItem's 25-item limit
+        and retries unprocessed items. Returns the number of tokens
+        deleted.
+        """
+        if not client_ids:
+            return 0
+        deleted = 0
+        start_key: dict[str, Any] | None = None
+        with self.table.batch_writer() as batch:
+            while True:
+                kwargs: dict[str, Any] = {
+                    "FilterExpression": _SK_PK_PREFIX_EXPR,
+                    "ExpressionAttributeNames": {"#pk": "PK"},
+                    "ExpressionAttributeValues": {":sk": "META", _PK_PREFIX_KEY: "TOKEN#"},
+                    "ProjectionExpression": "#pk, client_id",
+                    "ConsistentRead": True,
+                }
+                if start_key:
+                    kwargs["ExclusiveStartKey"] = start_key
+                resp = self.table.scan(**kwargs)
+                for item in resp.get("Items", []):
+                    if item.get("client_id") in client_ids:
+                        batch.delete_item(Key={"PK": item["PK"], "SK": "META"})
+                        deleted += 1
+                start_key = resp.get("LastEvaluatedKey")
+                if start_key is None:
+                    break
+        return deleted
+
     def create_access_token(
         self,
         client_id: str,
@@ -2122,9 +2164,11 @@ class HiveStorage:
     def delete_user_data(self, user_id: str) -> dict[str, int]:
         """Delete all data owned by a user.
 
-        Deletes all memories, OAuth clients, and the user record.
-        Tokens are not explicitly revoked — they carry short TTLs and
-        will expire naturally. Returns counts of deleted items.
+        Deletes all memories, OAuth clients, every outstanding token
+        issued to those clients, and the user record. Tokens are
+        hard-deleted rather than left to expire via their TTLs — a
+        still-live access token must not outlive its owner's account
+        (#588). Returns counts of deleted items.
         """
         deleted_memories = 0
         cursor: str | None = None
@@ -2138,19 +2182,39 @@ class HiveStorage:
             if cursor is None:
                 break
 
-        deleted_clients = 0
+        client_ids: list[str] = []
         cursor = None
         while True:
             clients, cursor = self.list_clients(owner_user_id=user_id, limit=200, cursor=cursor)
-            for client in clients:
-                self.delete_client(client.client_id)
-                deleted_clients += 1
+            client_ids.extend(client.client_id for client in clients)
             if cursor is None:
                 break
 
+        # First sweep: revoke everything outstanding while the client
+        # records still exist — if anything below fails, a retry can
+        # rediscover the clients via list_clients and finish the job.
+        deleted_tokens = self.delete_tokens_for_clients(set(client_ids))
+
+        # Close the mint path: /oauth/token authenticates the client via
+        # get_client, so removing the client records stops a concurrent
+        # refresh grant from issuing new tokens.
+        deleted_clients = 0
+        for client_id in client_ids:
+            self.delete_client(client_id)
+            deleted_clients += 1
+
+        # Second sweep: catch tokens minted by grants in flight during
+        # the first scan. With the clients gone nothing new can be
+        # minted, so this sweep is final.
+        deleted_tokens += self.delete_tokens_for_clients(set(client_ids))
+
         self.delete_user(user_id)
 
-        return {"deleted_memories": deleted_memories, "deleted_clients": deleted_clients}
+        return {
+            "deleted_memories": deleted_memories,
+            "deleted_clients": deleted_clients,
+            "deleted_tokens": deleted_tokens,
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers

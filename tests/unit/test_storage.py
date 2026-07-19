@@ -3385,6 +3385,131 @@ class TestRevokeAllTokens:
         assert upd.call_count == 2
 
 
+def _issue_token(storage, client_id: str, token_type=TokenType.access):
+    from datetime import datetime, timedelta, timezone
+
+    from hive.models import Token
+
+    now = datetime.now(timezone.utc)
+    token = Token(
+        client_id=client_id,
+        scope="memories:read",
+        token_type=token_type,
+        issued_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    storage.put_token(token)
+    return token
+
+
+class TestDeleteTokensForClients:
+    """Bulk token deletion used by account deletion (#588)."""
+
+    def test_deletes_access_and_refresh_tokens_for_given_clients(self, storage):
+        access = _issue_token(storage, "c1")
+        refresh = _issue_token(storage, "c1", token_type=TokenType.refresh)
+        other = _issue_token(storage, "c2")
+
+        assert storage.delete_tokens_for_clients({"c1"}) == 2
+        assert storage.get_token(access.jti) is None
+        assert storage.get_token(refresh.jti) is None
+        # Another client's token must survive
+        assert storage.get_token(other.jti) is not None
+
+    def test_empty_client_set_is_a_noop(self, storage):
+        token = _issue_token(storage, "c1")
+        assert storage.delete_tokens_for_clients(set()) == 0
+        assert storage.get_token(token.jti) is not None
+
+    def test_paginates(self, storage):
+        from unittest.mock import patch
+
+        page1 = {
+            "Items": [{"PK": "TOKEN#t1", "client_id": "c1"}],
+            "LastEvaluatedKey": {"PK": "TOKEN#t1", "SK": "META"},
+        }
+        page2 = {
+            "Items": [
+                {"PK": "TOKEN#t2", "client_id": "c1"},
+                {"PK": "TOKEN#t3", "client_id": "someone-else"},
+            ]
+        }
+        with patch.object(storage.table, "scan", side_effect=[page1, page2]) as scan:
+            assert storage.delete_tokens_for_clients({"c1"}) == 2
+        assert "ExclusiveStartKey" in scan.call_args_list[1].kwargs
+        # Security-critical sweep must be strongly consistent — an
+        # eventually-consistent scan could miss just-minted tokens
+        assert scan.call_args_list[0].kwargs["ConsistentRead"] is True
+
+    def test_row_without_client_id_is_skipped(self, storage):
+        from unittest.mock import patch
+
+        page = {"Items": [{"PK": "TOKEN#orphan"}, {"PK": "TOKEN#t1", "client_id": "c1"}]}
+        with patch.object(storage.table, "scan", side_effect=[page]):
+            assert storage.delete_tokens_for_clients({"c1"}) == 1
+
+
+class TestDeleteUserDataRevokesTokens:
+    """Account deletion must revoke the user's outstanding tokens (#588)."""
+
+    @staticmethod
+    def _make_user_with_client(storage, user_id: str):
+        storage.put_user(
+            User(user_id=user_id, email=f"{user_id}@example.com", display_name=user_id)
+        )
+        client = OAuthClient(client_name=f"{user_id}-client", owner_user_id=user_id)
+        storage.put_client(client)
+        return client
+
+    def test_deletes_tokens_for_the_users_clients_only(self, storage):
+        client_a = self._make_user_with_client(storage, "user-a")
+        client_b = self._make_user_with_client(storage, "user-b")
+
+        a_access = _issue_token(storage, client_a.client_id)
+        a_refresh = _issue_token(storage, client_a.client_id, token_type=TokenType.refresh)
+        b_access = _issue_token(storage, client_b.client_id)
+
+        counts = storage.delete_user_data("user-a")
+
+        assert counts["deleted_clients"] == 1
+        assert counts["deleted_tokens"] == 2
+        assert storage.get_token(a_access.jti) is None
+        assert storage.get_token(a_refresh.jti) is None
+        # The other user's client and token are untouched
+        assert storage.get_token(b_access.jti) is not None
+        assert storage.get_client(client_b.client_id) is not None
+
+    def test_user_without_clients_reports_zero_tokens(self, storage):
+        storage.put_user(User(user_id="user-c", email="c@example.com", display_name="C"))
+        stray = _issue_token(storage, "unrelated-client")
+
+        counts = storage.delete_user_data("user-c")
+
+        assert counts == {"deleted_memories": 0, "deleted_clients": 0, "deleted_tokens": 0}
+        assert storage.get_token(stray.jti) is not None
+
+    def test_token_minted_during_deletion_is_caught_by_second_sweep(self, storage):
+        from unittest.mock import patch
+
+        client = self._make_user_with_client(storage, "user-r")
+        _issue_token(storage, client.client_id)
+
+        real_delete_client = storage.delete_client
+        late_tokens = []
+
+        def _delete_client_with_race(client_id):
+            # Simulate a concurrent refresh grant minting a token after the
+            # first sweep has already run but before the client is deleted.
+            late_tokens.append(_issue_token(storage, client_id))
+            return real_delete_client(client_id)
+
+        with patch.object(storage, "delete_client", side_effect=_delete_client_with_race):
+            counts = storage.delete_user_data("user-r")
+
+        assert counts["deleted_tokens"] == 2
+        assert storage.get_token(late_tokens[0].jti) is None
+
+
 class TestCostCacheStorage:
     """COST_CACHE# read/write for the Cost Explorer cache (#578)."""
 

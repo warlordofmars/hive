@@ -18,7 +18,6 @@ Configuration (env vars or SSM parameters):
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 from typing import Any
@@ -26,6 +25,8 @@ from urllib.parse import urlencode
 
 import httpx
 from jose import jwt as jose_jwt
+
+from hive.auth.secret_cache import SecretConfigError, ttl_cached
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -41,29 +42,50 @@ def _ssm_param(name: str) -> str:
     return resp["Parameter"]["Value"]
 
 
-@functools.lru_cache(maxsize=1)
+@ttl_cached()
 def _google_client_id() -> str:
     if val := os.environ.get("GOOGLE_CLIENT_ID"):
         return val
     return _ssm_param(os.environ.get("GOOGLE_CLIENT_ID_PARAM", "/hive/google-client-id"))
 
 
-@functools.lru_cache(maxsize=1)
+@ttl_cached()
 def _google_client_secret() -> str:
     if val := os.environ.get("GOOGLE_CLIENT_SECRET"):
         return val
     return _ssm_param(os.environ.get("GOOGLE_CLIENT_SECRET_PARAM", "/hive/google-client-secret"))
 
 
-@functools.lru_cache(maxsize=1)
-def _allowed_emails() -> frozenset[str]:
-    if val := os.environ.get("ALLOWED_EMAILS"):
-        return frozenset(json.loads(val))
+def _no_allowed_emails() -> frozenset[str]:
+    """First-fetch fallback: empty allowlist = allow all (open)."""
+    return frozenset()
+
+
+def _parse_allowlist(raw: str, source: str) -> frozenset[str]:
+    """Parse an allowlist JSON array, failing closed on malformed input.
+
+    A config typo must raise (SecretConfigError propagates through the TTL
+    cache untouched) rather than silently degrade to an empty allow-all list.
+    """
     try:
-        raw = _ssm_param(os.environ.get("ALLOWED_EMAILS_PARAM", "/hive/allowed-emails"))
         return frozenset(json.loads(raw))
-    except Exception:
-        return frozenset()  # empty = allow all (open)
+    except (ValueError, TypeError) as exc:
+        raise SecretConfigError(f"Malformed allowlist JSON in {source}: {exc}") from exc
+
+
+@ttl_cached(fallback=_no_allowed_emails)
+def _allowed_emails() -> frozenset[str]:
+    """Return the email allowlist (empty = allow all).
+
+    TTL-cached (#585) so SSM rotations take effect in a warm Lambda; a failed
+    refresh serves the previous allowlist (fail-static) rather than silently
+    falling open on an SSM blip.  Only *transient* fetch failures use the
+    fallback / stale value — malformed allowlist JSON fails closed.
+    """
+    if val := os.environ.get("ALLOWED_EMAILS"):
+        return _parse_allowlist(val, source="ALLOWED_EMAILS env var")
+    raw = _ssm_param(os.environ.get("ALLOWED_EMAILS_PARAM", "/hive/allowed-emails"))
+    return _parse_allowlist(raw, source="allowed-emails SSM parameter")
 
 
 def google_authorization_url(state: str, callback_uri: str) -> str:
