@@ -61,6 +61,7 @@ def _create_table():
             {"AttributeName": "GSI4PK", "AttributeType": "S"},
             {"AttributeName": "GSI5PK", "AttributeType": "S"},
             {"AttributeName": "GSI5SK", "AttributeType": "S"},
+            {"AttributeName": "key_hash", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -91,6 +92,13 @@ def _create_table():
                 "KeySchema": [
                     {"AttributeName": "GSI5PK", "KeyType": "HASH"},
                     {"AttributeName": "GSI5SK", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "ApiKeyHashIndex",
+                "KeySchema": [
+                    {"AttributeName": "key_hash", "KeyType": "HASH"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -2494,6 +2502,31 @@ class TestHydrateMemoryIds:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture()
+def storage_no_apikey_index():
+    """HiveStorage on a table without ApiKeyHashIndex — legacy-schema table.
+
+    Exercises the graceful-degradation path of get_api_key_by_hash: the GSI
+    query fails with a real ValidationException and the lookup must fall
+    back to the legacy full-table scan.
+    """
+    with mock_aws():
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        ddb.create_table(
+            TableName="hive-test-noidx",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        yield HiveStorage(table_name="hive-test-noidx", region="us-east-1")
+
+
 class TestApiKeyStorage:
     def _key(self, owner_user_id: str = "u1", name: str = "test") -> ApiKey:
         return ApiKey(owner_user_id=owner_user_id, name=name, key_hash="hash-" + name)
@@ -2518,6 +2551,136 @@ class TestApiKeyStorage:
 
     def test_get_by_hash_not_found(self, storage):
         assert storage.get_api_key_by_hash("nonexistent-hash") is None
+
+    def test_get_by_hash_queries_gsi_not_scan(self, storage):
+        """The lookup must hit ApiKeyHashIndex — never scan when the GSI works."""
+        from unittest.mock import patch
+
+        k = self._key()
+        storage.put_api_key(k)
+        with patch.object(storage.table, "scan") as mock_scan:
+            found = storage.get_api_key_by_hash("hash-test")
+        assert found is not None
+        assert found.key_id == k.key_id
+        mock_scan.assert_not_called()
+
+    def test_get_by_hash_ignores_non_apikey_items_in_index(self, storage):
+        """A foreign item carrying key_hash (invariant breach) is treated as a miss."""
+        storage.table.put_item(Item={"PK": "OTHER#rogue", "SK": "META", "key_hash": "hash-rogue"})
+        assert storage.get_api_key_by_hash("hash-rogue") is None
+
+    def test_get_by_hash_paginates_past_foreign_items(self, storage):
+        """A real key sharing the partition with a foreign item is still found.
+
+        Limit=1 + FilterExpression means the first page can come back empty
+        (DynamoDB applies Limit before the filter); the pagination loop must
+        keep going until it reaches the genuine API key item.
+        """
+        storage.table.put_item(Item={"PK": "OTHER#rogue", "SK": "META", "key_hash": "hash-mixed"})
+        k = ApiKey(owner_user_id="u1", name="mixed", key_hash="hash-mixed")
+        storage.put_api_key(k)
+        found = storage.get_api_key_by_hash("hash-mixed")
+        assert found is not None
+        assert found.key_id == k.key_id
+
+    def test_get_by_hash_follows_last_evaluated_key(self, storage):
+        """An empty-but-truncated page (Limit applied before the filter) keeps paging."""
+        from unittest.mock import patch
+
+        k = self._key("u1", "paged")
+        pages = [
+            {"Items": [], "LastEvaluatedKey": {"key_hash": "hash-paged"}},
+            {"Items": [k.to_dynamo()]},
+        ]
+        with patch.object(storage.table, "query", side_effect=pages) as mock_query:
+            found = storage.get_api_key_by_hash("hash-paged")
+        assert found is not None
+        assert found.key_id == k.key_id
+        assert mock_query.call_count == 2
+        assert mock_query.call_args_list[1].kwargs["ExclusiveStartKey"] == {
+            "key_hash": "hash-paged"
+        }
+
+    def test_get_by_hash_falls_back_when_index_missing(self, storage_no_apikey_index):
+        """A table without the GSI (legacy schema / backfilling) still resolves keys."""
+        k = self._key()
+        storage_no_apikey_index.put_api_key(k)
+        found = storage_no_apikey_index.get_api_key_by_hash("hash-test")
+        assert found is not None
+        assert found.key_id == k.key_id
+
+    def test_get_by_hash_fallback_not_found(self, storage_no_apikey_index):
+        assert storage_no_apikey_index.get_api_key_by_hash("nonexistent-hash") is None
+
+    def test_get_by_hash_falls_back_on_resource_not_found(self, storage):
+        """ResourceNotFoundException from the GSI query also triggers the scan."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        k = self._key()
+        storage.put_api_key(k)
+        with patch.object(
+            storage.table,
+            "query",
+            side_effect=ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "no index"}},
+                "Query",
+            ),
+        ):
+            found = storage.get_api_key_by_hash("hash-test")
+        assert found is not None
+        assert found.key_id == k.key_id
+
+    def test_scan_fallback_follows_last_evaluated_key(self, storage):
+        """The fallback scan pages past empty filtered pages — it must not false-negative."""
+        from unittest.mock import patch
+
+        k = self._key("u1", "scanpage")
+        pages = [
+            {"Items": [], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
+            {"Items": [k.to_dynamo()]},
+        ]
+        with patch.object(storage.table, "scan", side_effect=pages) as mock_scan:
+            found = storage._scan_api_key_by_hash("hash-scanpage")
+        assert found is not None
+        assert found.key_id == k.key_id
+        assert mock_scan.call_count == 2
+        assert mock_scan.call_args_list[1].kwargs["ExclusiveStartKey"] == {"PK": "x", "SK": "y"}
+
+    def test_list_for_user_follows_last_evaluated_key(self, storage):
+        """list_api_keys_for_user aggregates keys across scan pages."""
+        from unittest.mock import patch
+
+        k1 = self._key("u9", "page1")
+        k2 = self._key("u9", "page2")
+        pages = [
+            {"Items": [k1.to_dynamo()], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
+            {"Items": [k2.to_dynamo()]},
+        ]
+        with patch.object(storage.table, "scan", side_effect=pages) as mock_scan:
+            result = storage.list_api_keys_for_user("u9")
+        assert {k.name for k in result} == {"page1", "page2"}
+        assert mock_scan.call_count == 2
+
+    def test_get_by_hash_reraises_unrelated_errors(self, storage):
+        """Only index-unavailable errors degrade to a scan — others propagate."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        with (
+            patch.object(
+                storage.table,
+                "query",
+                side_effect=ClientError(
+                    {"Error": {"Code": "InternalServerError", "Message": "boom"}},
+                    "Query",
+                ),
+            ),
+            pytest.raises(ClientError),
+        ):
+            storage.get_api_key_by_hash("hash-test")
 
     def test_list_for_user(self, storage):
         k1 = self._key("u1", "key1")

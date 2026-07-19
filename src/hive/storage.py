@@ -6,8 +6,9 @@ Single-table design — all entities share one table.
 Table name is read from the HIVE_TABLE_NAME environment variable.
 
 GSIs:
-  TagIndex    — GSI2PK (TAG#{tag}), GSI2SK (memory_id)  → list_memories(tag)
-  ClientIndex — GSI3PK (CLIENT#{client_id})              → client lookups
+  TagIndex        — GSI2PK (TAG#{tag}), GSI2SK (memory_id) → list_memories(tag)
+  ClientIndex     — GSI3PK (CLIENT#{client_id})            → client lookups
+  ApiKeyHashIndex — key_hash (sparse, APIKEY# items only)  → API key auth lookups
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ _UID_FILTER = " AND owner_user_id = :uid"
 _WSID_FILTER = " AND workspace_id = :wsid"
 _PK_PREFIX_KEY = ":prefix"
 _SK_PK_PREFIX_EXPR = "SK = :sk AND begins_with(PK, :prefix)"
+_APIKEY_PK_PREFIX = "APIKEY#"
 
 # Version retention
 _VERSION_RETENTION_DAYS = int(os.environ.get("HIVE_VERSION_RETENTION_DAYS", "30"))
@@ -1895,28 +1897,102 @@ class HiveStorage:
         return ApiKey.from_dynamo(item) if item else None
 
     def get_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
-        """Look up an API key by its SHA-256 hash (full table scan — keys are rare)."""
-        resp = self.table.scan(
-            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
-            ExpressionAttributeValues={
-                _PK_PREFIX_KEY: "APIKEY#",
+        """Look up an API key by its SHA-256 hash via the ApiKeyHashIndex GSI (#589).
+
+        The index is sparse — keyed directly on the top-level ``key_hash``
+        attribute, which only APIKEY# items carry — so a single-partition
+        query replaces the previous full table scan on every API-key-
+        authenticated request.
+
+        If the query fails because the index is unavailable (still
+        backfilling after deployment, or absent on a table that predates
+        it), the lookup degrades gracefully to the legacy scan. The
+        fallback is kept permanently as resilience, not as a transitional
+        shim — auth must not hard-fail on index availability.
+        """
+        # Limit=1 with a server-side shape filter, paginating on
+        # LastEvaluatedKey. DynamoDB applies Limit *before* the
+        # FilterExpression, so a single non-paginated call could
+        # false-negative if a foreign item ever carried the same key_hash
+        # (sparse-index invariant breach); paginating restores the exact
+        # legacy scan semantics. In the normal case — the partition holds
+        # exactly one API key item — this is a single 1-item read.
+        query_kwargs: dict[str, Any] = {
+            "IndexName": "ApiKeyHashIndex",
+            "KeyConditionExpression": Key("key_hash").eq(key_hash),
+            "FilterExpression": Attr("SK").eq("META") & Attr("PK").begins_with(_APIKEY_PK_PREFIX),
+            "Limit": 1,
+        }
+        try:
+            while True:
+                resp = self.table.query(**query_kwargs)
+                items = resp.get("Items", [])
+                if items:
+                    return ApiKey.from_dynamo(items[0])
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    return None
+                query_kwargs["ExclusiveStartKey"] = last_key
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code not in ("ValidationException", "ResourceNotFoundException"):
+                raise
+            # The full error message is logged so an unexpected fallback
+            # cause (e.g. a genuine query bug rather than a backfilling
+            # index) is immediately diagnosable. The code is deliberately
+            # not narrowed by message substring — DynamoDB, DynamoDB Local
+            # and moto phrase these messages differently, and the fallback
+            # direction is fail-safe (a scan, the pre-GSI behaviour).
+            logger.warning(
+                "ApiKeyHashIndex unavailable (%s: %s) — falling back to table scan "
+                "for API key lookup",
+                code,
+                exc.response["Error"].get("Message", ""),
+            )
+            return self._scan_api_key_by_hash(key_hash)
+
+    def _scan_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
+        """Legacy full-table-scan API key lookup — fallback for ApiKeyHashIndex.
+
+        Paginates on ``LastEvaluatedKey``: a filtered Scan can return an
+        empty page while matching items remain in later pages, and this is
+        the resilience path for API key auth — it must not false-negative.
+        """
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk AND key_hash = :hash",
+            "ExpressionAttributeValues": {
+                _PK_PREFIX_KEY: _APIKEY_PK_PREFIX,
                 ":sk": "META",
                 ":hash": key_hash,
             },
-        )
-        items = resp.get("Items", [])
-        return ApiKey.from_dynamo(items[0]) if items else None
+        }
+        while True:
+            resp = self.table.scan(**scan_kwargs)
+            items = resp.get("Items", [])
+            if items:
+                return ApiKey.from_dynamo(items[0])
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                return None
+            scan_kwargs["ExclusiveStartKey"] = last_key
 
     def list_api_keys_for_user(self, owner_user_id: str) -> list[ApiKey]:
-        resp = self.table.scan(
-            FilterExpression="begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
-            ExpressionAttributeValues={
-                _PK_PREFIX_KEY: "APIKEY#",
+        scan_kwargs: dict[str, Any] = {
+            "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
+            "ExpressionAttributeValues": {
+                _PK_PREFIX_KEY: _APIKEY_PK_PREFIX,
                 ":sk": "META",
                 ":uid": owner_user_id,
             },
-        )
-        return [ApiKey.from_dynamo(item) for item in resp.get("Items", [])]
+        }
+        keys: list[ApiKey] = []
+        while True:
+            resp = self.table.scan(**scan_kwargs)
+            keys.extend(ApiKey.from_dynamo(item) for item in resp.get("Items", []))
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                return keys
+            scan_kwargs["ExclusiveStartKey"] = last_key
 
     def delete_api_key(self, key_id: str) -> bool:
         resp = self.table.get_item(Key={"PK": f"APIKEY#{key_id}", "SK": "META"})
