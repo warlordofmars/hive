@@ -166,6 +166,10 @@ async def _auth(ctx: Context | None, required_scope: str | None = None) -> tuple
     Emits the ``TokenValidationFailures`` metric on auth rejection so the
     CloudWatch AuthFailures alarm has something to fire on.
     """
+    # Clear the per-call token BEFORE validating so a failed validation can
+    # never leave a previous call's Token visible to workspace-scope helpers
+    # within the same async task (#491).
+    _current_token.set(None)
     storage = HiveStorage()
     auth_header: str | None = None
     request_id = new_request_id()
@@ -685,7 +689,14 @@ async def remember_if_absent(
     )
 
     memory: Memory | None = None
-    if storage.get_memory_by_key(key) is None:
+    existing = storage.get_memory_by_key(key)
+    if existing is not None:
+        # Workspace boundary (#491): mirror remember/remember_blob — a key
+        # held by another workspace reads as in-use, not as a success no-op
+        # that would mislead the caller into believing their workspace holds
+        # this key.
+        _check_workspace_access(storage, existing, f"Key '{key}' is already in use.")
+    else:
         client = storage.get_client(client_id)
         if client is None:
             raise ToolError("Unable to load client record for authenticated caller.")
@@ -712,10 +723,21 @@ async def remember_if_absent(
         except ValueError as exc:
             await emit_metric("ToolErrors", operation="remember_if_absent")
             raise ToolError(str(exc)) from exc
+        if memory is None:
+            # Lost the conditional key-claim write to a concurrent creator
+            # (#592). Apply the workspace guard to whatever the winner wrote
+            # before echoing "already exists" (#491) — the winner's memory
+            # can lag behind the eventually-consistent KeyIndex, in which
+            # case nothing is readable (and nothing leaks) and the plain
+            # race-loser response stands.
+            raced = storage.get_memory_by_key(key)
+            if raced is not None:
+                _check_workspace_access(storage, raced, f"Key '{key}' is already in use.")
 
     if memory is None:
-        # Either the read-check found the key, or a concurrent caller won
-        # the conditional write in the window after it — same outcome.
+        # Either the read-check found the key (in the caller's workspace), or
+        # a concurrent caller won the conditional write in the window after
+        # it — same outcome.
         duration_ms = int((time.monotonic() - t0) * 1000)
         logger.info(
             "Memory '%s' already exists — not overwritten",

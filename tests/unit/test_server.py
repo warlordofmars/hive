@@ -4222,6 +4222,18 @@ class TestWorkspaceEnforcement:
             )
         assert "foreign-secret" not in str(excinfo.value)
 
+    async def test_remember_if_absent_cross_workspace_key_denied(self, workspace_env):
+        """A foreign-workspace key reads as in-use, not as a success no-op
+        that would mislead the caller into believing their workspace holds it."""
+        from fastmcp.exceptions import ToolError
+
+        from hive.server import remember_if_absent
+
+        storage, _, jwt = workspace_env
+        with pytest.raises(ToolError, match="Key 'foreign-key' is already in use"):
+            await remember_if_absent(key="foreign-key", value="squat", ctx=_make_ctx(jwt))
+        assert storage.get_memory_by_key("foreign-key").value == "foreign-secret"
+
     async def test_remember_blob_cross_workspace_key_denied(self, workspace_env):
         import base64
 
