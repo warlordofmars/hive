@@ -5,8 +5,11 @@ Workspace mutation service — storage mutations + compliance audit events (#495
 Every workspace membership mutation (create/delete workspace, invite sent /
 accepted, role change, member removal) must leave a structured entry in the
 immutable audit log (#395). This module pairs each mutation with its audit
-event so the two can never drift apart. The membership-mutation API
-endpoints (#492) call these helpers instead of raw ``HiveStorage`` methods.
+event so every successful mutation is followed by its audit record. The
+pairing is best-effort, not transactional — a storage failure on the audit
+write after the mutation raises to the caller rather than rolling back.
+The membership-mutation API endpoints (#492) call these helpers instead of
+raw ``HiveStorage`` methods.
 
 Authorization (who may invite / remove / re-role) stays with the caller —
 this layer only guarantees that the mutation and its audit trail happen
@@ -38,6 +41,10 @@ from hive.storage import HiveStorage
 
 class InviteError(Exception):
     """Raised when accepting an invite that is missing or expired."""
+
+
+class WorkspaceNotFoundError(Exception):
+    """Raised when an invite targets a workspace that does not exist."""
 
 
 def _audit(
@@ -101,7 +108,10 @@ def delete_workspace(storage: HiveStorage, *, workspace_id: str, actor_user_id: 
     workspace = storage.get_workspace(workspace_id)
     if workspace is None:
         return False
-    storage.delete_workspace(workspace_id)
+    if not storage.delete_workspace(workspace_id):
+        # META vanished between the read and the delete — this call did not
+        # perform the deletion, so it must not claim it in the audit log.
+        return False
     _audit(
         storage,
         EventType.workspace_deleted,
@@ -125,7 +135,14 @@ def send_invite(
     invited_by_user_id: str,
     expires_at: datetime,
 ) -> Invite:
-    """Create a pending invite and audit that it was sent."""
+    """Create a pending invite and audit that it was sent.
+
+    Raises :class:`WorkspaceNotFoundError` when the workspace does not
+    exist, so invites (and audit records) cannot be minted for deleted or
+    mistyped workspace ids.
+    """
+    if storage.get_workspace(workspace_id) is None:
+        raise WorkspaceNotFoundError(f"Workspace '{workspace_id}' not found.")
     invite = Invite(
         workspace_id=workspace_id,
         email=email,
@@ -153,12 +170,19 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
 
     Raises :class:`InviteError` when the invite is missing (never existed,
     already redeemed, or TTL-expired out of the table) or past its
-    ``expires_at``. Matching the invite email to the accepting user is the
+    ``expires_at``, and :class:`WorkspaceNotFoundError` when the target
+    workspace was deleted after the invite was sent — otherwise redemption
+    would create an orphaned MEMBER row pointing at a non-existent
+    workspace. Matching the invite email to the accepting user is the
     caller's responsibility — it knows the authenticated user's email.
     """
     invite = storage.get_invite(invite_id)
     if invite is None or invite.is_expired:
         raise InviteError(f"Invite '{invite_id}' not found or expired.")
+    if storage.get_workspace(invite.workspace_id) is None:
+        raise WorkspaceNotFoundError(
+            f"Workspace '{invite.workspace_id}' no longer exists; invite cannot be accepted."
+        )
     member = storage.add_workspace_member(
         workspace_id=invite.workspace_id,
         user_id=user_id,

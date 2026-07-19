@@ -143,8 +143,31 @@ class TestDeleteWorkspace:
         )
         assert _audit_events(storage, EventType.workspace_deleted) == []
 
+    def test_workspace_vanishing_mid_delete_returns_false_without_audit(self, storage, monkeypatch):
+        ws = workspace_service.create_workspace(storage, name="Racy", owner_user_id="u1")
+        monkeypatch.setattr(HiveStorage, "delete_workspace", lambda self, ws_id: False)
+        assert (
+            workspace_service.delete_workspace(
+                storage, workspace_id=ws.workspace_id, actor_user_id="u1"
+            )
+            is False
+        )
+        assert _audit_events(storage, EventType.workspace_deleted) == []
+
 
 class TestSendInvite:
+    def test_missing_workspace_raises_without_invite_or_audit(self, storage):
+        with pytest.raises(workspace_service.WorkspaceNotFoundError):
+            workspace_service.send_invite(
+                storage,
+                workspace_id="ghost-ws",
+                email="new@example.com",
+                role=WorkspaceRole.member,
+                invited_by_user_id="u1",
+                expires_at=_future(),
+            )
+        assert _audit_events(storage, EventType.workspace_invite_sent) == []
+
     def test_persists_invite_and_audits(self, storage):
         ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
         invite = workspace_service.send_invite(
@@ -214,6 +237,24 @@ class TestAcceptInvite:
         with pytest.raises(workspace_service.InviteError):
             workspace_service.accept_invite(storage, invite_id=expired.invite_id, user_id="u2")
         assert storage.get_workspace_member(ws.workspace_id, "u2") is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
+    def test_workspace_deleted_after_invite_raises_without_membership_or_audit(self, storage):
+        ws = workspace_service.create_workspace(storage, name="Doomed", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="orphan@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        storage.delete_workspace(ws.workspace_id)
+        with pytest.raises(workspace_service.WorkspaceNotFoundError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        # No orphaned MEMBER row, invite left to TTL, no audit event.
+        assert storage.get_workspace_member(ws.workspace_id, "u2") is None
+        assert storage.get_invite(invite.invite_id) is not None
         assert _audit_events(storage, EventType.workspace_invite_accepted) == []
 
 
