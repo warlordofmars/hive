@@ -820,6 +820,92 @@ class TestClients:
         resp = tc.delete("/api/clients/no-such-id")
         assert resp.status_code == 404
 
+    @staticmethod
+    def _issue_token(storage, client_id, token_type=None):
+        from datetime import datetime, timedelta, timezone
+
+        from hive.models import Token, TokenType
+
+        now = datetime.now(timezone.utc)
+        token = Token(
+            client_id=client_id,
+            scope="memories:read",
+            token_type=token_type or TokenType.access,
+            issued_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        storage.put_token(token)
+        return token
+
+    def test_delete_revokes_clients_tokens(self, client):
+        """#711 — deleting a client hard-deletes its access + refresh tokens."""
+        from hive.models import TokenType
+
+        tc, storage, _ = client
+        cid = tc.post("/api/clients", json={"client_name": "RevokeMe"}).json()["client_id"]
+        other_cid = tc.post("/api/clients", json={"client_name": "Bystander"}).json()["client_id"]
+
+        access = self._issue_token(storage, cid)
+        refresh = self._issue_token(storage, cid, token_type=TokenType.refresh)
+        other = self._issue_token(storage, other_cid)
+
+        resp = tc.delete(f"/api/clients/{cid}")
+
+        assert resp.status_code == 204
+        assert storage.get_client(cid) is None
+        assert storage.get_token(access.jti) is None
+        assert storage.get_token(refresh.jti) is None
+        # Another client's registration and token must survive
+        assert storage.get_client(other_cid) is not None
+        assert storage.get_token(other.jti) is not None
+
+    def test_delete_logs_revoked_token_count(self, client):
+        """#711 — the client_deleted activity event reports revoked_tokens."""
+        from datetime import datetime, timezone
+
+        tc, storage, _ = client
+        cid = tc.post("/api/clients", json={"client_name": "Counted"}).json()["client_id"]
+        self._issue_token(storage, cid)
+        self._issue_token(storage, cid)
+
+        # Bracket the delete with both candidate dates so the assertion
+        # cannot flake if the event lands across a UTC midnight boundary.
+        date_before = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert tc.delete(f"/api/clients/{cid}").status_code == 204
+        date_after = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        events = [
+            e
+            for e in storage.get_events_for_dates(sorted({date_before, date_after}))
+            if e.event_type.value == "client_deleted" and e.metadata.get("deleted_client_id") == cid
+        ]
+        assert len(events) == 1
+        assert events[0].metadata["revoked_tokens"] == 2
+
+    def test_delete_second_sweep_catches_token_minted_mid_delete(self, client):
+        """#711 — a token minted after the first sweep but before the client
+        record is deleted (a refresh grant in flight) is caught by the
+        second sweep."""
+        from unittest.mock import patch
+
+        tc, storage, _ = client
+        cid = tc.post("/api/clients", json={"client_name": "Race"}).json()["client_id"]
+        self._issue_token(storage, cid)
+
+        real_delete_client = storage.delete_client
+        late_tokens = []
+
+        def _delete_client_with_race(client_id):
+            # Simulate a concurrent refresh grant minting a token after the
+            # first sweep has already run but before the client is deleted.
+            late_tokens.append(self._issue_token(storage, client_id))
+            return real_delete_client(client_id)
+
+        with patch.object(storage, "delete_client", side_effect=_delete_client_with_race):
+            assert tc.delete(f"/api/clients/{cid}").status_code == 204
+
+        assert storage.get_token(late_tokens[0].jti) is None
+
     def test_create_returns_429_when_client_quota_exceeded(self, client):
         import os
         from unittest.mock import patch

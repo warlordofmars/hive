@@ -1627,7 +1627,7 @@
     },
     "/api/clients/{client_id}": {
       "delete": {
-        "description": "Permanently delete an OAuth client by its client ID. Non-admins can only delete their own clients.",
+        "description": "Permanently delete an OAuth client by its client ID and immediately revoke every access and refresh token issued to it. Non-admins can only delete their own clients.",
         "operationId": "delete_client_api_clients__client_id__delete",
         "parameters": [
           {

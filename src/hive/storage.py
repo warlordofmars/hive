@@ -1245,9 +1245,11 @@ class HiveStorage:
     def delete_tokens_for_clients(self, client_ids: set[str]) -> int:
         """Hard-delete every outstanding token issued to the given clients.
 
-        Used by account deletion (#588) — tokens carry short TTLs, but a
-        still-live access or refresh token must not keep working after its
-        owner's account is gone. Token items are not projected into
+        Used by account deletion (#588) and individual client deletion
+        (#711) — tokens do expire via their TTLs (1 hour access, 30 days
+        refresh), but a still-live access or refresh token must not keep
+        working after its owner's account or client registration is gone.
+        Token items are not projected into
         ClientIndex, so this walks the same ``TOKEN#`` scan as
         ``revoke_all_tokens`` and deletes matches outright: validation
         fails immediately on the missing item, and DynamoDB TTL has
