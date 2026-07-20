@@ -26,7 +26,7 @@ orphaned with members but no owner.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from hive.models import (
     ActivityEvent,
@@ -41,6 +41,10 @@ from hive.storage import HiveStorage
 
 class InviteError(Exception):
     """Raised when accepting an invite that is missing or expired."""
+
+
+class AlreadyMemberError(Exception):
+    """Raised when an invite is redeemed by someone who is already a member."""
 
 
 class WorkspaceNotFoundError(Exception):
@@ -184,6 +188,12 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
     conditional delete (``claim_invite``) *before* the membership is
     written, so of N concurrent acceptors exactly one adds the member and
     emits the audit event — the rest get :class:`InviteError`.
+
+    The membership write is likewise conditional (``overwrite=False``): if
+    the user gained a membership through another path after the claim, the
+    existing row — and whatever role it carries — is left untouched and
+    :class:`AlreadyMemberError` is raised (the invite stays consumed, and
+    no audit event is written since no mutation happened).
     """
     invite = storage.get_invite(invite_id)
     if invite is None or invite.is_expired:
@@ -196,11 +206,31 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
         # Lost the race with a concurrent acceptor — the invite was
         # consumed between the read and the claim.
         raise InviteError(f"Invite '{invite_id}' not found or expired.")
+    if datetime.now(timezone.utc) >= invite.expires_at:
+        # Crossed expires_at between the read and the claim — enforce
+        # expiry strictly with a fresh clock read (deliberately not
+        # ``invite.is_expired`` again: the point is that time moved on
+        # since the first check). The consumed invite is moot: expired.
+        raise InviteError(f"Invite '{invite_id}' not found or expired.")
+    if storage.get_workspace(invite.workspace_id) is None:
+        # Workspace deleted between the claim and the membership write —
+        # re-check so no MEMBER row is created for a dead workspace (it
+        # would orphan a WorkspaceMemberIndex entry). Best-effort per this
+        # module's non-transactional design; the invite stays consumed,
+        # which is fine — there is nothing left to redeem into.
+        raise WorkspaceNotFoundError(
+            f"Workspace '{invite.workspace_id}' no longer exists; invite cannot be accepted."
+        )
     member = storage.add_workspace_member(
         workspace_id=invite.workspace_id,
         user_id=user_id,
         role=invite.role,
+        overwrite=False,
     )
+    if member is None:
+        raise AlreadyMemberError(
+            f"User '{user_id}' is already a member of workspace '{invite.workspace_id}'."
+        )
     _audit(
         storage,
         EventType.workspace_invite_accepted,

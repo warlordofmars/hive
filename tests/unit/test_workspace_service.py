@@ -272,6 +272,84 @@ class TestAcceptInvite:
         assert storage.get_workspace_member(ws.workspace_id, "u2") is None
         assert _audit_events(storage, EventType.workspace_invite_accepted) == []
 
+    def test_invite_expiring_between_read_and_claim_raises(self, storage, monkeypatch):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="edge@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        # The pre-claim ``is_expired`` check uses the real clock (invite
+        # still valid); the post-claim re-check reads the clock through
+        # ``workspace_service.datetime`` — patch it past expires_at to
+        # simulate the invite crossing expiry mid-redemption.
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "hive.workspace_service.datetime",
+            SimpleNamespace(now=lambda tz=None: invite.expires_at + timedelta(seconds=1)),
+        )
+        with pytest.raises(workspace_service.InviteError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        # Expiry is enforced: no membership, no audit event; the invite was
+        # consumed by the claim, which is moot for an expired invite.
+        assert storage.get_workspace_member(ws.workspace_id, "u2") is None
+        assert storage.get_invite(invite.invite_id) is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
+    def test_existing_membership_raises_already_member_without_role_change(self, storage):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="already@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        # Membership gained through another path before redemption — e.g.
+        # a second invite accepted concurrently.
+        storage.add_workspace_member(ws.workspace_id, "u2", WorkspaceRole.admin)
+        with pytest.raises(workspace_service.AlreadyMemberError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        # The existing (higher) role is untouched, the invite is consumed,
+        # and no audit event is written since no mutation happened.
+        assert storage.get_workspace_member(ws.workspace_id, "u2").role is WorkspaceRole.admin
+        assert storage.get_invite(invite.invite_id) is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
+    def test_workspace_deleted_after_claim_raises_without_membership_or_audit(
+        self, storage, monkeypatch
+    ):
+        ws = workspace_service.create_workspace(storage, name="Team", owner_user_id="u1")
+        invite = workspace_service.send_invite(
+            storage,
+            workspace_id=ws.workspace_id,
+            email="late@example.com",
+            role=WorkspaceRole.member,
+            invited_by_user_id="u1",
+            expires_at=_future(),
+        )
+        real_claim = HiveStorage.claim_invite
+
+        def _claim_then_delete(self, invite_id):
+            # Simulate the workspace being deleted concurrently, right
+            # after the invite claim succeeds.
+            result = real_claim(self, invite_id)
+            storage.delete_workspace(ws.workspace_id)
+            return result
+
+        monkeypatch.setattr(HiveStorage, "claim_invite", _claim_then_delete)
+        with pytest.raises(workspace_service.WorkspaceNotFoundError):
+            workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
+        # No orphaned MEMBER row; the invite is consumed; no audit event.
+        assert storage.list_workspace_members(ws.workspace_id) == []
+        assert storage.get_invite(invite.invite_id) is None
+        assert _audit_events(storage, EventType.workspace_invite_accepted) == []
+
     def test_workspace_deleted_after_invite_raises_without_membership_or_audit(self, storage):
         ws = workspace_service.create_workspace(storage, name="Doomed", owner_user_id="u1")
         invite = workspace_service.send_invite(

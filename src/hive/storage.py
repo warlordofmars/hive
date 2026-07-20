@@ -1499,10 +1499,29 @@ class HiveStorage:
         workspace_id: str,
         user_id: str,
         role: WorkspaceRole = WorkspaceRole.member,
-    ) -> WorkspaceMember:
-        """Insert a (workspace, user, role) binding. Overwrites if it exists."""
+        overwrite: bool = True,
+    ) -> WorkspaceMember | None:
+        """Insert a (workspace, user, role) binding.
+
+        Overwrites an existing binding by default. With ``overwrite=False``
+        the put is conditional on the membership not already existing and
+        returns None when it does — invite redemption (#492) uses this so a
+        concurrently-created membership is never clobbered with the invited
+        role.
+        """
         member = WorkspaceMember(workspace_id=workspace_id, user_id=user_id, role=role)
-        self.table.put_item(Item=member.to_dynamo())
+        if overwrite:
+            self.table.put_item(Item=member.to_dynamo())
+            return member
+        try:
+            self.table.put_item(
+                Item=member.to_dynamo(),
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return None
+            raise
         return member
 
     def get_workspace_member(self, workspace_id: str, user_id: str) -> WorkspaceMember | None:
