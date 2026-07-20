@@ -113,6 +113,27 @@ class AuthCodeAlreadyUsed(Exception):
     """
 
 
+def _workspace_filter_passes(
+    memory: Memory,
+    workspace_id: str | None,
+    *,
+    workspace_scoped: bool,
+) -> bool:
+    """Evaluate the in-memory workspace filter for a hydrated memory.
+
+    ``workspace_scoped=False`` (default): a literal filter — ``workspace_id``
+    of ``None`` disables it, otherwise only exact matches pass.
+
+    ``workspace_scoped=True``: the MCP compat rules (#493) — unstamped
+    (pre-migration) memories always pass, stamped memories pass only when
+    they match ``workspace_id``, and ``workspace_id=None`` (unresolvable
+    caller) fails closed to unstamped memories only.
+    """
+    if workspace_scoped:
+        return memory.workspace_id is None or memory.workspace_id == workspace_id
+    return workspace_id is None or memory.workspace_id == workspace_id
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -612,7 +633,13 @@ class HiveStorage:
                 results.append((memory, score))
         return results
 
-    def list_distinct_tags(self, owner_user_id: str) -> list[str]:
+    def list_distinct_tags(
+        self,
+        owner_user_id: str,
+        workspace_id: str | None = None,
+        *,
+        workspace_scoped: bool = False,
+    ) -> list[str]:
         """Return the sorted distinct tags across the user account's memories.
 
         Queries the strongly-consistent USERTAG items (PK=USERTAG#{user_id},
@@ -620,6 +647,13 @@ class HiveStorage:
         ``owner_user_id`` boundary used by list_memories / summarize_context
         (#666) — and reads-your-writes without TagIndex GSI propagation lag
         (#653). The base table is never scanned.
+
+        With ``workspace_scoped=True`` the result applies the workspace compat
+        rules (#493): tag entries stamped with a foreign ``workspace_id`` are
+        dropped, unstamped entries (pre-migration rows, later stamped by
+        ``scripts/migrate_workspaces.py``) stay visible, and a ``None``
+        ``workspace_id`` (unresolvable caller) fails closed to unstamped
+        entries only. The default (``False``) keeps the account-wide view.
         """
         tags: set[str] = set()
         start_key: dict[str, Any] | None = None
@@ -627,13 +661,17 @@ class HiveStorage:
             kwargs: dict[str, Any] = {
                 "KeyConditionExpression": Key("PK").eq(f"USERTAG#{owner_user_id}")
                 & Key("SK").begins_with("TAG#"),
-                "ProjectionExpression": "SK",
+                "ProjectionExpression": "SK, workspace_id",
                 "ConsistentRead": True,
             }
             if start_key:
                 kwargs["ExclusiveStartKey"] = start_key
             resp = self.table.query(**kwargs)
             for item in resp.get("Items", []):
+                if workspace_scoped:
+                    item_ws = item.get("workspace_id")
+                    if item_ws is not None and item_ws != workspace_id:
+                        continue
                 sk = item.get("SK", "")
                 # SK = TAG#{tag}#MEMORY#{memory_id}; rsplit isolates the tag even
                 # if the tag itself contains '#'.
@@ -653,6 +691,8 @@ class HiveStorage:
         owner_user_id: str | None = None,
         owner_client_id: str | None = None,
         workspace_id: str | None = None,
+        *,
+        workspace_scoped: bool = False,
     ) -> tuple[list[Memory], str | None]:
         """Query for memories with a given tag.
 
@@ -667,6 +707,13 @@ class HiveStorage:
         the TagIndex GSI is used (eventually consistent). The ``workspace_id``
         filter is always applied in-memory on the hydrated results.
 
+        ``workspace_scoped=True`` switches the workspace filter to the compat
+        rules used by the MCP tool handlers (#493): memories stamped with a
+        foreign workspace are dropped, unstamped (pre-migration) memories stay
+        visible, and ``workspace_id=None`` (unresolvable caller) fails closed
+        to unstamped memories only. The default exact-match filter is kept for
+        callers that want a literal workspace slice.
+
         Returns (memories, next_cursor). next_cursor is None when exhausted.
         """
         if owner_user_id is not None:
@@ -678,6 +725,7 @@ class HiveStorage:
                     owner_client_id=owner_client_id,
                     limit=limit,
                     workspace_id=workspace_id,
+                    workspace_scoped=workspace_scoped,
                     start_key=decoded_cursor,
                 )
 
@@ -707,7 +755,7 @@ class HiveStorage:
                 continue
             if owner_client_id is not None and m.owner_client_id != owner_client_id:
                 continue
-            if workspace_id is not None and m.workspace_id != workspace_id:
+            if not _workspace_filter_passes(m, workspace_id, workspace_scoped=workspace_scoped):
                 continue
             memories.append(m)
 
@@ -722,6 +770,7 @@ class HiveStorage:
         owner_client_id: str | None = None,
         limit: int = 100,
         workspace_id: str | None = None,
+        workspace_scoped: bool = False,
         start_key: dict[str, Any] | None = None,
     ) -> tuple[list[Memory], str | None]:
         """Strongly-consistent tag query via USERTAG base-table items.
@@ -761,7 +810,7 @@ class HiveStorage:
                 continue
             if owner_client_id is not None and m.owner_client_id != owner_client_id:
                 continue
-            if workspace_id is not None and m.workspace_id != workspace_id:
+            if not _workspace_filter_passes(m, workspace_id, workspace_scoped=workspace_scoped):
                 continue
             memories.append(m)
 
@@ -830,6 +879,8 @@ class HiveStorage:
         owner_user_id: str | None = None,
         owner_client_id: str | None = None,
         workspace_id: str | None = None,
+        *,
+        workspace_scoped: bool = False,
     ) -> int:
         """Delete all memories with the given tag.
 
@@ -838,7 +889,11 @@ class HiveStorage:
         matching memories are deleted. Passing **no** filter deletes every
         memory with the tag across all owners, so a caller acting on behalf of
         a single tenant MUST pass its scope (``owner_client_id`` at minimum) to
-        avoid cross-tenant deletion. Returns the count of memories deleted.
+        avoid cross-tenant deletion. ``workspace_scoped=True`` applies the
+        workspace compat rules to the ``workspace_id`` filter (see
+        ``list_memories_by_tag``) so a workspace-scoped caller can never bulk
+        delete memories held by another workspace (#493). Returns the count of
+        memories deleted.
         """
         deleted = 0
         cursor: str | None = None
@@ -850,6 +905,7 @@ class HiveStorage:
                 owner_user_id=owner_user_id,
                 owner_client_id=owner_client_id,
                 workspace_id=workspace_id,
+                workspace_scoped=workspace_scoped,
             )
             for memory in items:
                 self._delete_tag_items(memory)
