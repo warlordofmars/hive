@@ -26,7 +26,7 @@ orphaned with members but no owner.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from hive.models import (
     ActivityEvent,
@@ -206,9 +206,11 @@ def accept_invite(storage: HiveStorage, *, invite_id: str, user_id: str) -> Work
         # Lost the race with a concurrent acceptor — the invite was
         # consumed between the read and the claim.
         raise InviteError(f"Invite '{invite_id}' not found or expired.")
-    if invite.is_expired:
+    if datetime.now(timezone.utc) >= invite.expires_at:
         # Crossed expires_at between the read and the claim — enforce
-        # expiry strictly. The consumed invite is moot: it is expired.
+        # expiry strictly with a fresh clock read (deliberately not
+        # ``invite.is_expired`` again: the point is that time moved on
+        # since the first check). The consumed invite is moot: expired.
         raise InviteError(f"Invite '{invite_id}' not found or expired.")
     if storage.get_workspace(invite.workspace_id) is None:
         # Workspace deleted between the claim and the membership write —

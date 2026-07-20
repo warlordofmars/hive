@@ -38,6 +38,8 @@ from hive.workspace_service import AlreadyMemberError, InviteError, WorkspaceNot
 
 router = APIRouter(tags=["workspaces"])
 
+_WORKSPACE_NOT_FOUND = "Workspace not found"
+_MEMBER_NOT_FOUND = "Member not found"
 _DEFAULT_INVITE_TTL_DAYS = 7
 _NAME_MAX = 100
 _DESCRIPTION_MAX = 500
@@ -172,7 +174,7 @@ def _require_workspace_member(
     """
     workspace = storage.get_workspace(workspace_id)
     if workspace is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise HTTPException(status_code=404, detail=_WORKSPACE_NOT_FOUND)
     member = storage.get_workspace_member(workspace_id, user_id)
     if member is None:
         raise HTTPException(status_code=403, detail="You are not a member of this workspace")
@@ -277,7 +279,7 @@ async def list_workspaces(
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Not a member, or insufficient role"},
-        404: {"description": "Workspace not found"},
+        404: {"description": _WORKSPACE_NOT_FOUND},
         409: {"description": "You already have a workspace with this name"},
     },
 )
@@ -299,7 +301,7 @@ async def update_workspace(
         )
     if not storage.rename_workspace(workspace_id, body.name):
         # Deleted between the membership check and the conditional update.
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise HTTPException(status_code=404, detail=_WORKSPACE_NOT_FOUND)
     workspace.name = body.name
     return WorkspaceResponse.from_workspace(workspace, member.role.value)
 
@@ -318,7 +320,7 @@ async def update_workspace(
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Not a member, or not an owner"},
-        404: {"description": "Workspace not found"},
+        404: {"description": _WORKSPACE_NOT_FOUND},
         409: {"description": "Workspace is Personal, or still has other members"},
     },
 )
@@ -352,7 +354,7 @@ async def delete_workspace(
         storage, workspace_id=workspace_id, actor_user_id=user_id
     ):
         # Deleted between the membership check and the delete.
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise HTTPException(status_code=404, detail=_WORKSPACE_NOT_FOUND)
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +373,7 @@ async def delete_workspace(
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Not a member of the workspace"},
-        404: {"description": "Workspace not found"},
+        404: {"description": _WORKSPACE_NOT_FOUND},
     },
 )
 async def list_members(
@@ -421,7 +423,7 @@ async def update_member_role(
         )
     target = storage.get_workspace_member(workspace_id, user_id)
     if target is None:
-        raise HTTPException(status_code=404, detail="Member not found")
+        raise HTTPException(status_code=404, detail=_MEMBER_NOT_FOUND)
     new_role = body.role
     if actor.role is WorkspaceRole.admin and WorkspaceRole.owner in (target.role, new_role):
         raise HTTPException(
@@ -449,7 +451,7 @@ async def update_member_role(
         actor_user_id=actor_user_id,
     ):
         # Membership vanished between the read and the conditional update.
-        raise HTTPException(status_code=404, detail="Member not found")
+        raise HTTPException(status_code=404, detail=_MEMBER_NOT_FOUND)
     target.role = new_role
     return _member_response(storage, target)
 
@@ -481,7 +483,7 @@ async def remove_member(
     _, actor = _require_workspace_member(storage, workspace_id, actor_user_id)
     target = storage.get_workspace_member(workspace_id, user_id)
     if target is None:
-        raise HTTPException(status_code=404, detail="Member not found")
+        raise HTTPException(status_code=404, detail=_MEMBER_NOT_FOUND)
     if user_id == actor_user_id:
         if actor.role is WorkspaceRole.owner:
             owners = {
@@ -505,7 +507,7 @@ async def remove_member(
         storage, workspace_id=workspace_id, user_id=user_id, actor_user_id=actor_user_id
     ):
         # Membership vanished between the read and the delete.
-        raise HTTPException(status_code=404, detail="Member not found")
+        raise HTTPException(status_code=404, detail=_MEMBER_NOT_FOUND)
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +528,7 @@ async def remove_member(
     responses={
         401: {"description": "Unauthorized"},
         403: {"description": "Not a member, or insufficient role"},
-        404: {"description": "Workspace not found"},
+        404: {"description": _WORKSPACE_NOT_FOUND},
         409: {
             "description": (
                 "Workspace is Personal, the email is already a member, or an "
@@ -588,7 +590,7 @@ async def create_invite(
         )
     except WorkspaceNotFoundError as exc:
         # Deleted between the membership check and the invite write.
-        raise HTTPException(status_code=404, detail="Workspace not found") from exc
+        raise HTTPException(status_code=404, detail=_WORKSPACE_NOT_FOUND) from exc
     return InviteResponse(
         invite_id=invite.invite_id,
         workspace_id=invite.workspace_id,

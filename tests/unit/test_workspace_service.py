@@ -282,17 +282,16 @@ class TestAcceptInvite:
             invited_by_user_id="u1",
             expires_at=_future(),
         )
-        # ``is_expired`` is evaluated twice in accept_invite: before the
-        # claim (not yet expired) and after (expired) — simulating the
-        # invite crossing expires_at mid-redemption.
-        calls = {"n": 0}
+        # The pre-claim ``is_expired`` check uses the real clock (invite
+        # still valid); the post-claim re-check reads the clock through
+        # ``workspace_service.datetime`` — patch it past expires_at to
+        # simulate the invite crossing expiry mid-redemption.
+        from types import SimpleNamespace
 
-        def _fake_now():
-            calls["n"] += 1
-            offset = timedelta(seconds=-1) if calls["n"] == 1 else timedelta(seconds=1)
-            return invite.expires_at + offset
-
-        monkeypatch.setattr("hive.models._now_utc", _fake_now)
+        monkeypatch.setattr(
+            "hive.workspace_service.datetime",
+            SimpleNamespace(now=lambda tz=None: invite.expires_at + timedelta(seconds=1)),
+        )
         with pytest.raises(workspace_service.InviteError):
             workspace_service.accept_invite(storage, invite_id=invite.invite_id, user_id="u2")
         # Expiry is enforced: no membership, no audit event; the invite was
