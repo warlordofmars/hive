@@ -124,8 +124,11 @@ def env():
 
 
 def _audit_events(storage: Any, workspace_id: str, event_type: str) -> list[Any]:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    events = storage.get_audit_events_for_dates([today], event_type=event_type)
+    # Query today and yesterday so a test spanning midnight UTC cannot miss
+    # an event written just before the day boundary.
+    now = datetime.now(timezone.utc)
+    dates = [(now - timedelta(days=1)).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")]
+    events = storage.get_audit_events_for_dates(dates, event_type=event_type)
     return [e for e in events if e.metadata.get("workspace_id") == workspace_id]
 
 
