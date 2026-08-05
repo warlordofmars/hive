@@ -153,6 +153,31 @@ class HiveStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
+        # GSI 7 — ApiKeyOwnerIndex: list a user's API keys (#596).
+        # Keyed on the existing top-level ``owner_user_id`` attribute with the
+        # table's own ``PK`` as the sort key. Unlike ApiKeyHashIndex this index
+        # is NOT sparse — memories, OAuth clients, workspaces and USERTAG
+        # items also carry ``owner_user_id`` — but the
+        # ``begins_with(PK, "APIKEY#")`` sort-key condition confines every
+        # query to the API key items, so reads never touch a user's other
+        # entities. Keying on already-written attributes means the
+        # asynchronous GSI backfill projects every existing API key item
+        # automatically and no data migration is needed.
+        # storage.list_api_keys_for_user falls back to the legacy table scan
+        # while the index is still backfilling (or otherwise unavailable).
+        #
+        # Deploy note: DynamoDB allows only one GSI mutation per table update
+        # — this index must not deploy while ApiKeyHashIndex (#589) is still
+        # backfilling (status CREATING).
+        table.add_global_secondary_index(
+            index_name="ApiKeyOwnerIndex",
+            partition_key=dynamodb.Attribute(
+                name="owner_user_id", type=dynamodb.AttributeType.STRING
+            ),
+            sort_key=dynamodb.Attribute(name="PK", type=dynamodb.AttributeType.STRING),
+            projection_type=dynamodb.ProjectionType.ALL,
+        )
+
         # ----------------------------------------------------------------
         # SSM Parameters
         # ----------------------------------------------------------------

@@ -6,9 +6,10 @@ Single-table design — all entities share one table.
 Table name is read from the HIVE_TABLE_NAME environment variable.
 
 GSIs:
-  TagIndex        — GSI2PK (TAG#{tag}), GSI2SK (memory_id) → list_memories(tag)
-  ClientIndex     — GSI3PK (CLIENT#{client_id})            → client lookups
-  ApiKeyHashIndex — key_hash (sparse, APIKEY# items only)  → API key auth lookups
+  TagIndex         — GSI2PK (TAG#{tag}), GSI2SK (memory_id) → list_memories(tag)
+  ClientIndex      — GSI3PK (CLIENT#{client_id})            → client lookups
+  ApiKeyHashIndex  — key_hash (sparse, APIKEY# items only)  → API key auth lookups
+  ApiKeyOwnerIndex — owner_user_id + PK (not sparse)        → list a user's API keys
 """
 
 from __future__ import annotations
@@ -2035,6 +2036,66 @@ class HiveStorage:
             scan_kwargs["ExclusiveStartKey"] = last_key
 
     def list_api_keys_for_user(self, owner_user_id: str) -> list[ApiKey]:
+        """List a user's API keys via the ApiKeyOwnerIndex GSI (#596).
+
+        The index is keyed on the existing top-level ``owner_user_id``
+        attribute with the table's own ``PK`` as its sort key. Unlike
+        ApiKeyHashIndex it is *not* sparse — memories, OAuth clients,
+        workspaces and USERTAG items also carry ``owner_user_id`` — so the
+        ``begins_with(PK, "APIKEY#")`` sort-key condition does the
+        narrowing: the query reads only the user's API key items, never
+        their other entities.
+
+        If the query fails because the index is unavailable (still
+        backfilling after deployment, or absent on a table that predates
+        it), the listing degrades gracefully to the legacy scan. As with
+        get_api_key_by_hash (#589), the fallback is kept permanently as
+        resilience, not as a transitional shim.
+        """
+        query_kwargs: dict[str, Any] = {
+            "IndexName": "ApiKeyOwnerIndex",
+            "KeyConditionExpression": (
+                Key("owner_user_id").eq(owner_user_id) & Key("PK").begins_with(_APIKEY_PK_PREFIX)
+            ),
+            # Defensive shape filter — APIKEY# partitions only ever hold
+            # SK=META items today, but the filter keeps any future non-META
+            # row out of ApiKey.from_dynamo.
+            "FilterExpression": Attr("SK").eq("META"),
+        }
+        keys: list[ApiKey] = []
+        try:
+            while True:
+                resp = self.table.query(**query_kwargs)
+                keys.extend(ApiKey.from_dynamo(item) for item in resp.get("Items", []))
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    return keys
+                query_kwargs["ExclusiveStartKey"] = last_key
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code not in ("ValidationException", "ResourceNotFoundException"):
+                raise
+            # The full error message is logged so an unexpected fallback
+            # cause (e.g. a genuine query bug rather than a backfilling
+            # index) is immediately diagnosable. The code is deliberately
+            # not narrowed by message substring — DynamoDB, DynamoDB Local
+            # and moto phrase these messages differently, and the fallback
+            # direction is fail-safe (a scan, the pre-GSI behaviour).
+            logger.warning(
+                "ApiKeyOwnerIndex unavailable (%s: %s) — falling back to table scan "
+                "for API key listing",
+                code,
+                exc.response["Error"].get("Message", ""),
+            )
+            return self._scan_api_keys_for_user(owner_user_id)
+
+    def _scan_api_keys_for_user(self, owner_user_id: str) -> list[ApiKey]:
+        """Legacy full-table-scan API key listing — fallback for ApiKeyOwnerIndex.
+
+        Paginates on ``LastEvaluatedKey``: a filtered Scan can return an
+        empty or partial page while matching items remain in later pages,
+        so keys are aggregated until the table is exhausted.
+        """
         scan_kwargs: dict[str, Any] = {
             "FilterExpression": "begins_with(PK, :prefix) AND SK = :sk AND owner_user_id = :uid",
             "ExpressionAttributeValues": {

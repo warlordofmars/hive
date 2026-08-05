@@ -62,6 +62,7 @@ def _create_table():
             {"AttributeName": "GSI5PK", "AttributeType": "S"},
             {"AttributeName": "GSI5SK", "AttributeType": "S"},
             {"AttributeName": "key_hash", "AttributeType": "S"},
+            {"AttributeName": "owner_user_id", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -99,6 +100,14 @@ def _create_table():
                 "IndexName": "ApiKeyHashIndex",
                 "KeySchema": [
                     {"AttributeName": "key_hash", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "ApiKeyOwnerIndex",
+                "KeySchema": [
+                    {"AttributeName": "owner_user_id", "KeyType": "HASH"},
+                    {"AttributeName": "PK", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
@@ -2504,11 +2513,12 @@ class TestHydrateMemoryIds:
 
 @pytest.fixture()
 def storage_no_apikey_index():
-    """HiveStorage on a table without ApiKeyHashIndex — legacy-schema table.
+    """HiveStorage on a table without the API key GSIs — legacy-schema table.
 
-    Exercises the graceful-degradation path of get_api_key_by_hash: the GSI
-    query fails with a real ValidationException and the lookup must fall
-    back to the legacy full-table scan.
+    Exercises the graceful-degradation paths of get_api_key_by_hash
+    (ApiKeyHashIndex) and list_api_keys_for_user (ApiKeyOwnerIndex): the
+    GSI query fails with a real ValidationException and the lookup must
+    fall back to the legacy full-table scan.
     """
     with mock_aws():
         ddb = boto3.client("dynamodb", region_name="us-east-1")
@@ -2648,8 +2658,45 @@ class TestApiKeyStorage:
         assert mock_scan.call_count == 2
         assert mock_scan.call_args_list[1].kwargs["ExclusiveStartKey"] == {"PK": "x", "SK": "y"}
 
+    def test_list_for_user_queries_gsi_not_scan(self, storage):
+        """The listing must hit ApiKeyOwnerIndex — never scan when the GSI works."""
+        from unittest.mock import patch
+
+        k1 = self._key("u1", "gsi1")
+        k2 = self._key("u1", "gsi2")
+        storage.put_api_key(k1)
+        storage.put_api_key(k2)
+        with patch.object(storage.table, "scan") as mock_scan:
+            result = storage.list_api_keys_for_user("u1")
+        assert {k.name for k in result} == {"gsi1", "gsi2"}
+        mock_scan.assert_not_called()
+
+    def test_list_for_user_excludes_other_owned_entities(self, storage):
+        """Non-APIKEY# items carrying owner_user_id never reach the result.
+
+        ApiKeyOwnerIndex is not sparse — memories, clients and workspaces
+        also carry ``owner_user_id`` — so the begins_with(PK, "APIKEY#")
+        sort-key condition must exclude them (ApiKey.from_dynamo would
+        raise on their shape if they leaked through).
+        """
+        storage.table.put_item(
+            Item={"PK": "WORKSPACE#w1", "SK": "META", "owner_user_id": "u1", "name": "ws"}
+        )
+        storage.table.put_item(
+            Item={"PK": "MEMORY#m1", "SK": "META", "owner_user_id": "u1", "key": "k"}
+        )
+        k = self._key("u1", "only-key")
+        storage.put_api_key(k)
+        result = storage.list_api_keys_for_user("u1")
+        assert [r.name for r in result] == ["only-key"]
+
+    def test_list_for_user_ignores_non_meta_apikey_items(self, storage):
+        """A non-META row in an APIKEY# partition is filtered out defensively."""
+        storage.table.put_item(Item={"PK": "APIKEY#rogue", "SK": "OTHER", "owner_user_id": "u1"})
+        assert storage.list_api_keys_for_user("u1") == []
+
     def test_list_for_user_follows_last_evaluated_key(self, storage):
-        """list_api_keys_for_user aggregates keys across scan pages."""
+        """list_api_keys_for_user aggregates keys across query pages."""
         from unittest.mock import patch
 
         k1 = self._key("u9", "page1")
@@ -2658,10 +2705,77 @@ class TestApiKeyStorage:
             {"Items": [k1.to_dynamo()], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
             {"Items": [k2.to_dynamo()]},
         ]
-        with patch.object(storage.table, "scan", side_effect=pages) as mock_scan:
+        with patch.object(storage.table, "query", side_effect=pages) as mock_query:
             result = storage.list_api_keys_for_user("u9")
         assert {k.name for k in result} == {"page1", "page2"}
+        assert mock_query.call_count == 2
+        assert mock_query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"PK": "x", "SK": "y"}
+
+    def test_list_for_user_falls_back_when_index_missing(self, storage_no_apikey_index):
+        """A table without the GSI (legacy schema / backfilling) still lists keys."""
+        k1 = self._key("u1", "legacy1")
+        k2 = self._key("u1", "legacy2")
+        storage_no_apikey_index.put_api_key(k1)
+        storage_no_apikey_index.put_api_key(k2)
+        result = storage_no_apikey_index.list_api_keys_for_user("u1")
+        assert {k.name for k in result} == {"legacy1", "legacy2"}
+
+    def test_list_for_user_fallback_empty(self, storage_no_apikey_index):
+        assert storage_no_apikey_index.list_api_keys_for_user("no-such-user") == []
+
+    def test_list_for_user_falls_back_on_resource_not_found(self, storage):
+        """ResourceNotFoundException from the GSI query also triggers the scan."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        k = self._key("u1", "rnf")
+        storage.put_api_key(k)
+        with patch.object(
+            storage.table,
+            "query",
+            side_effect=ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "no index"}},
+                "Query",
+            ),
+        ):
+            result = storage.list_api_keys_for_user("u1")
+        assert [r.name for r in result] == ["rnf"]
+
+    def test_list_for_user_reraises_unrelated_errors(self, storage):
+        """Only index-unavailable errors degrade to a scan — others propagate."""
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        with (
+            patch.object(
+                storage.table,
+                "query",
+                side_effect=ClientError(
+                    {"Error": {"Code": "InternalServerError", "Message": "boom"}},
+                    "Query",
+                ),
+            ),
+            pytest.raises(ClientError),
+        ):
+            storage.list_api_keys_for_user("u1")
+
+    def test_scan_list_for_user_follows_last_evaluated_key(self, storage):
+        """The fallback scan aggregates keys across filtered pages."""
+        from unittest.mock import patch
+
+        k1 = self._key("u9", "scan1")
+        k2 = self._key("u9", "scan2")
+        pages = [
+            {"Items": [k1.to_dynamo()], "LastEvaluatedKey": {"PK": "x", "SK": "y"}},
+            {"Items": [k2.to_dynamo()]},
+        ]
+        with patch.object(storage.table, "scan", side_effect=pages) as mock_scan:
+            result = storage._scan_api_keys_for_user("u9")
+        assert {k.name for k in result} == {"scan1", "scan2"}
         assert mock_scan.call_count == 2
+        assert mock_scan.call_args_list[1].kwargs["ExclusiveStartKey"] == {"PK": "x", "SK": "y"}
 
     def test_get_by_hash_reraises_unrelated_errors(self, storage):
         """Only index-unavailable errors degrade to a scan — others propagate."""
